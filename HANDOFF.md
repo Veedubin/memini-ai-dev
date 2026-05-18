@@ -2,7 +2,7 @@
 
 > **Session**: 2026-05-19
 > **Project**: Memini-ai v3.0 (formerly Super-Memory-TS)
-> **Status**: ALL PHASES COMPLETE - pgvector migration DONE, live visualization added, v0.2.5 released
+> **Status**: ALL PHASES COMPLETE - pgvector migration DONE, live visualization added, v0.2.6 released
 
 ---
 
@@ -208,6 +208,7 @@ pytest tests/integration/ -v
 - **v0.2.3**: Version bump, PyPI publish ready
 - **v0.2.4**: aiosqlite dependency fix (missing from pyproject.toml)
 - **v0.2.5**: Version bump fix (pyproject.toml version was not updated)
+- **v0.2.6**: Fix server.run() HTTP transport (host/port args)
 
 ### Live Visualization
 - KnowledgeGraph writes directly to PostgreSQL entities/entity_relationships tables
@@ -219,9 +220,9 @@ pytest tests/integration/ -v
 
 ## PyPI Publishing Status (2026-05-19)
 
-### v0.2.5 Release Status
-- **Git tag**: `v0.2.5` created and pushed ✅
-- **GitHub commit**: `b1077b7` ✅
+### v0.2.6 Release Status
+- **Git tag**: `v0.2.6` created and pushed ✅
+- **GitHub commit**: `33abf6e` ✅
 - **GitHub Release**: Created via workflow ✅
 - **PyPI publish**: Trusted publishing via GitHub Actions
 
@@ -234,6 +235,7 @@ pytest tests/integration/ -v
 | v0.2.3 | 2026-05-18 | Version bump |
 | v0.2.4 | 2026-05-19 | aiosqlite dependency fix |
 | v0.2.5 | 2026-05-19 | Version bump fix |
+| v0.2.6 | 2026-05-19 | server.run() HTTP transport fix |
 
 ### Release Process
 1. Update version in `pyproject.toml`

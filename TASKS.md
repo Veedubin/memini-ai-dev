@@ -4,7 +4,7 @@
 > **Meaning**: "I remember" in Latin
 > **Language**: Python (porting from TypeScript)
 > **Framework**: FastMCP
-> **Last Updated**: 2026-05-19 (v0.2.5: fix aiosqlite dependency)
+> **Last Updated**: 2026-05-19 (v0.2.6: fix server.run() HTTP transport)
 
 ---
 
