@@ -159,37 +159,117 @@ ORDER BY (m1.trust_score + m2.trust_score) ASC
 """
 
 # =============================================================================
-# Entity Queries
+# Entity Queries (Knowledge Graph)
 # =============================================================================
 
+# Entity CRUD
 INSERT_ENTITY = """
-INSERT INTO entities (id, name, entity_type, metadata)
-VALUES ($1, $2, $3, $4)
+INSERT INTO entities (id, name, entity_type, canonical_name, confidence, metadata)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (name, entity_type) DO UPDATE
+SET canonical_name = EXCLUDED.canonical_name,
+    confidence = EXCLUDED.confidence,
+    mention_count = entities.mention_count + 1,
+    last_seen_at = NOW()
 RETURNING id
 """
 
+UPSERT_ENTITY = """
+INSERT INTO entities (id, name, entity_type, canonical_name, confidence, mention_count, last_seen_at, metadata)
+VALUES ($1, $2, $3, $4, $5, 1, NOW(), $6)
+ON CONFLICT (name, entity_type) DO UPDATE
+SET canonical_name = EXCLUDED.canonical_name,
+    confidence = GREATEST(entities.confidence, EXCLUDED.confidence),
+    mention_count = entities.mention_count + 1,
+    last_seen_at = NOW()
+RETURNING id
+"""
+
+GET_ENTITIES = """
+SELECT id, name, entity_type, canonical_name, confidence, mention_count, 
+       first_seen_at, last_seen_at, metadata
+FROM entities
+ORDER BY mention_count DESC
+LIMIT $1
+"""
+
+GET_ENTITIES_WITH_RELATIONSHIPS = """
+SELECT 
+    e.id, e.name, e.entity_type, e.canonical_name, e.confidence,
+    er.target_entity_id, er.relationship_type, er.confidence as rel_confidence
+FROM entities e
+LEFT JOIN entity_relationships er ON e.id = er.source_entity_id
+ORDER BY e.mention_count DESC
+LIMIT $1
+"""
+
 GET_ENTITY_BY_ID = """
-SELECT id, name, entity_type, metadata, created_at
+SELECT id, name, entity_type, canonical_name, confidence, mention_count,
+       first_seen_at, last_seen_at, metadata
 FROM entities
 WHERE id = $1
 """
 
 GET_ENTITIES_BY_TYPE = """
-SELECT id, name, entity_type, metadata, created_at
+SELECT id, name, entity_type, canonical_name, confidence, mention_count,
+       first_seen_at, last_seen_at, metadata
 FROM entities
 WHERE entity_type = $1
+ORDER BY mention_count DESC
+LIMIT $2
 """
 
+UPDATE_ENTITY_METADATA = """
+UPDATE entities
+SET metadata = $2, last_seen_at = NOW()
+WHERE id = $1
+RETURNING id
+"""
+
+DELETE_ENTITY = """
+DELETE FROM entities WHERE id = $1
+RETURNING id
+"""
+
+# Entity Relationships
 INSERT_ENTITY_RELATIONSHIP = """
-INSERT INTO entity_relationships (id, source_entity_id, target_entity_id, relationship_type, metadata)
+INSERT INTO entity_relationships (id, source_entity_id, target_entity_id, relationship_type, confidence)
 VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (source_entity_id, target_entity_id, relationship_type) DO UPDATE
+SET confidence = EXCLUDED.confidence
 RETURNING id
 """
 
 GET_ENTITY_RELATIONSHIPS = """
-SELECT id, source_entity_id, target_entity_id, relationship_type, created_at, metadata
+SELECT id, source_entity_id, target_entity_id, relationship_type, confidence, created_at
 FROM entity_relationships
 WHERE source_entity_id = $1 OR target_entity_id = $1
+"""
+
+GET_ALL_ENTITY_RELATIONSHIPS = """
+SELECT id, source_entity_id, target_entity_id, relationship_type, confidence, created_at
+FROM entity_relationships
+"""
+
+DELETE_ENTITY_RELATIONSHIP = """
+DELETE FROM entity_relationships
+WHERE id = $1
+RETURNING id
+"""
+
+# Entity Statistics
+GET_ENTITY_STATS = """
+SELECT 
+    COUNT(*) as total_entities,
+    COUNT(*) FILTER (WHERE entity_type = 'PERSON') as persons,
+    COUNT(*) FILTER (WHERE entity_type = 'ORGANIZATION') as organizations,
+    COUNT(*) FILTER (WHERE entity_type = 'CONCEPT') as concepts,
+    COUNT(*) FILTER (WHERE entity_type = 'CODE') as codes,
+    COUNT(*) FILTER (WHERE entity_type = 'PROJECT') as projects,
+    COUNT(*) FILTER (WHERE entity_type = 'LOCATION') as locations,
+    COUNT(*) FILTER (WHERE entity_type = 'UNKNOWN') as unknowns,
+    COUNT(*) FILTER (WHERE mention_count > 1) as entities_with_mentions
+FROM entities
 """
 
 # =============================================================================

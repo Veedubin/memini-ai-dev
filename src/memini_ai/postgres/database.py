@@ -22,13 +22,21 @@ from memini_ai.memory.schema import (
     SearchOptions,
 )
 from memini_ai.postgres.queries import (
+    DELETE_ENTITY,
     DELETE_MEMORY,
+    GET_ENTITIES,
+    GET_ENTITIES_BY_TYPE,
+    GET_ENTITIES_WITH_RELATIONSHIPS,
+    GET_ENTITY_BY_ID,
+    GET_ENTITY_STATS,
     GET_MEMORY_BY_ID,
     GET_MEMORY_COUNT,
     INCREMENT_RETRIEVAL_COUNT,
+    INSERT_ENTITY_RELATIONSHIP,
     INSERT_MEMORY,
     SEARCH_MEMORIES_VECTOR,
     UPDATE_MEMORY_METADATA,
+    UPSERT_ENTITY,
 )
 from memini_ai.postgres.schema import get_schema_sql
 
@@ -576,6 +584,249 @@ class PostgresDatabase(VectorDatabase):
                 memory_id,
                 json.dumps(payload),
             )
+
+    # =========================================================================
+    # Entity (Knowledge Graph) CRUD Operations
+    # =========================================================================
+
+    async def upsert_entity(
+        self,
+        entity_id: str,
+        name: str,
+        entity_type: str,
+        canonical_name: str,
+        confidence: float = 1.0,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Insert or update an entity in the knowledge graph.
+
+        Args:
+            entity_id: Unique entity ID.
+            name: Surface form (as found in text).
+            entity_type: Type classification (PERSON, ORGANIZATION, etc.).
+            canonical_name: Canonical/normalised form.
+            confidence: Extraction confidence 0.0-1.0.
+            metadata: Optional metadata dict.
+
+        Returns:
+            The entity ID.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                UPSERT_ENTITY,
+                entity_id,
+                name,
+                entity_type,
+                canonical_name,
+                confidence,
+                json.dumps(metadata or {}),
+            )
+            return str(result)
+
+    async def get_entity(self, entity_id: str) -> dict[str, Any] | None:
+        """Get an entity by ID.
+
+        Args:
+            entity_id: Entity ID.
+
+        Returns:
+            Entity dict if found, None otherwise.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(GET_ENTITY_BY_ID, entity_id)
+            if row is None:
+                return None
+
+            return {
+                "id": str(row["id"]),
+                "name": row["name"],
+                "entity_type": row["entity_type"],
+                "canonical_name": row["canonical_name"],
+                "confidence": row["confidence"],
+                "mention_count": row["mention_count"],
+                "first_seen_at": row["first_seen_at"],
+                "last_seen_at": row["last_seen_at"],
+                "metadata": row["metadata"],
+            }
+
+    async def get_entities(
+        self,
+        limit: int = 1000,
+        entity_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get all entities, optionally filtered by type.
+
+        Args:
+            limit: Maximum number of entities to return.
+            entity_type: Optional entity type filter.
+
+        Returns:
+            List of entity dicts.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            if entity_type:
+                rows = await conn.fetch(
+                    GET_ENTITIES_BY_TYPE,
+                    entity_type,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(GET_ENTITIES, limit)
+
+            return [
+                {
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "entity_type": row["entity_type"],
+                    "canonical_name": row["canonical_name"],
+                    "confidence": row["confidence"],
+                    "mention_count": row["mention_count"],
+                    "first_seen_at": row["first_seen_at"],
+                    "last_seen_at": row["last_seen_at"],
+                    "metadata": row["metadata"],
+                }
+                for row in rows
+            ]
+
+    async def get_entities_with_relationships(
+        self,
+        limit: int = 1000,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Get entities and relationships for D3.js visualization.
+
+        Args:
+            limit: Maximum number of entities to return.
+
+        Returns:
+            Tuple of (nodes, edges) for D3.js force graph.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(GET_ENTITIES_WITH_RELATIONSHIPS, limit)
+
+            # Build nodes and edges
+            nodes_map: dict[str, dict[str, Any]] = {}
+            edges: list[dict[str, Any]] = []
+
+            for row in rows:
+                entity_id = str(row["id"])
+                if entity_id not in nodes_map:
+                    nodes_map[entity_id] = {
+                        "id": entity_id,
+                        "name": row["canonical_name"] or row["name"],
+                        "type": row["entity_type"],
+                        "confidence": row["confidence"],
+                        "group": self._get_entity_group(row["entity_type"]),
+                    }
+
+                if row["target_entity_id"]:
+                    edges.append({
+                        "source": entity_id,
+                        "target": str(row["target_entity_id"]),
+                        "relationship": row["relationship_type"],
+                        "confidence": row["rel_confidence"],
+                        "stroke": self._get_rel_color(row["relationship_type"]),
+                    })
+
+            return list(nodes_map.values()), edges
+
+    async def get_entity_stats(self) -> dict[str, Any]:
+        """Get knowledge graph statistics.
+
+        Returns:
+            Dict with entity counts by type.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(GET_ENTITY_STATS)
+            return dict(row) if row else {}
+
+    async def upsert_entity_relationship(
+        self,
+        source_entity_id: str,
+        target_entity_id: str,
+        relationship_type: str,
+        confidence: float = 1.0,
+    ) -> str:
+        """Insert or update an entity relationship.
+
+        Args:
+            source_entity_id: Source entity ID.
+            target_entity_id: Target entity ID.
+            relationship_type: Relationship type (SUPERSEDES, RELATED_TO, etc.).
+            confidence: Relationship confidence 0.0-1.0.
+
+        Returns:
+            Relationship ID.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        import uuid
+
+        async with pool.acquire() as conn:
+            rel_id = str(uuid.uuid4())
+            result = await conn.fetchval(
+                INSERT_ENTITY_RELATIONSHIP,
+                rel_id,
+                source_entity_id,
+                target_entity_id,
+                relationship_type,
+                confidence,
+            )
+            return str(result)
+
+    async def delete_entity(self, entity_id: str) -> bool:
+        """Delete an entity and its relationships.
+
+        Args:
+            entity_id: Entity ID to delete.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(DELETE_ENTITY, entity_id)
+            return result is not None
+
+    def _get_entity_group(self, entity_type: str) -> int:
+        """Map entity type to D3 group number for visualization."""
+        group_map = {
+            "PERSON": 1,
+            "ORGANIZATION": 2,
+            "CONCEPT": 3,
+            "CODE": 4,
+            "PROJECT": 5,
+            "LOCATION": 6,
+            "UNKNOWN": 0,
+        }
+        return group_map.get(entity_type, 0)
+
+    def _get_rel_color(self, rel_type: str) -> str:
+        """Get color for relationship type."""
+        color_map = {
+            "SUPERSEDES": "#e74c3c",
+            "RELATED_TO": "#3498db",
+            "CONTRADICTS": "#9b59b6",
+            "DERIVED_FROM": "#27ae60",
+        }
+        return color_map.get(rel_type, "#95a5a6")
 
 
 def create_postgres_database(

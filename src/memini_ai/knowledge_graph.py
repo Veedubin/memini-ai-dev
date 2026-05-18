@@ -16,6 +16,7 @@ from typing import Any
 from memini_ai.config import MeminiConfig, get_config
 from memini_ai.memory.schema import RelationshipType
 from memini_ai.memory.system import MemorySystem
+from memini_ai.postgres.database import PostgresDatabase
 from memini_ai.utils.logger import logger
 
 
@@ -151,6 +152,10 @@ class KnowledgeGraph:
     - Entity nodes (extracted named entities)
     - Entity-relationship edges
     - Inference engine for transitive closure
+
+    Storage Backends:
+    - MemorySystem (legacy): Entities stored as JSON in memory entries
+    - PostgresDatabase (preferred): Entities stored directly in PostgreSQL
     """
 
     # Entity ID prefix
@@ -159,15 +164,18 @@ class KnowledgeGraph:
     def __init__(
         self,
         memory_system: MemorySystem | None = None,
+        postgres_db: PostgresDatabase | None = None,
         config: MeminiConfig | None = None,
     ) -> None:
         """Initialize KnowledgeGraph.
 
         Args:
             memory_system: Optional MemorySystem instance for storage.
+            postgres_db: Optional PostgresDatabase instance for direct PostgreSQL storage.
             config: Optional MeminiConfig instance.
         """
         self._memory_system = memory_system
+        self._postgres_db = postgres_db
         self._config = config or get_config()
         self._initialized = False
         self._init_lock = asyncio.Lock()
@@ -1002,6 +1010,155 @@ class KnowledgeGraph:
             "total_relationships": sum(len(r) for r in self._entity_relations.values()),
             "relationship_types": rel_counts,
         }
+
+    # =========================================================================
+    # POSTGRESQL STORAGE (Direct PostgreSQL persistence for live visualization)
+    # =========================================================================
+
+    @property
+    def has_postgres(self) -> bool:
+        """Check if PostgreSQL backend is available."""
+        return self._postgres_db is not None
+
+    async def persist_to_postgres(self) -> dict[str, Any]:
+        """Persist all in-memory entities and relationships to PostgreSQL.
+
+        Returns:
+            Dict with counts of persisted entities and relationships.
+        """
+        if not self._postgres_db:
+            return {"success": False, "error": "PostgreSQL not configured"}
+
+        try:
+            entity_count = 0
+            rel_count = 0
+
+            # Persist all entities
+            for entity in self._entities.values():
+                await self._postgres_db.upsert_entity(
+                    entity_id=entity.entity_id,
+                    name=entity.name,
+                    entity_type=entity.entity_type.value,
+                    canonical_name=entity.canonical_name,
+                    confidence=entity.confidence,
+                    metadata={"mentions": entity.mentions},
+                )
+                entity_count += 1
+
+            # Persist all relationships
+            for source_id, relations in self._entity_relations.items():
+                for rel in relations:
+                    await self._postgres_db.upsert_entity_relationship(
+                        source_entity_id=source_id,
+                        target_entity_id=rel["target_id"],
+                        relationship_type=rel["rel_type"].value,
+                        confidence=rel["confidence"],
+                    )
+                    rel_count += 1
+
+            logger.info("kg_persisted_to_postgres", entities=entity_count, relationships=rel_count)
+            return {"success": True, "entities": entity_count, "relationships": rel_count}
+
+        except Exception as e:
+            logger.error("kg_persist_failed", error=str(e))
+            return {"success": False, "error": str(e)}
+
+    async def load_from_postgres(self) -> dict[str, Any]:
+        """Load entities and relationships from PostgreSQL into memory.
+
+        Returns:
+            Dict with counts of loaded entities and relationships.
+        """
+        if not self._postgres_db:
+            return {"success": False, "error": "PostgreSQL not configured"}
+
+        try:
+            # Load entities
+            entities = await self._postgres_db.get_entities(limit=1000)
+            for ent in entities:
+                entity = Entity(
+                    entity_id=ent["id"],
+                    name=ent["name"],
+                    entity_type=EntityType(ent["entity_type"]),
+                    canonical_name=ent["canonical_name"],
+                    confidence=ent["confidence"],
+                    mentions=[],  # Metadata has mentions if any
+                )
+                self._entities[entity.entity_id] = entity
+                self._entity_name_index[entity.canonical_name.lower()] = entity.entity_id
+                self._entity_relations[entity.entity_id] = []
+
+            # Load relationships
+            _nodes, edges = await self._postgres_db.get_entities_with_relationships(limit=1000)
+            for edge in edges:
+                from memini_ai.memory.schema import RelationshipType
+
+                rel_type = RelationshipType(edge["relationship"])
+                source_id = edge["source"]
+                target_id = edge["target"]
+
+                if source_id in self._entity_relations:
+                    # Check for existing
+                    existing = False
+                    for rel in self._entity_relations[source_id]:
+                        if rel["target_id"] == target_id and rel["rel_type"] == rel_type:
+                            existing = True
+                            break
+                    if not existing:
+                        self._entity_relations[source_id].append({
+                            "target_id": target_id,
+                            "rel_type": rel_type,
+                            "confidence": edge["confidence"],
+                        })
+
+            logger.info(
+                "kg_loaded_from_postgres",
+                entities=len(self._entities),
+                relationships=sum(len(r) for r in self._entity_relations.values()),
+            )
+            return {
+                "success": True,
+                "entities": len(self._entities),
+                "relationships": sum(len(r) for r in self._entity_relations.values()),
+            }
+
+        except Exception as e:
+            logger.error("kg_load_failed", error=str(e))
+            return {"success": False, "error": str(e)}
+
+    async def to_postgres_json(self) -> dict[str, Any]:
+        """Get D3.js visualization data directly from PostgreSQL.
+
+        This is the primary method for the live visualization server.
+        It fetches data directly from PostgreSQL without loading into memory first.
+
+        Returns:
+            Dict with nodes and edges arrays for D3.js.
+        """
+        if not self._postgres_db:
+            return {"nodes": [], "edges": [], "error": "PostgreSQL not configured"}
+
+        try:
+            nodes, edges = await self._postgres_db.get_entities_with_relationships(limit=1000)
+            return {"nodes": nodes, "edges": edges}
+        except Exception as e:
+            logger.error("kg_postgres_json_failed", error=str(e))
+            return {"nodes": [], "edges": [], "error": str(e)}
+
+    async def get_postgres_stats(self) -> dict[str, Any]:
+        """Get entity statistics directly from PostgreSQL.
+
+        Returns:
+            Dict with entity counts by type.
+        """
+        if not self._postgres_db:
+            return {"error": "PostgreSQL not configured"}
+
+        try:
+            return await self._postgres_db.get_entity_stats()
+        except Exception as e:
+            logger.error("kg_postgres_stats_failed", error=str(e))
+            return {"error": str(e)}
 
     # =========================================================================
     # D3.JS VISUALIZATION EXPORT
