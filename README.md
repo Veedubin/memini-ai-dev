@@ -6,7 +6,7 @@ Local-first semantic memory server with vector search, MCP-compatible.
 
 ## Overview
 
-Memini-ai is a Python rewrite of [Super-Memory-TS](https://github.com/veedubin/super-memory-ts), designed as a local-first semantic memory server with vector search capabilities. It provides persistent memory storage and retrieval using Qdrant as the backend vector database.
+Memini-ai is a Python rewrite of [Super-Memory-TS](https://github.com/veedubin/super-memory-ts), designed as a local-first semantic memory server with vector search capabilities. It provides persistent memory storage and retrieval using PostgreSQL with pgvector as the backend.
 
 ### Key Features
 
@@ -15,7 +15,7 @@ Memini-ai is a Python rewrite of [Super-Memory-TS](https://github.com/veedubin/s
 - **Hybrid Search**: Combines vector similarity with BM25 text search
 - **Project Isolation**: Memories are isolated by project ID
 - **File Indexing**: Index and search project files with semantic chunking
-- **Graceful Degradation**: Works without Qdrant (returns errors for memory operations)
+- **Knowledge Graph**: Live D3.js visualization of entities and relationships
 - **CPU-First**: Designed to run on CPU, optional GPU acceleration
 
 ## Installation
@@ -23,16 +23,13 @@ Memini-ai is a Python rewrite of [Super-Memory-TS](https://github.com/veedubin/s
 ### Prerequisites
 
 - Python 3.11+
-- [Qdrant](https://qdrant.tech/documentation/guides/installation/) running locally or remotely
+- PostgreSQL 15+ with pgvector extension
 
 ### Quick Start
 
 ```bash
 # Install memini-ai
-pip install memini-ai
-
-# Start Qdrant (if not running)
-docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
+pip install memini-ai-dev
 
 # Run the server
 memini-ai --stdio
@@ -42,8 +39,8 @@ memini-ai --stdio
 
 ```bash
 # Clone the repository
-git clone https://github.com/veedubin/memini-ai.git
-cd memini-ai
+git clone https://github.com/Veedubin/memini-ai-dev.git
+cd memini-ai-dev
 
 # Create virtual environment
 python -m venv .venv
@@ -62,7 +59,7 @@ Memini-ai can be configured via environment variables or a JSON config file.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEMINI_QDRANT_URL` | `http://localhost:6333` | Qdrant server URL |
+| `MEMINI_DB_URL` | `postgresql://postgres:password@localhost:5432/postgres` | PostgreSQL connection URL |
 | `MEMINI_PROJECT_ID` | auto-generated | Project identifier for isolation |
 | `MEMINI_EMBEDDING_DIM` | `1024` | Embedding dimension (1024 or 384) |
 | `MEMINI_CHUNK_SIZE` | `512` | Chunk size for file indexing |
@@ -76,8 +73,8 @@ Memini-ai can be configured via environment variables or a JSON config file.
 
 ```json
 {
-  "qdrant": {
-    "url": "http://localhost:6333"
+  "database": {
+    "url": "postgresql://postgres:password@localhost:5432/postgres"
   },
   "model": {
     "embedding_dim": 1024
@@ -197,31 +194,32 @@ asyncio.run(main())
 
 ## Docker Compose
 
-For local development with Qdrant:
+For local development with PostgreSQL/pgvector:
 
 ```yaml
 version: '3.8'
 
 services:
-  qdrant:
-    image: qdrant/qdrant
+  postgres:
+    image: timescale/timescaledb:latest-pg15
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=password
     volumes:
-      - qdrant_data:/qdrant/storage
+      - postgres_data:/var/lib/postgresql/data
 
   memini-ai:
     build: .
     depends_on:
-      - qdrant
+      - postgres
     environment:
-      - MEMINI_QDRANT_URL=http://qdrant:6333
+      - MEMINI_DB_URL=postgresql://postgres:password@postgres:5432/postgres
     volumes:
       - .:/app
 
 volumes:
-  qdrant_data:
+  postgres_data:
 ```
 
 ```bash
@@ -302,23 +300,30 @@ export MEMINI_BATCH_SIZE=64
 ```
 memini_ai/
 ├── config.py           # Configuration management
-├── server.py          # FastMCP server (6 tools)
+├── server.py          # FastMCP server (35 tools)
+├── api/
+│   ├── visualization.py  # FastAPI server for live KG visualization
+│   └── d3_template.py     # D3.js visualization template
 ├── memory/
 │   ├── schema.py      # Pydantic models
-│   ├── database.py    # Qdrant CRUD operations
+│   ├── database.py    # VectorDatabase ABC
 │   ├── search.py      # 4 search strategies
 │   └── system.py      # MemorySystem coordinator
+├── postgres/          # PostgreSQL/pgvector backend
+│   ├── database.py    # PostgresDatabase implementation
+│   ├── schema.py      # SQL schema definitions
+│   └── queries.py     # SQL query builders
 ├── model/
 │   ├── manager.py     # ModelManager singleton
-│   └── embeddings.py # Embedding generation
+│   └── embeddings.py  # Embedding generation
 ├── indexer/
 │   ├── indexer.py     # ProjectIndexer
 │   ├── chunker.py     # Semantic chunking
 │   ├── watcher.py     # File watching
 │   └── file_tracker.py # SQLite persistence
 └── utils/
-    ├── logger.py     # Structured logging
-    └── hash.py       # SHA-256 utilities
+    ├── logger.py      # Structured logging
+    └── hash.py        # SHA-256 utilities
 ```
 
 ## License
@@ -327,7 +332,7 @@ MIT License - see LICENSE file for details.
 
 ## Links
 
-- [Repository](https://github.com/veedubin/memini-ai)
-- [Documentation](https://github.com/veedubin/memini-ai#readme)
-- [Qdrant](https://qdrant.tech/)
+- [Repository](https://github.com/Veedubin/memini-ai-dev)
+- [Documentation](https://github.com/Veedubin/memini-ai-dev#readme)
+- [pgvector](https://github.com/pgvector/pgvector)
 - [FastMCP](https://github.com/jlowin/fastmcp)
