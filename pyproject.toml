@@ -1,5 +1,5 @@
 [project]
-name = "memini-ai"
+name = "memini-ai-dev"
 version = "0.2.0"
 description = "Local-first semantic memory server with vector search"
 readme = "README.md"
@@ -46,8 +46,8 @@ dev = [
 memini-ai = "memini_ai.main:main"
 
 [project.urls]
-Homepage = "https://github.com/veedubin/memini-ai"
-Repository = "https://github.com/veedubin/memini-ai"
+Homepage = "https://github.com/Veedubin/memini-ai-dev"
+Repository = "https://github.com/Veedubin/memini-ai-dev"
 
 [build-system]
 requires = ["hatchling"]
