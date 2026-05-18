@@ -31,11 +31,15 @@ jobs:
       - name: Build package
         run: uv build
 
+      - name: Extract tag name
+        id: extract_tag
+        run: echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
-          name: Release ${{ github.ref }}
+          tag_name: ${{ steps.extract_tag.outputs.tag_name }}
+          name: ${{ steps.extract_tag.outputs.tag_name }}
           generate_release_notes: true
           files: dist/*
         env:
