@@ -1,6 +1,11 @@
 """Memory package - core memory system components."""
 
-from memini_ai.memory.database import MemoryDatabase
+from memini_ai.memory.database import (
+    MemoryDatabase,  # Backward compatibility alias
+    QdrantDatabase,
+    VectorDatabase,
+    create_database,
+)
 from memini_ai.memory.schema import (
     MemoryEntry,
     MemorySourceType,
@@ -12,7 +17,10 @@ from memini_ai.memory.search import MemorySearch
 from memini_ai.memory.system import MemorySystem, MemorySystemConfig
 
 __all__ = [
-    "MemoryDatabase",
+    "create_database",
+    "MemoryDatabase",  # Backward compatibility alias for QdrantDatabase
+    "QdrantDatabase",
+    "VectorDatabase",
     "MemoryEntry",
     "MemorySearch",
     "MemorySourceType",

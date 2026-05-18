@@ -15,7 +15,12 @@ from memini_ai.dialectic import DialecticEngine, get_dialectic_engine
 from memini_ai.extractor import MemoryExtractor
 from memini_ai.graph import MemoryGraph
 from memini_ai.indexer.indexer import IndexerConfig, ProjectIndexer
-from memini_ai.knowledge_graph import EntityType, KGQuery, KnowledgeGraph
+from memini_ai.knowledge_graph import (
+    EntityType,
+    KGQuery,
+    KnowledgeGraph,
+    generate_visualization_html,
+)
 from memini_ai.memory.schema import (
     MemoryEntry,
     MemorySourceType,
@@ -105,6 +110,7 @@ class MCPServer:
         self._mcp.add_tool(self.get_entity_graph)
         self._mcp.add_tool(self.get_inference_chain)
         self._mcp.add_tool(self.search_entities)
+        self._mcp.add_tool(self.get_graph_visualization)
         # Phase 4C: Multi-Peer tools
         self._mcp.add_tool(self.list_peers)
         self._mcp.add_tool(self.add_peer)
@@ -1825,6 +1831,44 @@ class MCPServer:
                 "entities": [],
                 "error": str(e),
             }
+
+    # =========================================================================
+    # TOOL: get_graph_visualization (Phase 4B)
+    # =========================================================================
+    async def get_graph_visualization(self, limit: int = 100) -> str:
+        """Get an HTML visualization of the knowledge graph.
+
+        Returns a self-contained HTML page with a D3.js force-directed graph
+        showing entities as nodes and relationships as edges.
+
+        Args:
+            limit: Maximum number of nodes to visualize (default 100).
+
+        Returns:
+            Complete HTML string with embedded D3.js visualization,
+            or error message if KG is disabled or has no data.
+        """
+        try:
+            if self._knowledge_graph is None:
+                if self._memory_system is None:
+                    self._memory_system = await asyncio.wait_for(
+                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    )
+                self._knowledge_graph = KnowledgeGraph(memory_system=self._memory_system)
+
+            await self._knowledge_graph.initialize()
+
+            # Export graph data and generate HTML
+            graph_data = self._knowledge_graph.to_d3_json(limit=limit)
+            html = generate_visualization_html(graph_data)
+
+            return html
+        except TimeoutError:
+            logger.error("get_graph_visualization_timeout")
+            return "<html><body><p>Operation timed out</p></body></html>"
+        except Exception as e:
+            logger.error("get_graph_visualization_error", error=str(e))
+            return f"<html><body><p>Error: {str(e)}</p></body></html>"
 
     # =========================================================================
     # TOOL: list_peers (Phase 4C)

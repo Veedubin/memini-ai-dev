@@ -1205,7 +1205,7 @@ wheels = [
 
 [[package]]
 name = "memini-ai"
-version = "3.0.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },

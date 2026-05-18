@@ -1,6 +1,6 @@
 [project]
 name = "memini-ai"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local-first semantic memory server with vector search"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,7 @@ dependencies = [
     "structlog>=24.0",
     "tenacity>=8.0",
     "httpx>=0.27",
+    "asyncpg>=0.29.0",
 ]
 
 [project.optional-dependencies]

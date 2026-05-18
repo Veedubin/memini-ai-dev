@@ -1,15 +1,17 @@
-"""Memory database layer - Qdrant CRUD operations with retry and project isolation."""
+"""Memory database layer - Vector database abstraction with Qdrant implementation."""
 
 from __future__ import annotations
 
 import contextlib
 import json
+import os
 import uuid
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from memini_ai.config import get_config
+from memini_ai.config import MeminiConfig, get_config
 from memini_ai.memory.schema import (
     DEFAULT_QDRANT_URL,
     MEMORY_TABLE_NAME,
@@ -34,8 +36,228 @@ def _get_collection_name(dimension: int) -> str:
     return f"{MEMORY_TABLE_NAME}_{dimension}"
 
 
-class MemoryDatabase:
-    """Qdrant CRUD operations with retry, project isolation, and dimension awareness.
+class VectorDatabase(ABC):
+    """Abstract base class for vector database operations.
+
+    Provides a common interface for different vector database backends
+    (Qdrant, pgvector, etc.) to enable backend-agnostic memory operations.
+    """
+
+    @abstractmethod
+    async def initialize(self) -> None:
+        """Initialize the database and create collections if needed."""
+        ...
+
+    @abstractmethod
+    async def add_memory(self, entry: MemoryEntry) -> str:
+        """Add a single memory entry.
+
+        Args:
+            entry: MemoryEntry to add.
+
+        Returns:
+            The ID of the added memory entry.
+        """
+        ...
+
+    @abstractmethod
+    async def add_memories(self, entries: list[MemoryEntry]) -> list[MemoryEntry]:
+        """Add multiple memory entries.
+
+        Args:
+            entries: List of MemoryEntry objects to add.
+
+        Returns:
+            List of MemoryEntry objects with IDs assigned.
+        """
+        ...
+
+    @abstractmethod
+    async def get_memory(self, memory_id: str) -> MemoryEntry | None:
+        """Get a memory entry by ID.
+
+        Args:
+            memory_id: ID of the memory entry.
+
+        Returns:
+            MemoryEntry if found, None otherwise.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_memory(self, memory_id: str) -> None:
+        """Delete a memory entry by ID.
+
+        Args:
+            memory_id: ID of the memory entry to delete.
+        """
+        ...
+
+    @abstractmethod
+    async def delete_by_source_path(
+        self,
+        source_path: str,
+        source_type: str | None = None,
+    ) -> int:
+        """Delete all memories with a given source path.
+
+        Args:
+            source_path: Source path to match.
+            source_type: Optional source type filter.
+
+        Returns:
+            Number of deleted memories.
+        """
+        ...
+
+    @abstractmethod
+    async def query_memories(
+        self,
+        vector: list[float],
+        options: SearchOptions,
+        collection_name: str | None = None,
+    ) -> list[MemoryEntry]:
+        """Query memories using vector similarity.
+
+        Args:
+            vector: Query vector.
+            options: Search options.
+            collection_name: Optional collection override.
+
+        Returns:
+            List of matching MemoryEntry objects with scores.
+        """
+        ...
+
+    @abstractmethod
+    async def list_memories(
+        self,
+        filter: SearchFilter | None = None,
+    ) -> list[MemoryEntry]:
+        """List all memories with optional filter.
+
+        Args:
+            filter: Optional search filter.
+
+        Returns:
+            List of MemoryEntry objects.
+        """
+        ...
+
+    @abstractmethod
+    async def count_memories(self) -> int:
+        """Count total memories.
+
+        Returns:
+            Number of memory entries.
+        """
+        ...
+
+    @abstractmethod
+    async def content_exists(self, content_hash: str) -> bool:
+        """Check if content with given hash exists.
+
+        Args:
+            content_hash: SHA-256 hash to check.
+
+        Returns:
+            True if exists, False otherwise.
+        """
+        ...
+
+    @abstractmethod
+    async def get_entries_by_source_path(
+        self,
+        source_path: str,
+        source_type: str | None = None,
+    ) -> list[MemoryEntry]:
+        """Get all entries with a given source path.
+
+        Args:
+            source_path: Source path to match.
+            source_type: Optional source type filter.
+
+        Returns:
+            List of matching MemoryEntry objects.
+        """
+        ...
+
+    @abstractmethod
+    async def scroll_collection(
+        self,
+        collection_name: str,
+        limit: int = 100,
+    ) -> list[MemoryEntry]:
+        """Scroll through a collection.
+
+        Args:
+            collection_name: Collection to scroll.
+            limit: Page size.
+
+        Returns:
+            List of MemoryEntry objects.
+        """
+        ...
+
+    @abstractmethod
+    async def get_collection_dimension(self, collection_name: str) -> int | None:
+        """Get the dimension of a collection.
+
+        Args:
+            collection_name: Collection to check.
+
+        Returns:
+            Vector dimension or None if not found.
+        """
+        ...
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the database connection."""
+        ...
+
+    @abstractmethod
+    async def update_trust_fields(
+        self,
+        memory_id: str,
+        trust_score: float,
+        is_archived: bool,
+    ) -> None:
+        """Update trust fields for a memory entry.
+
+        Args:
+            memory_id: ID of the memory entry.
+            trust_score: New trust score.
+            is_archived: New archived status.
+        """
+        ...
+
+    @abstractmethod
+    async def increment_retrieval_count(self, memory_id: str) -> None:
+        """Increment retrieval count for a memory entry.
+
+        Args:
+            memory_id: ID of the memory entry.
+        """
+        ...
+
+    @abstractmethod
+    async def set_payload(
+        self,
+        memory_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Set payload fields for a memory entry.
+
+        Args:
+            memory_id: ID of the memory entry.
+            payload: Dictionary of payload fields to set.
+        """
+        ...
+
+
+class QdrantDatabase(VectorDatabase):
+    """Qdrant implementation of VectorDatabase with retry, project isolation, and dimension awareness.
 
     Client singleton caching at module level. Connection health validated before
     each operation. Exponential backoff retry (3 attempts, 1s base delay).
@@ -46,7 +268,7 @@ class MemoryDatabase:
         url: str = DEFAULT_QDRANT_URL,
         project_id: str | None = None,
     ) -> None:
-        """Initialize MemoryDatabase.
+        """Initialize QdrantDatabase.
 
         Args:
             url: Qdrant server URL.
@@ -823,3 +1045,51 @@ class MemoryDatabase:
                 payload=payload,
                 points=[memory_id],
             )
+
+
+def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
+    """Factory function to create a VectorDatabase instance.
+
+    Checks MEMINI_DB_URL environment variable to determine backend type.
+    Falls back to Qdrant if not set or if QDRANT_URL is specified.
+
+    Args:
+        config: Optional MeminiConfig instance. If not provided, uses get_config().
+
+    Returns:
+        VectorDatabase implementation instance (QdrantDatabase by default).
+
+    Raises:
+        ValueError: If database type is not recognized.
+    """
+    if config is None:
+        config = get_config()
+
+    # Check for database URL environment variable
+    db_url = os.environ.get("MEMINI_DB_URL", "").lower()
+
+    if not db_url:
+        # Default to Qdrant using config's qdrant_url
+        return QdrantDatabase(url=config.qdrant_url, project_id=config.project_id)
+
+    if db_url.startswith("qdrant://") or db_url == "qdrant":
+        # Qdrant backend
+        return QdrantDatabase(url=config.qdrant_url, project_id=config.project_id)
+
+    if db_url.startswith("postgres://") or db_url.startswith("postgresql://") or db_url == "postgres" or db_url == "pgvector":
+        # PostgreSQL/pgvector backend (future implementation)
+        raise NotImplementedError(
+            "PostgreSQL/pgvector backend is not yet implemented. "
+            "Set MEMINI_DB_URL=qdrant or remove MEMINI_DB_URL to use Qdrant."
+        )
+
+    # Unknown backend
+    raise ValueError(
+        f"Unknown database type: {db_url}. "
+        "Supported backends: qdrant, postgres (future). "
+        "Set MEMINI_DB_URL=qdrant or remove MEMINI_DB_URL to use Qdrant."
+    )
+
+
+# Backward compatibility alias
+MemoryDatabase = QdrantDatabase

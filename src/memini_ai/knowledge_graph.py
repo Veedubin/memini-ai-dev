@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -779,19 +778,20 @@ class KnowledgeGraph:
             if entity_b_id:
                 for source_id, relations in self._entity_relations.items():
                     for rel in relations:
-                        if rel["target_id"] == entity_b_id:
-                            if query.relationship_types is None or rel["rel_type"] in query.relationship_types:
-                                source = self._entities.get(source_id)
-                                if source:
-                                    result = {
-                                        "subject": source_id,
-                                        "predicate": rel["rel_type"].value,
-                                        "object": entity_b_id,
-                                        "subjectName": source.canonical_name,
-                                        "subjectType": source.entity_type.value,
-                                        "confidence": rel["confidence"],
-                                    }
-                                    results.append(result)
+                        if rel["target_id"] == entity_b_id and (
+                            query.relationship_types is None or rel["rel_type"] in query.relationship_types
+                        ):
+                            source = self._entities.get(source_id)
+                            if source:
+                                result = {
+                                    "subject": source_id,
+                                    "predicate": rel["rel_type"].value,
+                                    "object": entity_b_id,
+                                    "subjectName": source.canonical_name,
+                                    "subjectType": source.entity_type.value,
+                                    "confidence": rel["confidence"],
+                                }
+                                results.append(result)
 
         else:
             # Full graph query - return all relationships
@@ -1002,3 +1002,354 @@ class KnowledgeGraph:
             "total_relationships": sum(len(r) for r in self._entity_relations.values()),
             "relationship_types": rel_counts,
         }
+
+    # =========================================================================
+    # D3.JS VISUALIZATION EXPORT
+    # =========================================================================
+
+    def to_d3_json(self, limit: int = 100) -> dict[str, Any]:
+        """Export graph data in D3.js-compatible format for visualization.
+
+        Args:
+            limit: Maximum number of nodes to include.
+
+        Returns:
+            Dictionary with nodes and edges arrays for D3.js force graph.
+        """
+        if not self.is_enabled:
+            return {"nodes": [], "edges": [], "error": "Knowledge graph is not enabled"}
+
+        # Build nodes
+        nodes: list[dict[str, Any]] = []
+        for entity in list(self._entities.values())[:limit]:
+            nodes.append({
+                "id": entity.entity_id,
+                "name": entity.canonical_name,
+                "type": entity.entity_type.value,
+                "confidence": entity.confidence,
+                "mentions": len(entity.mentions),
+                "group": self._get_entity_group(entity.entity_type),
+            })
+
+        # Build edges (relationships between entities)
+        edges: list[dict[str, Any]] = []
+        edge_count = 0
+        for source_id, relations in self._entity_relations.items():
+            for rel in relations:
+                if source_id in self._entities and rel["target_id"] in self._entities:
+                    edges.append({
+                        "source": source_id,
+                        "target": rel["target_id"],
+                        "relationship": rel["rel_type"].value,
+                        "confidence": rel["confidence"],
+                        "stroke": self._get_rel_color(rel["rel_type"]),
+                    })
+                    edge_count += 1
+                    if edge_count >= limit:
+                        break
+            if edge_count >= limit:
+                break
+
+        return {"nodes": nodes, "edges": edges}
+
+    def _get_entity_group(self, entity_type: EntityType) -> int:
+        """Map entity type to D3 group number for coloring."""
+        group_map = {
+            EntityType.PERSON: 1,
+            EntityType.ORGANIZATION: 2,
+            EntityType.CONCEPT: 3,
+            EntityType.CODE: 4,
+            EntityType.PROJECT: 5,
+            EntityType.LOCATION: 6,
+            EntityType.UNKNOWN: 0,
+        }
+        return group_map.get(entity_type, 0)
+
+    def _get_rel_color(self, rel_type: RelationshipType) -> str:
+        """Get color for relationship type."""
+        color_map = {
+            RelationshipType.SUPERSEDES: "#e74c3c",
+            RelationshipType.RELATED_TO: "#3498db",
+            RelationshipType.CONTRADICTS: "#9b59b6",
+            RelationshipType.DERIVED_FROM: "#27ae60",
+        }
+        return color_map.get(rel_type, "#95a5a6")
+
+
+def generate_visualization_html(graph_data: dict[str, Any]) -> str:
+    """Generate self-contained HTML page with D3.js force-directed graph.
+
+    Args:
+        graph_data: Dict with nodes and edges arrays from to_d3_json().
+
+    Returns:
+        Complete HTML string with embedded D3.js visualization.
+    """
+    import json
+
+    nodes_json = json.dumps(graph_data.get("nodes", []))
+    edges_json = json.dumps(graph_data.get("edges", []))
+    error_msg = graph_data.get("error", "")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Graph Visualization</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root {{
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --text-primary: #eaeaea;
+            --text-secondary: #a0a0a0;
+            --border-color: #2d3a5a;
+        }}
+        @media (prefers-color-scheme: light) {{
+            :root {{
+                --bg-primary: #f5f5f5;
+                --bg-secondary: #ffffff;
+                --text-primary: #1a1a2e;
+                --text-secondary: #4a4a6a;
+                --border-color: #d0d0e0;
+            }}
+        }}
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }}
+        header {{
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        h1 {{ font-size: 1.25rem; font-weight: 600; }}
+        .stats {{ font-size: 0.875rem; color: var(--text-secondary); }}
+        #graph-container {{
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        }}
+        svg {{ background: var(--bg-secondary); border-radius: 8px; }}
+        .node {{ cursor: pointer; stroke-width: 2px; }}
+        .node:hover {{ stroke: #fff; stroke-width: 3px; }}
+        .link {{ stroke-opacity: 0.6; }}
+        .link:hover {{ stroke-opacity: 1; }}
+        .link-label {{
+            font-size: 10px;
+            fill: var(--text-secondary);
+            pointer-events: none;
+        }}
+        .tooltip {{
+            position: absolute;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0.75rem;
+            font-size: 0.8rem;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            max-width: 250px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }}
+        .tooltip.visible {{ opacity: 1; }}
+        .tooltip h3 {{ font-size: 0.9rem; margin-bottom: 0.5rem; }}
+        .tooltip p {{ margin: 0.25rem 0; color: var(--text-secondary); }}
+        .tooltip .type {{ display: inline-block;
+            padding: 0.125rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 500;
+        }}
+        .legend {{
+            position: absolute;
+            bottom: 1rem;
+            right: 1rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            font-size: 0.75rem;
+        }}
+        .legend h4 {{ margin-bottom: 0.5rem; font-weight: 600; }}
+        .legend-item {{ display: flex; align-items: center; gap: 0.5rem; margin: 0.25rem 0; }}
+        .legend-color {{ width: 12px; height: 12px; border-radius: 50%; }}
+        .no-data {{
+            text-align: center;
+            padding: 4rem;
+            color: var(--text-secondary);
+        }}
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Memory Graph Visualization</h1>
+        <span class="stats" id="stats"></span>
+    </header>
+    <div id="graph-container"></div>
+    <div class="tooltip" id="tooltip">
+        <h3 id="tooltip-name"></h3>
+        <p><span class="type" id="tooltip-type"></span></p>
+        <p>Confidence: <span id="tooltip-confidence"></span></p>
+        <p>Mentions: <span id="tooltip-mentions"></span></p>
+        <p id="tooltip-rels"></p>
+    </div>
+    <div class="legend">
+        <h4>Node Types</h4>
+        <div class="legend-item"><div class="legend-color" style="background:#4a90d9"></div>Person</div>
+        <div class="legend-item"><div class="legend-color" style="background:#27ae60"></div>Organization</div>
+        <div class="legend-item"><div class="legend-color" style="background:#9b59b6"></div>Concept</div>
+        <div class="legend-item"><div class="legend-color" style="background:#e67e22"></div>Code</div>
+        <div class="legend-item"><div class="legend-color" style="background:#f1c40f"></div>Project</div>
+        <div class="legend-item"><div class="legend-color" style="background:#95a5a6"></div>Unknown</div>
+        <h4 style="margin-top:0.75rem">Relationships</h4>
+        <div class="legend-item"><div class="legend-color" style="background:#e74c3c"></div>Supersedes</div>
+        <div class="legend-item"><div class="legend-color" style="background:#3498db"></div>Related To</div>
+        <div class="legend-item"><div class="legend-color" style="background:#9b59b6"></div>Contradicts</div>
+        <div class="legend-item"><div class="legend-color" style="background:#27ae60"></div>Derived From</div>
+    </div>
+
+    <script>
+    const nodes = {nodes_json};
+    const edges = {edges_json};
+    const errorMsg = "{error_msg}";
+
+    const typeColors = {{
+        PERSON: "#4a90d9",
+        ORGANIZATION: "#27ae60",
+        CONCEPT: "#9b59b6",
+        CODE: "#e67e22",
+        PROJECT: "#f1c40f",
+        LOCATION: "#1abc9c",
+        UNKNOWN: "#95a5a6"
+    }};
+
+    if (nodes.length === 0) {{
+        document.getElementById("graph-container").innerHTML =
+            `<div class="no-data">{{${{errorMsg or "No graph data available."}}}}</div>`;
+    }} else {{
+        const container = document.getElementById("graph-container");
+        const width = Math.min(container.clientWidth - 32, 1200);
+        const height = Math.min(window.innerHeight - 120, 800);
+
+        const svg = d3.select("#graph-container")
+            .append("svg")
+            .attr("width", width)
+            .attr("height", height);
+
+        const g = svg.append("g");
+
+        // Zoom behavior
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 4])
+            .on("zoom", (event) => g.attr("transform", event.transform));
+        svg.call(zoom);
+
+        // Arrow marker
+        svg.append("defs").append("marker")
+            .attr("id", "arrowhead")
+            .attr("viewBox", "-5 -5 10 10")
+            .attr("refX", 20)
+            .attr("refY", 0)
+            .attr("markerWidth", 6)
+            .attr("markerHeight", 6)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("d", "M-5,-5L5,0L-5,5")
+            .attr("fill", "#666");
+
+        const simulation = d3.forceSimulation(nodes)
+            .force("link", d3.forceLink(edges).id(d => d.id).distance(120))
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collision", d3.forceCollide().radius(40));
+
+        const link = g.append("g")
+            .selectAll("line")
+            .data(edges)
+            .join("line")
+            .attr("class", "link")
+            .attr("stroke", d => d.stroke || "#666")
+            .attr("stroke-width", d => Math.max(1, d.confidence * 2))
+            .attr("marker-end", "url(#arrowhead)");
+
+        const node = g.append("g")
+            .selectAll("g")
+            .data(nodes)
+            .join("g")
+            .attr("class", "node")
+            .call(d3.drag()
+                .on("start", (event, d) => {{
+                    if (!event.active) simulation.alphaTarget(0.3).restart();
+                    d.fx = d.x; d.fy = d.y;
+                }})
+                .on("drag", (event, d) => {{ d.fx = event.x; d.fy = event.y; }})
+                .on("end", (event, d) => {{
+                    if (!event.active) simulation.alphaTarget(0);
+                    d.fx = null; d.fy = null;
+                }}));
+
+        node.append("circle")
+            .attr("r", d => Math.max(8, Math.min(25, 8 + d.mentions * 2)))
+            .attr("fill", d => typeColors[d.type] || typeColors.UNKNOWN)
+            .attr("stroke", "#fff");
+
+        node.append("text")
+            .text(d => d.name.length > 15 ? d.name.substring(0, 12) + "..." : d.name)
+            .attr("text-anchor", "middle")
+            .attr("dy", d => Math.max(8, Math.min(25, 8 + d.mentions * 2)) + 15)
+            .attr("fill", "var(--text-primary)")
+            .attr("font-size", "11px");
+
+        // Tooltip
+        const tooltip = document.getElementById("tooltip");
+        const tooltipName = document.getElementById("tooltip-name");
+        const tooltipType = document.getElementById("tooltip-type");
+        const tooltipConfidence = document.getElementById("tooltip-confidence");
+        const tooltipMentions = document.getElementById("tooltip-mentions");
+        const tooltipRels = document.getElementById("tooltip-rels");
+
+        node.on("mouseover", (event, d) => {{
+            tooltipName.textContent = d.name;
+            tooltipType.textContent = d.type;
+            tooltipType.style.background = typeColors[d.type] || typeColors.UNKNOWN;
+            tooltipConfidence.textContent = (d.confidence * 100).toFixed(0) + "%";
+            tooltipMentions.textContent = d.mentions;
+
+            const relatedEdges = edges.filter(e => e.source.id === d.id || e.target.id === d.id);
+            tooltipRels.textContent = relatedEdges.length + " relationships";
+            tooltip.classList.add("visible");
+        }})
+        .on("mousemove", (event) => {{
+            tooltip.style.left = (event.pageX + 15) + "px";
+            tooltip.style.top = (event.pageY - 10) + "px";
+        }})
+        .on("mouseout", () => tooltip.classList.remove("visible"));
+
+        simulation.on("tick", () => {{
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+            node.attr("transform", d => `translate(${{d.x}},${{d.y}})`);
+        }});
+
+        document.getElementById("stats").textContent =
+            `${{nodes.length}} nodes, ${{edges.length}} edges`;
+    }}
+    </script>
+</body>
+</html>"""

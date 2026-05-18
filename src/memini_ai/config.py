@@ -39,6 +39,12 @@ class MeminiConfig(BaseSettings):
     project_id: str | None = None
     query_collections: list[str] | None = None
 
+    # PostgreSQL / pgvector settings
+    db_url: str = ""  # e.g., "postgresql://postgres:password@localhost:5434/postgres"
+    db_pool_size: int = 10
+    db_min_size: int = 2
+    db_max_size: int = 20
+
     # Indexer settings
     chunk_size: int = 512
     chunk_overlap: int = 50

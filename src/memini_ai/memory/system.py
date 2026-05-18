@@ -8,7 +8,7 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any
 
-from memini_ai.memory.database import MemoryDatabase
+from memini_ai.memory.database import VectorDatabase, create_database
 from memini_ai.memory.schema import (
     MemoryEntry,
     SearchFilter,
@@ -40,20 +40,20 @@ class MemorySystem:
 
     def __init__(
         self,
-        db: MemoryDatabase | None = None,
+        db: VectorDatabase | None = None,
         search: MemorySearch | None = None,
         config: MemorySystemConfig | None = None,
     ) -> None:
         """Initialize MemorySystem.
 
         Args:
-            db: Optional MemoryDatabase instance.
+            db: Optional VectorDatabase instance.
             search: Optional MemorySearch instance.
             config: Optional MemorySystemConfig.
         """
-        self._db = db or MemoryDatabase()
-        self._search = search or MemorySearch(self._db)
         self._config = config or MemorySystemConfig()
+        self._db = db or create_database()
+        self._search = search or MemorySearch(self._db)
         self._initialized = False
         self._init_lock = asyncio.Lock()
 
@@ -67,10 +67,10 @@ class MemorySystem:
             if self._initialized:
                 return
 
-            # Apply config
-            if self._config.qdrant_url:
+            # Apply config to Qdrant-specific attributes if present
+            if hasattr(self._db, '_url') and self._config.qdrant_url:
                 self._db._url = self._config.qdrant_url
-            if self._config.project_id:
+            if hasattr(self._db, '_project_id') and self._config.project_id:
                 self._db._project_id = self._config.project_id
 
             # Initialize database
