@@ -1278,7 +1278,7 @@ wheels = [
 
 [[package]]
 name = "memini-ai-dev"
-version = "0.2.3"
+version = "0.2.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

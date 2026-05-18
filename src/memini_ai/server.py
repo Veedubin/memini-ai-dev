@@ -2356,9 +2356,14 @@ class MCPServer:
             )
             return {"success": False, "error": str(e)}
 
-    def run(self) -> None:
-        """Run the MCP server (stdio mode)."""
-        self._mcp.run()
+    def run(self, host: str = "127.0.0.1", port: int = 8765) -> None:
+        """Run the MCP server.
+
+        Args:
+            host: Host to bind to (default: 127.0.0.1)
+            port: Port to bind to (default: 8765)
+        """
+        self._mcp.run(transport="streamable-http", host=host, port=port)
 
 
 def create_server() -> tuple[MCPServer, FastMCP]:
