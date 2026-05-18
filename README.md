@@ -235,7 +235,7 @@ pytest tests/ -v
 # Run unit tests only (skip integration)
 pytest tests/ -v --ignore=tests/integration/
 
-# Run integration tests (requires Qdrant)
+# Run integration tests (requires PostgreSQL with pgvector)
 pytest tests/integration/ -v
 
 # Run with coverage
@@ -245,14 +245,14 @@ pytest tests/ --cov=src/memini_ai --cov-report=term-missing
 ### Integration Tests with Docker
 
 ```bash
-# Start Qdrant for integration tests
-docker run -d --name qdrant-test -p 6333:6333 qdrant/qdrant
+# Start PostgreSQL with pgvector for integration tests
+docker run -d --name postgres-test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=memini_test -p 5432:5432 pgvector/pgvector:pg16
 
 # Run integration tests
 pytest tests/integration/ -v
 
 # Cleanup
-docker stop qdrant-test && docker rm qdrant-test
+docker stop postgres-test && docker rm postgres-test
 ```
 
 ## Quality Gates
