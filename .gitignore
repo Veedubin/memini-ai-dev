@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+TASKS.md
+PHASE*_PLAN.md
+CONTEXT.md
+HANDOFF.md
