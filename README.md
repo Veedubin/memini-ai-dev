@@ -1,4 +1,4 @@
-# Memini-ai v3.0
+# Memini-ai
 
 > "I remember" in Latin (pronounced *meh-mee-nee*)
 
