@@ -37,12 +37,12 @@ def main() -> None:
     if args.stdio:
         # Run as stdio MCP server
         logger.info("starting_mcp_stdio")
-        server.run()
+        server.run(transport="stdio")
     else:
         # Run as HTTP server
         logger.info("starting_mcp_http", host=args.host, port=args.port)
         try:
-            asyncio.run(server.run(host=args.host, port=args.port))
+            asyncio.run(server.run(transport="streamable-http", host=args.host, port=args.port))
         except KeyboardInterrupt:
             logger.info("server_interrupted")
             sys.exit(0)

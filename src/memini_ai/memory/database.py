@@ -1077,11 +1077,9 @@ def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
         return QdrantDatabase(url=config.qdrant_url, project_id=config.project_id)
 
     if db_url.startswith("postgres://") or db_url.startswith("postgresql://") or db_url == "postgres" or db_url == "pgvector":
-        # PostgreSQL/pgvector backend (future implementation)
-        raise NotImplementedError(
-            "PostgreSQL/pgvector backend is not yet implemented. "
-            "Set MEMINI_DB_URL=qdrant or remove MEMINI_DB_URL to use Qdrant."
-        )
+        # PostgreSQL/pgvector backend
+        from memini_ai.postgres import PostgresDatabase
+        return PostgresDatabase(db_url=os.environ.get("MEMINI_DB_URL", ""), project_id=config.project_id)
 
     # Unknown backend
     raise ValueError(

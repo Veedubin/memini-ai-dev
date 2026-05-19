@@ -119,14 +119,16 @@ class PostgresDatabase(VectorDatabase):
             else entry.source_type,
         }
 
-        # Convert vector to list for PostgreSQL
+        # Convert vector to string for PostgreSQL pgvector
         if entry.vector is not None:
             import numpy as np
 
             if isinstance(entry.vector, np.ndarray):
-                record["embedding"] = entry.vector.tolist()
+                vec_list = entry.vector.tolist()
             else:
-                record["embedding"] = list(entry.vector)
+                vec_list = list(entry.vector)
+            # pgvector expects string format '[0.1, 0.2, ...]'
+            record["embedding"] = "[" + ", ".join(str(x) for x in vec_list) + "]"
         else:
             record["embedding"] = None
 
@@ -145,12 +147,23 @@ class PostgresDatabase(VectorDatabase):
         score: float | None = None,
     ) -> MemoryEntry:
         """Convert database row to MemoryEntry."""
+        # Parse vector from string format if needed (pgvector returns string '[0.1, 0.2, ...]')
+        embedding = row["embedding"]
+        if embedding is not None:
+            if isinstance(embedding, str):
+                # Parse string format '[0.1, 0.2, ...]' to list
+                vector = json.loads(embedding)
+            else:
+                vector = list(embedding)
+        else:
+            vector = None
+
         data = {
             "id": str(row["id"]),
             "text": row["text"],
-            "vector": list(row["embedding"]) if row["embedding"] else None,
+            "vector": vector,
             "source_type": row["source_type"],
-            "content_hash": row.get("content_hash"),
+            "content_hash": row.get("content_hash") or "",
             "metadata_json": (
                 json.dumps(row["metadata"])
                 if isinstance(row["metadata"], dict)
@@ -319,8 +332,9 @@ class PostgresDatabase(VectorDatabase):
         await self.initialize()
         pool = await self._get_pool()
 
-        # Convert vector to list format
-        query_vector = vector if isinstance(vector, list) else list(vector)
+        # Convert vector to string format for pgvector '[0.1, 0.2, ...]'
+        vec_list = vector if isinstance(vector, list) else list(vector)
+        query_vector = "[" + ", ".join(str(x) for x in vec_list) + "]"
 
         # Calculate threshold: pgvector <=> returns cosine distance (lower = better)
         # Convert similarity threshold to distance threshold: 1 - similarity = distance

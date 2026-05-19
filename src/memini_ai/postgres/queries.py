@@ -16,11 +16,12 @@ Query Categories:
 
 SEARCH_MEMORIES_VECTOR = """
 SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
-       embedding <=> $1 as distance
+       embedding,
+       embedding <=> $1::vector as distance
 FROM memories
-WHERE embedding <=> $1 < $2
+WHERE embedding <=> $1::vector < $2
 AND is_archived = FALSE
-ORDER BY embedding <=> $1
+ORDER BY embedding <=> $1::vector
 LIMIT $3
 """
 
