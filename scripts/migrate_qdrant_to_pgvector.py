@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import uuid
-from typing import Any
 
 # Add the project source to path
 sys.path.insert(0, "src")
@@ -14,9 +12,6 @@ sys.path.insert(0, "src")
 from memini_ai.memory.database import QdrantDatabase
 from memini_ai.memory.schema import MemoryEntry, SearchOptions, SearchStrategy
 from memini_ai.postgres.database import PostgresDatabase
-from memini_ai.postgres.schema import get_schema_sql
-from memini_ai.utils.hash import hash_content
-
 
 BATCH_SIZE = 100
 DEFAULT_DIMENSION = 1024
@@ -74,7 +69,7 @@ async def verify_migration(
               f"ID overlap={overlap}/{total} ({similarity*100:.1f}%)")
 
         if similarity < 0.7:
-            print(f"    ⚠ Low overlap - investigate if this is expected")
+            print("    ⚠ Low overlap - investigate if this is expected")
             all_match = False
 
     return all_match
@@ -172,7 +167,7 @@ async def migrate() -> None:
     print(f"  Failed: {failed}")
 
     if errors:
-        print(f"\n  Errors encountered:")
+        print("\n  Errors encountered:")
         for error in errors[:10]:  # Show first 10 errors
             print(f"    - {error}")
         if len(errors) > 10:

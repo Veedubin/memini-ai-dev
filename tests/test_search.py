@@ -10,7 +10,6 @@ from memini_ai.memory.schema import (
     MemoryEntry,
     MemorySourceType,
     SearchOptions,
-    SearchStrategy,
 )
 
 

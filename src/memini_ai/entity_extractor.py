@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
 from memini_ai.knowledge_graph import EntityType
@@ -287,11 +286,7 @@ class EntityExtractor:
 
         # Code entities get confidence boost if they look like real identifiers
         if entity_type == EntityType.CODE:
-            if re.match(r'^[a-z][a-z0-9_]+$', name):  # snake_case
-                confidence += 0.1
-            elif re.match(r'^[A-Z][a-zA-Z0-9]+$', name):  # PascalCase
-                confidence += 0.1
-            elif re.match(r'^[A-Z][A-Z0-9_]+$', name):  # SCREAMING_SNAKE
+            if re.match(r'^[a-z][a-z0-9_]+$', name) or re.match(r'^[A-Z][a-zA-Z0-9]+$', name) or re.match(r'^[A-Z][A-Z0-9_]+$', name):  # snake_case
                 confidence += 0.1
 
         # Clamp to valid range

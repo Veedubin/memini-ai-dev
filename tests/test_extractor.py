@@ -6,8 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from memini_ai.extractor import ConversationTurnTracker, ExtractedMemory, MemoryExtractor
-from memini_ai.memory.schema import MemoryEntry, MemorySourceType
+from memini_ai.extractor import (
+    ConversationTurnTracker,
+    ExtractedMemory,
+    MemoryExtractor,
+)
+from memini_ai.memory.schema import MemoryEntry
 
 
 class TestExtractedMemory:

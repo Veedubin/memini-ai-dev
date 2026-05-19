@@ -7,9 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from memini_ai.memory.schema import MemorySourceType, UserProfile
 from memini_ai.multi_peer import (
-    DEFAULT_PEER_TRUST_LEVEL,
     MemoryPermission,
     MemorySharing,
     MultiPeerManager,
@@ -18,7 +16,6 @@ from memini_ai.multi_peer import (
     PeerRole,
     get_multi_peer_manager,
 )
-
 
 # =============================================================================
 # Helper Functions
@@ -752,7 +749,6 @@ class TestModuleLevelSingleton:
     ) -> None:
         """get_multi_peer_manager creates instance when called first time."""
         with patch("memini_ai.multi_peer.get_config", return_value=mock_config_enabled):
-            from memini_ai.multi_peer import _multi_peer_manager
 
             # Reset singleton
             import memini_ai.multi_peer
@@ -768,7 +764,6 @@ class TestModuleLevelSingleton:
     ) -> None:
         """get_multi_peer_manager returns same instance on subsequent calls."""
         with patch("memini_ai.multi_peer.get_config", return_value=mock_config_enabled):
-            from memini_ai.multi_peer import _multi_peer_manager
 
             # Reset singleton
             import memini_ai.multi_peer

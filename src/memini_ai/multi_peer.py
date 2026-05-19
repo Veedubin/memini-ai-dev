@@ -751,7 +751,7 @@ class MultiPeerManager:
             options = SearchOptions(topK=100, filter=filter_opts)
 
             results = await self._memory_system.query_memories(
-                f"shared memory", options
+                "shared memory", options
             )
 
             memories = []

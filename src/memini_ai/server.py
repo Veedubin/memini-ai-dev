@@ -10,13 +10,12 @@ from typing import Any
 from fastmcp import FastMCP
 
 from memini_ai.config import get_config
-from memini_ai.decay import DecayEngine, ConsolidationEngine, adjust_decay_rate
+from memini_ai.decay import ConsolidationEngine, DecayEngine, adjust_decay_rate
 from memini_ai.dialectic import DialecticEngine, get_dialectic_engine
 from memini_ai.extractor import MemoryExtractor
 from memini_ai.graph import MemoryGraph
 from memini_ai.indexer.indexer import IndexerConfig, ProjectIndexer
 from memini_ai.knowledge_graph import (
-    EntityType,
     KGQuery,
     KnowledgeGraph,
     generate_visualization_html,

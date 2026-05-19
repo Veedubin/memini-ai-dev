@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from memini_ai.config import get_config
@@ -788,8 +788,8 @@ async def adjust_decay_rate(
         memory.decay_rate = decay_rate
 
     # Persist to database
-    from memini_ai.memory.database import _client_cache, _get_collection_name
     from memini_ai.config import get_config
+    from memini_ai.memory.database import _client_cache, _get_collection_name
 
     config = get_config()
     collection_name = _get_collection_name(config.embedding_dim)

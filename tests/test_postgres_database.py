@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -13,7 +10,6 @@ import pytest_asyncio
 
 from memini_ai.memory.schema import MemoryEntry, MemorySourceType, SearchOptions
 from memini_ai.postgres.database import PostgresDatabase
-
 
 # =============================================================================
 # Test Configuration
@@ -35,7 +31,7 @@ async def pg_db():
     # In production, you might want a separate test database
     db_url = TEST_DB_URL
     db = PostgresDatabase(db_url)
-    
+
     await db.initialize()
     yield db
     await db.close()
@@ -103,7 +99,7 @@ def create_memory_entry(
     if vector is None:
         np.random.seed(hash(text) % (2**32))
         vector = np.random.rand(384).astype(np.float32).tolist()
-    
+
     return MemoryEntry(
         id=memory_id or str(uuid.uuid4()),
         text=text,
@@ -157,8 +153,8 @@ class TestSchemaInitialization:
                 WHERE table_name = 'memories'
             """)
             column_names = {row['column_name'] for row in columns}
-            
-            required = {'id', 'text', 'embedding', 'source_type', 'content_hash', 
+
+            required = {'id', 'text', 'embedding', 'source_type', 'content_hash',
                        'trust_score', 'retrieval_count', 'is_archived', 'metadata'}
             assert required.issubset(column_names)
 
@@ -193,7 +189,7 @@ class TestAddMemory:
         # Entry has no ID until add_memory is called
         original_id = entry.id
         memory_id = await pg_db_isolated.add_memory(entry)
-        
+
         assert entry.id is not None
         assert entry.id == memory_id
         assert original_id == memory_id  # Should be the same
@@ -205,7 +201,7 @@ class TestAddMemory:
         """Should store vector embedding correctly."""
         entry = create_memory_entry("test_vector_storage", sample_vector)
         await pg_db_isolated.add_memory(entry)
-        
+
         retrieved = await pg_db_isolated.get_memory(entry.id)
         assert retrieved is not None
         assert retrieved.vector is not None
@@ -221,9 +217,9 @@ class TestGetMemory:
     ):
         """Should return MemoryEntry when found."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
-        
+
         assert result is not None
         assert result.id == sample_memory_entry.id
         assert result.text == sample_memory_entry.text
@@ -243,9 +239,9 @@ class TestGetMemory:
     ):
         """Should return trust_score and retrieval_count."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
-        
+
         assert result is not None
         assert hasattr(result, 'trust_score')
         assert hasattr(result, 'retrieval_count')
@@ -262,9 +258,9 @@ class TestDeleteMemory:
     ):
         """Should soft-delete (archive) the memory."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         await pg_db_isolated.delete_memory(sample_memory_entry.id)
-        
+
         # Memory should not be found via normal queries
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
         assert result is None
@@ -287,7 +283,7 @@ class TestAddMemories:
     ):
         """Should insert all memory entries."""
         result = await pg_db_isolated.add_memories(multiple_memory_entries)
-        
+
         assert len(result) == len(multiple_memory_entries)
         for entry in multiple_memory_entries:
             retrieved = await pg_db_isolated.get_memory(entry.id)
@@ -318,21 +314,21 @@ class TestQueryMemories:
         # Create memories with known vectors
         np.random.seed(42)
         base_vector = np.random.rand(384).astype(np.float32).tolist()
-        
+
         # Memory 1: close to base_vector
         close_vector = (np.array(base_vector) + 0.01 * np.random.rand(384)).tolist()
         memory1 = create_memory_entry("test_similar_1", close_vector)
-        
+
         # Memory 2: far from base_vector
         far_vector = (-np.array(base_vector)).tolist()
         memory2 = create_memory_entry("test_similar_2", far_vector)
-        
+
         await pg_db_isolated.add_memories([memory1, memory2])
-        
+
         # Search with base_vector
         options = SearchOptions(top_k=5, threshold=0.1)
         results = await pg_db_isolated.query_memories(base_vector, options)
-        
+
         assert len(results) >= 1
         # The close memory should be in results (order not guaranteed with random vectors)
         result_ids = [r.id for r in results]
@@ -345,18 +341,18 @@ class TestQueryMemories:
         """Should filter results below threshold."""
         np.random.seed(123)
         base_vector = np.random.rand(384).astype(np.float32).tolist()
-        
+
         # Create a memory with very different vector
         different_vector = np.random.rand(384).astype(np.float32)
         different_vector = (different_vector / np.linalg.norm(different_vector) * -1).tolist()
-        
+
         memory = create_memory_entry("test_threshold", different_vector)
         await pg_db_isolated.add_memory(memory)
-        
+
         # Search with high threshold - should not return the opposite vector
         options = SearchOptions(top_k=5, threshold=0.9)
         results = await pg_db_isolated.query_memories(base_vector, options)
-        
+
         # May or may not return results depending on actual distance
         for result in results:
             assert result.score is not None
@@ -368,17 +364,17 @@ class TestQueryMemories:
     ):
         """Should limit results to top_k."""
         np.random.seed(456)
-        
+
         # Create multiple memories
         for i in range(10):
             vector = np.random.rand(384).astype(np.float32).tolist()
             memory = create_memory_entry(f"test_topk_{i}", vector)
             await pg_db_isolated.add_memory(memory)
-        
+
         options = SearchOptions(top_k=3, threshold=0.0)
         query_vector = np.random.rand(384).astype(np.float32).tolist()
         results = await pg_db_isolated.query_memories(query_vector, options)
-        
+
         assert len(results) <= 3
 
     @pytest.mark.asyncio
@@ -390,10 +386,10 @@ class TestQueryMemories:
         vector = np.random.rand(384).astype(np.float32).tolist()
         memory = create_memory_entry("test_scores", vector)
         await pg_db_isolated.add_memory(memory)
-        
+
         options = SearchOptions(top_k=5, threshold=0.0)
         results = await pg_db_isolated.query_memories(vector, options)
-        
+
         assert len(results) > 0
         for result in results:
             assert result.score is not None
@@ -414,7 +410,7 @@ class TestTrustFields:
     ):
         """Should have default trust_score of 0.5."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
         assert result is not None
         assert result.trust_score == 0.5
@@ -425,13 +421,13 @@ class TestTrustFields:
     ):
         """Should update trust_score and is_archived fields."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         await pg_db_isolated.update_trust_fields(
-            sample_memory_entry.id, 
+            sample_memory_entry.id,
             trust_score=0.8,
             is_archived=False
         )
-        
+
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
         assert result is not None
         assert result.trust_score == 0.8
@@ -442,13 +438,13 @@ class TestTrustFields:
     ):
         """Should archive memory when is_archived=True."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         await pg_db_isolated.update_trust_fields(
             sample_memory_entry.id,
             trust_score=0.5,
             is_archived=True
         )
-        
+
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
         assert result is None  # Archived memories don't show up
 
@@ -458,14 +454,14 @@ class TestTrustFields:
     ):
         """Should increment retrieval_count."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         # Get initial count
         initial = await pg_db_isolated.get_memory(sample_memory_entry.id)
         initial_count = initial.retrieval_count if initial else 0
-        
+
         # Increment
         await pg_db_isolated.increment_retrieval_count(sample_memory_entry.id)
-        
+
         # Check incremented
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
         assert result is not None
@@ -486,7 +482,7 @@ class TestCountMemories:
     ):
         """Should return count of all memories."""
         await pg_db_isolated.add_memories(multiple_memory_entries)
-        
+
         count = await pg_db_isolated.count_memories()
         assert count >= len(multiple_memory_entries)
 
@@ -500,9 +496,9 @@ class TestListMemories:
     ):
         """Should return list of memory entries."""
         await pg_db_isolated.add_memories(multiple_memory_entries)
-        
+
         results = await pg_db_isolated.list_memories()
-        
+
         assert len(results) >= len(multiple_memory_entries)
         for entry in multiple_memory_entries:
             found = any(r.id == entry.id for r in results)
@@ -518,7 +514,7 @@ class TestContentExists:
     ):
         """Should return True when content hash exists."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         result = await pg_db_isolated.content_exists(sample_memory_entry.content_hash)
         assert result is True
 
@@ -549,7 +545,7 @@ class TestDeleteBySourcePath:
             content_hash="source_hash_123",
         )
         await pg_db_isolated.add_memory(entry)
-        
+
         count = await pg_db_isolated.delete_by_source_path("/test/path/file.py")
         assert count >= 0
 
@@ -572,9 +568,9 @@ class TestGetEntriesBySourcePath:
             content_hash="get_path_hash",
         )
         await pg_db_isolated.add_memory(entry)
-        
+
         results = await pg_db_isolated.get_entries_by_source_path(source_path)
-        
+
         assert len(results) >= 1
         assert any(r.id == entry.id for r in results)
 
@@ -588,9 +584,9 @@ class TestScrollCollection:
     ):
         """Should return paginated memories."""
         await pg_db_isolated.add_memories(multiple_memory_entries)
-        
+
         results = await pg_db_isolated.scroll_collection("memories", limit=10)
-        
+
         assert len(results) >= 0  # May be empty if test cleanup failed
 
 
@@ -615,12 +611,12 @@ class TestSetPayload:
     ):
         """Should update metadata via set_payload."""
         await pg_db_isolated.add_memory(sample_memory_entry)
-        
+
         await pg_db_isolated.set_payload(
             sample_memory_entry.id,
             {"custom_field": "custom_value", "tags": ["test"]}
         )
-        
+
         result = await pg_db_isolated.get_memory(sample_memory_entry.id)
         assert result is not None
         # Metadata is stored as JSONB, check it's accessible
@@ -655,7 +651,7 @@ class TestCreatePostgresDatabase:
     def test_create_postgres_database_returns_instance(self):
         """Should return PostgresDatabase instance."""
         from memini_ai.postgres.database import create_postgres_database
-        
+
         db = create_postgres_database(TEST_DB_URL)
         assert isinstance(db, PostgresDatabase)
         assert db._db_url == TEST_DB_URL
@@ -682,7 +678,7 @@ class TestEdgeCases:
             content_hash="no_vector_hash",
         )
         memory_id = await pg_db_isolated.add_memory(entry)
-        
+
         result = await pg_db_isolated.get_memory(memory_id)
         assert result is not None
         assert result.vector is None
@@ -700,7 +696,7 @@ class TestEdgeCases:
             content_hash="empty_text_hash",
         )
         memory_id = await pg_db_isolated.add_memory(entry)
-        
+
         result = await pg_db_isolated.get_memory(memory_id)
         assert result is not None
         assert result.text == ""
@@ -719,7 +715,7 @@ class TestEdgeCases:
             content_hash="special_hash",
         )
         memory_id = await pg_db_isolated.add_memory(entry)
-        
+
         result = await pg_db_isolated.get_memory(memory_id)
         assert result is not None
         assert result.text == special_text
@@ -738,7 +734,7 @@ class TestEdgeCases:
                 content_hash=f"source_{source_type.value}_hash",
             )
             memory_id = await pg_db_isolated.add_memory(entry)
-            
+
             result = await pg_db_isolated.get_memory(memory_id)
             assert result is not None
             assert result.source_type == source_type

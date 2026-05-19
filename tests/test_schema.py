@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from memini_ai.memory.schema import (
     DEFAULT_QDRANT_URL,
@@ -52,7 +50,7 @@ class TestMemoryEntry:
 
     def test_create_full_entry(self) -> None:
         """Should create entry with all fields."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         entry = MemoryEntry(
             id="custom-id",
             text="Full memory",
@@ -109,7 +107,7 @@ class TestMemoryEntry:
             source_type=MemorySourceType.session,
             content_hash="hash",
         )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         diff = abs((entry.timestamp.replace(tzinfo=None) - now.replace(tzinfo=None)).total_seconds())
         assert diff < 60  # Within 1 minute
 
@@ -151,7 +149,7 @@ class TestSearchFilter:
 
     def test_filter_with_values(self) -> None:
         """Should create filter with specific values."""
-        since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        since = datetime(2024, 1, 1, tzinfo=UTC)
         filter = SearchFilter(
             source_type=MemorySourceType.file,
             session_id="session-123",

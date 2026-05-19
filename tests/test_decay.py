@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import math
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,8 +13,8 @@ from memini_ai.decay import (
     DECAY_DEFAULT_RATE,
     DECAY_MAX_RATE,
     DECAY_MIN_RATE,
-    FADE_THRESHOLD,
     DEFAULT_SIMILARITY_THRESHOLD,
+    FADE_THRESHOLD,
     MIN_CONSOLIDATION_SIMILARITY,
     ConsolidationCandidate,
     ConsolidationEngine,

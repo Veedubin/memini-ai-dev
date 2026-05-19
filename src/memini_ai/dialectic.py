@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from memini_ai.config import get_config
-from memini_ai.memory.schema import MemoryEntry, RelationshipType
+from memini_ai.memory.schema import RelationshipType
 from memini_ai.utils.logger import logger
 
 if TYPE_CHECKING:

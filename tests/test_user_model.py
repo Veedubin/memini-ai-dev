@@ -7,9 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from memini_ai.memory.schema import MemorySourceType, UserProfile, UserPreference
-from memini_ai.user_model import PROFILE_MEMORY_TAG, UserModel
-
+from memini_ai.memory.schema import UserPreference, UserProfile
+from memini_ai.user_model import UserModel
 
 # =============================================================================
 # Helper Functions

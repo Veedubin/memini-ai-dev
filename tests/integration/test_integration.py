@@ -16,13 +16,16 @@ import os
 import shutil
 import tempfile
 import time
-from datetime import datetime, timezone
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from memini_ai.memory.schema import MemoryEntry, MemorySourceType, SearchOptions, SearchStrategy
+from memini_ai.memory.schema import (
+    MemoryEntry,
+    MemorySourceType,
+    SearchOptions,
+    SearchStrategy,
+)
 from memini_ai.memory.system import MemorySystem
 from memini_ai.model.manager import ModelManager
 
@@ -398,7 +401,6 @@ class TestModelFallback:
     @pytest.mark.asyncio
     async def test_model_fallback_to_cpu(self) -> None:
         """Test that model can be acquired in CPU mode when GPU is unavailable."""
-        from memini_ai.model.manager import ModelManager
 
         # Reset the singleton for testing
         ModelManager._instance = None
