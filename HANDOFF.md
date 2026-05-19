@@ -2,7 +2,7 @@
 
 > **Session**: 2026-05-19
 > **Project**: Memini-ai v3.0 (formerly Super-Memory-TS)
-> **Status**: ALL PHASES COMPLETE - pgvector migration DONE, live visualization added, v0.2.6 released
+> **Status**: ALL PHASES COMPLETE - pgvector migration DONE, live visualization added, v0.2.7 released
 
 ---
 
@@ -209,6 +209,7 @@ pytest tests/integration/ -v
 - **v0.2.4**: aiosqlite dependency fix (missing from pyproject.toml)
 - **v0.2.5**: Version bump fix (pyproject.toml version was not updated)
 - **v0.2.6**: Fix server.run() HTTP transport (host/port args)
+- **v0.2.7**: PostgreSQL schema fixes for idempotent initialization (IF NOT EXISTS, vector parsing, 384-dim vectors)
 
 ### Live Visualization
 - KnowledgeGraph writes directly to PostgreSQL entities/entity_relationships tables
@@ -235,6 +236,7 @@ pytest tests/integration/ -v
 | v0.2.3 | 2026-05-18 | Version bump |
 | v0.2.4 | 2026-05-19 | aiosqlite dependency fix |
 | v0.2.5 | 2026-05-19 | Version bump fix |
+| v0.2.7 | 2026-05-19 | PostgreSQL schema fixes (IF NOT EXISTS, vector parsing, 384-dim vectors) |
 | v0.2.6 | 2026-05-19 | server.run() HTTP transport fix |
 
 ### Release Process

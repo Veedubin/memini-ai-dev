@@ -4,7 +4,7 @@
 > **Meaning**: "I remember" in Latin
 > **Language**: Python (porting from TypeScript)
 > **Framework**: FastMCP
-> **Last Updated**: 2026-05-19 (v0.2.6: fix server.run() HTTP transport)
+> **Last Updated**: 2026-05-19 (v0.2.7: PostgreSQL schema fixes for idempotent initialization)
 
 ---
 
@@ -302,7 +302,13 @@ CREATE TABLE peers (
 5. [x] Update all features to use new DB layer
 6. [x] Qdrant kept for backward compatibility (optional removal later)
 
-### 5.5 PyPI Publishing (CONFIGURED)
+### 5.5 PostgreSQL Configuration Issues (FIXED in v0.2.7) ✅
+- **IF NOT EXISTS**: All CREATE TABLE and CREATE INDEX statements now idempotent
+- **Vector parsing**: Fixed `_row_to_memory()` to use `json.loads()` instead of `list()` for vector strings
+- **384-dim vectors**: Schema changed from 1024 to 384 to match MiniLM embedding model
+- **Test fixtures**: Fixed invalid UUIDs and wrong-dimension vectors in tests
+
+### 5.6 PyPI Publishing (CONFIGURED)
 - [x] Trusted publishing configured on PyPI for `memini-ai-dev`
 - [x] GitHub Actions workflow uses `environment: pypi`
 - [x] Package name updated to `memini-ai-dev` in pyproject.toml
