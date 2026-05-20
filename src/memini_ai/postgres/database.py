@@ -341,12 +341,19 @@ class PostgresDatabase(VectorDatabase):
         distance_threshold = 1.0 - options.threshold
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                SEARCH_MEMORIES_VECTOR,
-                query_vector,
-                distance_threshold,
-                options.top_k,
-            )
+            async with conn.transaction():
+                # When exact_search is True, disable the approximate DiskANN
+                # index to guarantee exact nearest neighbor results.
+                # Requires a transaction for SET LOCAL to take effect.
+                if options.exact_search:
+                    await conn.execute("SET LOCAL enable_indexscan = off")
+
+                rows = await conn.fetch(
+                    SEARCH_MEMORIES_VECTOR,
+                    query_vector,
+                    distance_threshold,
+                    options.top_k,
+                )
 
             results = []
             for row in rows:
@@ -745,13 +752,15 @@ class PostgresDatabase(VectorDatabase):
                     }
 
                 if row["target_entity_id"]:
-                    edges.append({
-                        "source": entity_id,
-                        "target": str(row["target_entity_id"]),
-                        "relationship": row["relationship_type"],
-                        "confidence": row["rel_confidence"],
-                        "stroke": self._get_rel_color(row["relationship_type"]),
-                    })
+                    edges.append(
+                        {
+                            "source": entity_id,
+                            "target": str(row["target_entity_id"]),
+                            "relationship": row["relationship_type"],
+                            "confidence": row["rel_confidence"],
+                            "stroke": self._get_rel_color(row["relationship_type"]),
+                        }
+                    )
 
             return list(nodes_map.values()), edges
 

@@ -40,8 +40,16 @@ async def pg_db():
 @pytest_asyncio.fixture
 async def pg_db_isolated(pg_db: PostgresDatabase):
     """Provide pg_db with table cleanup between tests."""
+    # Pre-test cleanup: remove any stale test data from previous runs
+    try:
+        async with pg_db._pool.acquire() as conn:
+            await conn.execute("DELETE FROM memories WHERE text LIKE 'test_%'")
+    except Exception:
+        pass  # Ignore cleanup errors
+
     yield pg_db
-    # Cleanup: delete all test memories
+
+    # Post-test cleanup: delete all test memories
     try:
         async with pg_db._pool.acquire() as conn:
             await conn.execute("DELETE FROM memories WHERE text LIKE 'test_%'")
@@ -336,8 +344,9 @@ class TestQueryMemories:
 
         await pg_db_isolated.add_memories([memory1, memory2])
 
-        # Search with base_vector (threshold=0.0 to include exact match)
-        options = SearchOptions(top_k=10, threshold=0.0)
+        # Use exact_search=True to bypass DiskANN approximate index and
+        # guarantee the exact-match vector ranks #1 regardless of DB size
+        options = SearchOptions(top_k=10, threshold=0.0, exact_search=True)
         results = await pg_db_isolated.query_memories(base_vector, options)
 
         assert len(results) >= 1

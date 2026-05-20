@@ -2,7 +2,7 @@
 
 > **Session**: 2026-05-19
 > **Project**: Memini-ai v3.0 (formerly Super-Memory-TS)
-> **Status**: ALL PHASES COMPLETE - pgvector migration DONE, live visualization added, v0.2.7 released
+> **Status**: ALL PHASES COMPLETE - pgvector migration DONE, live visualization added, v0.3.1 released (doc refresh, version bump v0.3.0 → v0.3.1)
 
 ---
 
@@ -230,13 +230,10 @@ pytest tests/integration/ -v
 ### Version History
 | Version | Date | Notes |
 |---------|------|-------|
-| v0.2.0 | 2026-05-18 | pgvector migration complete |
-| v0.2.1 | 2026-05-18 | Package name fix |
-| v0.2.2 | 2026-05-18 | Documentation updates |
-| v0.2.3 | 2026-05-18 | Version bump |
-| v0.2.4 | 2026-05-19 | aiosqlite dependency fix |
-| v0.2.5 | 2026-05-19 | Version bump fix |
-| v0.2.7 | 2026-05-19 | PostgreSQL schema fixes (IF NOT EXISTS, vector parsing, 384-dim vectors) |
+| v0.3.1 | 2026-05-19 | Documentation refreshed, stale version references updated, pyproject.toml bumped |
+| v0.3.0 | 2026-05-19 | Thought chains persistent reasoning with branching/revision, 9 MCP tools |
+| v0.2.8 | 2026-05-19 | Ruff formatting pass (isort, whitespace, imports) across 30 files |
+| v0.2.7 | 2026-05-19 | PostgreSQL schema fixes for idempotent initialization (IF NOT EXISTS, vector parsing, 384-dim vectors) |
 | v0.2.6 | 2026-05-19 | server.run() HTTP transport fix |
 
 ### Release Process

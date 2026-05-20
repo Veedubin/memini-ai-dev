@@ -4,7 +4,7 @@
 > **Meaning**: "I remember" in Latin
 > **Language**: Python (porting from TypeScript)
 > **Framework**: FastMCP
-> **Last Updated**: 2026-05-19 (v0.2.7: PostgreSQL schema fixes for idempotent initialization)
+> **Last Updated**: 2026-05-19 (v0.3.1: Documentation refreshed, stale version references updated, pyproject.toml bumped)
 
 ---
 
@@ -343,7 +343,7 @@ class PostgresDatabase(VectorDatabase): ...  # New implementation
 ## Quality Gates
 
 Each phase requires:
-1. All tests passing (`pytest`) - **Phase 4: 647 passed, 10 skipped** (Phase 1: 201 + Phase 2: 123 + Phase 3: 119 + Phase 4: 204)
+1. All tests passing (`pytest`) - **Phase 4: 697 passed, 10 skipped** (Phase 1: 201 + Phase 2: 123 + Phase 3: 119 + Phase 4: 254)
 2. Type checking passing (`mypy`)
 3. Linting passing (`ruff`)
 4. Integration tests with MCP client
@@ -386,9 +386,12 @@ Each phase requires:
 | MEMINI_DECAY_ENABLED | Enable memory decay | false |
 | MEMINI_DECAY_HALF_LIFE_DAYS | Decay half-life | 90 |
 | MEMINI_KG_ENABLED | Enable knowledge graph | false |
-| MEMINI_KG_INFERENCE_DEPTH | Max inference depth | 3 |
 | MEMINI_MULTI_PEER_ENABLED | Enable multi-peer | false |
 | MEMINI_DIALECTIC_ENABLED | Enable dialectic reasoning | false |
+| MEMINI_KG_INFERENCE_DEPTH | Max inference depth | 3 |
+| MEMINI_USER_MODELING | Enable user modeling | false |
+| MEMINI_PRECOMPRESS | Enable pre-compression extraction | false |
+| MEMINI_TIERED_LOADING | Enable tiered loading | false |
 
 ---
 

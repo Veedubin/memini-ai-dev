@@ -297,6 +297,7 @@ class SearchOptions(BaseModel):
     strategy: SearchStrategy = SearchStrategy.TIERED
     threshold: float = 0.72
     filter: SearchFilter = Field(default_factory=SearchFilter)
+    exact_search: bool = False
 
 
 # Constants
