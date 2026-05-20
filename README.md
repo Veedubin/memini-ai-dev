@@ -1,38 +1,44 @@
-# Memini-ai
+# memini-ai-dev
+
+[![PyPI version](https://img.shields.io/pypi/v/memini-ai-dev.svg)](https://pypi.org/project/memini-ai-dev/)
+[![PyPI](https://img.shields.io/pypi/fm/memini-ai-dev.svg)](https://pypi.org/project/memini-ai-dev/)
 
 > "I remember" in Latin (pronounced *meh-mee-nee*)
 
-Local-first semantic memory server with vector search, MCP-compatible.
+Local-first semantic memory server with vector search, trust scoring, and persistent reasoning, fully MCP-compatible.
 
 ## Overview
 
-Memini-ai is a Python rewrite of [Super-Memory-TS](https://github.com/veedubin/super-memory-ts), designed as a local-first semantic memory server with vector search capabilities. It provides persistent memory storage and retrieval using PostgreSQL with pgvector as the backend.
+**memini-ai-dev** is a professional-grade semantic memory server designed to provide AI agents with long-term, structured, and trust-weighted memory. It uses PostgreSQL with `pgvector` for high-performance vector search and implements a tiered memory architecture for efficient context management.
 
 ### Key Features
 
-- **MCP-Compatible**: Works with any MCP-compatible client (OpenCode, Claude Desktop, etc.)
-- **Vector Search**: BGE-Large embeddings (1024-dim) with MiniLM fallback (384-dim)
-- **Hybrid Search**: Combines vector similarity with BM25 text search
-- **Project Isolation**: Memories are isolated by project ID
-- **File Indexing**: Index and search project files with semantic chunking
-- **Knowledge Graph**: Live D3.js visualization of entities and relationships
-- **CPU-First**: Designed to run on CPU, optional GPU acceleration
+- **MCP-Compatible**: Seamless integration with any MCP client (OpenCode, Claude Desktop, etc.)
+- **Persistent Thought Chains**: Store and retrieve complex reasoning chains with support for branching and revisions (v0.3.0+)
+- **Trust-Weighted Memory**: Dynamic trust scoring for memories based on agent usage and user feedback
+- **Tiered Memory Architecture**: Efficient context loading via L0 (Summary), L1 (Key Decisions), and L2 (Full Context)
+- **Knowledge Graph**: Entity extraction and relationship tracking with live D3.js visualization
+- **Dialectic Reasoning**: Built-in contradiction detection and resolution logic
+- **Multi-Peer Sharing**: Share memory subsets across different agent peers
+- **Vector Search**: Default 384-dim MiniLM embeddings for speed, with BGE-Large (1024-dim) support
+- **Memory Decay**: Temporal trust decay to ensure memory relevance over time
+- **Project Isolation**: Strict memory separation by project ID
 
 ## Installation
 
 ### Prerequisites
 
 - Python 3.11+
-- PostgreSQL 15+ with pgvector extension
+- PostgreSQL 16+ with `pgvector` extension
 
 ### Quick Start
 
 ```bash
-# Install memini-ai
+# Install via pip
 pip install memini-ai-dev
 
-# Run the server
-memini-ai --stdio
+# Run the server using uvx (Recommended)
+uvx --from memini-ai-dev memini-ai --stdio
 ```
 
 ### Development Installation
@@ -53,7 +59,7 @@ pip install -e ".[dev]"
 
 ## Configuration
 
-Memini-ai can be configured via environment variables or a JSON config file.
+Configured via environment variables or a JSON config file.
 
 ### Environment Variables
 
@@ -61,9 +67,9 @@ Memini-ai can be configured via environment variables or a JSON config file.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEMINI_DB_URL` | (empty) | PostgreSQL connection URL (e.g., `postgresql://postgres:password@localhost:5434/postgres`) |
+| `MEMINI_DB_URL` | (empty) | PostgreSQL connection URL (e.g., `postgresql://postgres:password@localhost:5432/postgres`) |
 | `MEMINI_PROJECT_ID` | auto-generated | Project identifier for isolation |
-| `MEMINI_EMBEDDING_DIM` | `1024` | Embedding dimension (1024 for BGE-Large or 384 for MiniLM) |
+| `MEMINI_EMBEDDING_DIM` | `384` | Embedding dimension (384 for MiniLM, 1024 for BGE-Large) |
 | `MEMINI_CHUNK_SIZE` | `512` | Chunk size for file indexing |
 | `MEMINI_CHUNK_OVERLAP` | `50` | Overlap between chunks |
 | `MEMINI_BATCH_SIZE` | `32` | Batch size for embedding generation |
@@ -72,220 +78,82 @@ Memini-ai can be configured via environment variables or a JSON config file.
 | `MEMINI_DEVICE` | `auto` | Device for embeddings (`auto`, `cpu`, `cuda`) |
 | `MEMINI_CONFIG_PATH` | None | Path to JSON config file |
 
-#### PostgreSQL Settings
+#### ⭐ Advanced Feature Toggles (Disabled by Default)
+
+Set to `true` to enable these professional memory capabilities.
+
+| Feature | Env Var | Description |
+|---------|---------|-------------|
+| **Thought Chains** | `THOUGHT_CHAINS` | Persistent reasoning with branching/revision |
+| **Trust Engine** | `MEMINI_TRUST_ENGINE` | Trust scoring and archive/promotion logic |
+| **Tiered Loading** | `MEMINI_TIERED_LOADING` | L0/L1/L2 summary generation |
+| **Knowledge Graph** | `MEMINI_KG_ENABLED` | Entity extraction and KG queries |
+| **Memory Graph** | `MEMINI_MEMORY_GRAPH` | Visual relationship mapping |
+| **Dialectic** | `MEMINI_DIALECTIC_ENABLED` | Contradiction detection and resolution |
+| **Multi-Peer** | `MEMINI_MULTI_PEER_ENABLED` | Peer-to-peer memory sharing |
+| **User Modeling** | `MEMINI_USER_MODELING` | Persistent user profile and style tracking |
+| **Memory Decay** | `MEMINI_DECAY_ENABLED` | Temporal trust decay engine |
+| **Auto-Extract** | `MEMINI_AUTO_EXTRACT` | Automatic memory extraction from conversations |
+| **Pre-Compression** | `MEMINI_PRECOMPRESS` | Context-aware pre-compression extraction |
+
+#### Trust Engine Tuning
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEMINI_TABLE_NAME` | `memories` | Qdrant table name (legacy) |
-| `MEMINI_DB_POOL_SIZE` | `10` | Connection pool size |
-| `MEMINI_DB_MIN_SIZE` | `2` | Min pool connections |
-| `MEMINI_DB_MAX_SIZE` | `20` | Max pool connections |
-
-#### ⭐ Optional Features (all disabled by default)
-
-All optional features are **disabled by default**. Set to `true` or appropriate value to enable.
-
-##### Trust Engine
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_TRUST_ENGINE` | `false` | **Enable trust engine** |
 | `MEMINI_TRUST_THRESHOLD_ARCHIVE` | `0.2` | Archive memories below this trust |
 | `MEMINI_TRUST_THRESHOLD_PROMOTE` | `0.8` | Promote to L1 above this trust |
 | `MEMINI_TRUST_DELTA_USE` | `+0.05` | Trust delta for `agent_used` signal |
-| `MEMINI_TRUST_DELTA_IGNORED` | `-0.02` | Trust delta for `agent_ignored` signal |
+| `MEMINI_TRUST_DELTA_IGNORED` | `-0.05` | Trust delta for `agent_ignored` signal |
 | `MEMINI_TRUST_DELTA_CORRECT` | `-0.15` | Trust delta for `user_corrected` signal |
 | `MEMINI_TRUST_DELTA_CONFIRM` | `+0.10` | Trust delta for `user_confirmed` signal |
 
-##### Memory Graph
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_MEMORY_GRAPH` | `false` | **Enable memory graph** |
-| `MEMINI_GRAPH_ENTITY_EXTRACTION` | `true` | Auto extract entities from memories |
-| `MEMINI_GRAPH_RELATIONSHIP_SUGGESTIONS` | `true` | Suggest relationships between memories |
-
-##### Knowledge Graph
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_KG_ENABLED` | `false` | **Enable knowledge graph** (required for live visualization) |
-| `MEMINI_KG_ENTITY_EXTRACTION` | `true` | Auto extract entities from memories |
-| `MEMINI_KG_INFERENCE_DEPTH` | `3` | Max inference path depth |
-| `MEMINI_KG_MAX_RESULTS` | `100` | Max knowledge graph query results |
-
-##### Tiered Loading
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_TIERED_LOADING` | `false` | **Enable tiered loading** (L0/L1/L2 summaries) |
-| `MEMINI_TIER0_MAX_TOKENS` | `100` | L0 summary max tokens (~100 tokens) |
-| `MEMINI_TIER1_MAX_TOKENS` | `2000` | L1 summary max tokens (~2K tokens) |
-| `MEMINI_TIER0_CACHE_TTL` | `3600` | L0 cache TTL in seconds |
-| `MEMINI_TIER1_CACHE_TTL` | `7200` | L1 cache TTL in seconds |
-
-##### Auto-Extract
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_AUTO_EXTRACT` | `false` | **Enable automatic memory extraction** |
-| `MEMINI_AUTO_EXTRACT_TURNS` | `5` | Conversation turns between auto-extractions |
-| `MEMINI_LLM_URL` | `http://localhost:11434/api/generate` | LLM endpoint for extraction |
-| `MEMINI_LLM_MODEL` | `llama3.2` | LLM model name |
-
-##### Pre-Compression
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_PRECOMPRESS` | `false` | **Enable pre-compression extraction** |
-| `MEMINI_PRECOMPRESS_THRESHOLD` | `0.8` | Threshold for pre-compression |
-
-##### User Modeling
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_USER_MODELING` | `false` | **Enable user modeling** |
-| `MEMINI_USER_MODEL_MIN_SESSIONS` | `50` | Min sessions to build user profile |
-
-##### Memory Decay
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_DECAY_ENABLED` | `false` | **Enable memory decay** |
-| `MEMINI_DECAY_HALF_LIFE_DAYS` | `90` | Memory half-life in days |
-| `MEMINI_CONSOLIDATION_INTERVAL_HOURS` | `168` | Consolidation interval (hours) |
-| `MEMINI_CONSOLIDATION_SIMILARITY_THRESHOLD` | `0.92` | Merge similar memories above this |
-
-##### Multi-Peer
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_MULTI_PEER_ENABLED` | `false` | **Enable multi-peer sharing** |
-| `MEMINI_MULTI_PEER_GUEST_SHARING` | `true` | Allow guest memory sharing |
-
-##### Dialectic (Contradiction Detection)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMINI_DIALECTIC_ENABLED` | `false` | **Enable dialectic reasoning** |
-| `MEMINI_DIALECTIC_LLM_PROVIDER` | `ollama` | LLM provider for dialectic |
-| `MEMINI_DIALECTIC_LLM_MODEL` | `llama3` | LLM model for dialectic |
-| `MEMINI_DIALECTIC_AUTO_THRESHOLD` | `0.5` | Auto-trigger threshold |
-
-#### Quick Start with All Features Enabled
-
-```bash
-export MEMINI_DB_URL="postgresql://postgres:password@localhost:5434/postgres"
-export MEMINI_EMBEDDING_DIM=384
-export MEMINI_TRUST_ENGINE=true
-export MEMINI_MEMORY_GRAPH=true
-export MEMINI_KG_ENABLED=true
-export MEMINI_TIERED_LOADING=true
-export MEMINI_AUTO_EXTRACT=true
-export MEMINI_PRECOMPRESS=true
-export MEMINI_USER_MODELING=true
-export MEMINI_DECAY_ENABLED=true
-export MEMINI_MULTI_PEER_ENABLED=true
-export MEMINI_DIALECTIC_ENABLED=true
-
-# Run the server
-memini-ai --stdio
-```
-
-### JSON Config File
-
-```json
-{
-  "database": {
-    "url": "postgresql://postgres:password@localhost:5432/postgres"
-  },
-  "model": {
-    "embedding_dim": 1024
-  },
-  "indexer": {
-    "chunk_size": 512,
-    "chunk_overlap": 64
-  },
-  "logging": {
-    "level": "INFO"
-  }
-}
-```
-
 ## Usage
 
-### MCP Tools
+### MCP Tools (35+)
 
-Memini-ai provides 6 MCP tools:
+`memini-ai-dev` provides a comprehensive suite of tools categorized by capability:
 
-#### `query_memories`
-Semantic search over memories.
+#### 🧠 Basic Memory
+- `query_memories`: Semantic search with tiered strategy.
+- `add_memory`: Store new memories with source tracking.
+- `delete_memory`: Remove specific memory entries.
+- `get_memory`: Fetch a memory by ID.
 
-```json
-{
-  "query": "What files were modified yesterday?",
-  "limit": 10,
-  "strategy": "tiered"
-}
-```
+#### 📁 Project Indexing
+- `search_project`: Semantic search across indexed project files.
+- `index_project`: Trigger recursive project indexing.
+- `get_file_contents`: Reconstruct files from semantic chunks.
+- `get_indexing_status`: Check progress of background indexing.
 
-**Strategies:**
-- `tiered` (default): MiniLM primary + BGE fallback
-- `vector_only`: Pure semantic similarity
-- `text_only`: BM25 keyword search
-- `parallel`: Dual-tier with RRF fusion
+#### 📈 Trust & Tiering
+- `get_trust_score`: Retrieve trust level for a memory.
+- `adjust_trust`: Manually apply feedback signals.
+- `get_tier0_summary`: Get high-trust L0 project summary.
+- `get_tier1_summary`: Get L1 key decisions summary.
 
-#### `add_memory`
-Store a new memory entry.
+#### ⛓️ Thought Chains (v0.3.0)
+- `start_thought_chain`: Initialize a new reasoning chain.
+- `add_thought`: Add a step to a chain (supports revisions/branching).
+- `get_thought_chain`: Retrieve a full reasoning tree.
+- `abandon_thought_chain`: Mark a reasoning path as incorrect.
 
-```json
-{
-  "content": "Remember to update the config file",
-  "sourceType": "session",
-  "sourcePath": "/path/to/file",
-  "metadata": {"key": "value"}
-}
-```
+#### 🕸️ Knowledge Graph & Dialectic
+- `query_kg`: Execute formal KG queries.
+- `extract_entities`: Extract entities from a memory.
+- `get_entity_graph`: Find all connections for an entity.
+- `find_contradictions`: Detect conflicting memories.
+- `resolve_contradiction`: Generate a dialectic resolution.
 
-#### `search_project`
-Search indexed project files.
+#### 👥 Multi-Peer & User Modeling
+- `share_memory`: Share a memory with another peer.
+- `get_peer_memories`: Search another peer's accessible memory.
+- `get_user_profile`: Retrieve the learned user style profile.
+- `update_user_profile`: Update profile from current conversation.
 
-```json
-{
-  "query": "authentication middleware",
-  "topK": 20,
-  "fileTypes": [".py", ".ts"],
-  "paths": ["src/"]
-}
-```
-
-#### `index_project`
-Trigger project indexing.
-
-```json
-{
-  "path": ".",
-  "force": false,
-  "background": true
-}
-```
-
-#### `get_file_contents`
-Reconstruct a file from indexed chunks.
-
-```json
-{
-  "filePath": "src/main.py",
-  "triggerIndex": false
-}
-```
-
-#### `get_status`
-Get server component status.
-
-```json
-{}
-```
+#### 🛠️ System & Maintenance
+- `get_status`: Health check for all server components.
+- `trigger_consolidation`: Manually merge similar memories.
+- `get_decay_status`: View fading memories and decay stats.
 
 ### Python API
 
@@ -294,7 +162,6 @@ from memini_ai.memory.system import MemorySystem
 from memini_ai.memory.schema import MemoryEntry, MemorySourceType, SearchOptions, SearchStrategy
 
 async def main():
-    # Create and initialize
     system = MemorySystem()
     await system.initialize()
 
@@ -305,12 +172,9 @@ async def main():
     )
     memory_id = await system.add_memory(entry)
 
-    # Query memories
+    # Query memories using Tiered strategy
     options = SearchOptions(topK=10, strategy=SearchStrategy.TIERED)
     results = await system.query_memories("list comprehension", options)
-
-    # Delete memory
-    await system.delete_memory(memory_id)
 
 asyncio.run(main())
 ```
@@ -324,7 +188,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: timescale/timescaledb:latest-pg15
+    image: pgvector/pgvector:pg16
     ports:
       - "5432:5432"
     environment:
@@ -338,6 +202,7 @@ services:
       - postgres
     environment:
       - MEMINI_DB_URL=postgresql://postgres:password@postgres:5432/postgres
+      - THOUGHT_CHAINS=true
     volumes:
       - .:/app
 
@@ -345,105 +210,46 @@ volumes:
   postgres_data:
 ```
 
-```bash
-docker-compose up -d
-```
-
-## Testing
+## Testing & Quality
 
 ```bash
 # Run all tests
 pytest tests/ -v
 
-# Run unit tests only (skip integration)
-pytest tests/ -v --ignore=tests/integration/
-
 # Run integration tests (requires PostgreSQL with pgvector)
 pytest tests/integration/ -v
 
-# Run with coverage
-pytest tests/ --cov=src/memini_ai --cov-report=term-missing
-```
-
-### Integration Tests with Docker
-
-```bash
-# Start PostgreSQL with pgvector for integration tests
-docker run -d --name postgres-test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=memini_test -p 5432:5432 pgvector/pgvector:pg16
-
-# Run integration tests
-pytest tests/integration/ -v
-
-# Cleanup
-docker stop postgres-test && docker rm postgres-test
-```
-
-## Quality Gates
-
-Before submitting changes, ensure:
-
-```bash
-# Lint
+# Quality Gate: Lint and Type Check
 ruff check src/
-
-# Format
-ruff format src/
-
-# Type check
 mypy src/
-
-# Tests
-pytest tests/ -x
-```
-
-## Performance
-
-Memini-ai is designed for sub-10ms query latency on cached queries.
-
-Typical performance:
-- **Query latency**: < 10ms (after warmup)
-- **Indexing**: ~1000 files/second
-- **Memory footprint**: ~500MB (without model)
-
-### Performance Tuning
-
-```bash
-# Use faster embedding model (384-dim instead of 1024)
-export MEMINI_EMBEDDING_DIM=384
-
-# Increase workers for faster indexing
-export MEMINI_WORKERS=8
-
-# Larger batch size for embedding generation
-export MEMINI_BATCH_SIZE=64
 ```
 
 ## Architecture
 
 ```
 memini_ai/
-├── config.py           # Configuration management
-├── server.py          # FastMCP server (35 tools)
+├── config.py           # Configuration & Env Var management
+├── server.py          # FastMCP server (35+ tool implementations)
 ├── api/
 │   ├── visualization.py  # FastAPI server for live KG visualization
 │   └── d3_template.py     # D3.js visualization template
 ├── memory/
-│   ├── schema.py      # Pydantic models
+│   ├── schema.py      # Pydantic models & MemoryEntry
 │   ├── database.py    # VectorDatabase ABC
-│   ├── search.py      # 4 search strategies
+│   ├── search.py      # Tiered, Vector, Text, and Parallel strategies
 │   └── system.py      # MemorySystem coordinator
 ├── postgres/          # PostgreSQL/pgvector backend
 │   ├── database.py    # PostgresDatabase implementation
-│   ├── schema.py      # SQL schema definitions
+│   ├── schema.py      # SQL schema definitions (pgvector)
 │   └── queries.py     # SQL query builders
 ├── model/
-│   ├── manager.py     # ModelManager singleton
-│   └── embeddings.py  # Embedding generation
+│   ├── manager.py     # ModelManager singleton (MiniLM/BGE)
+│   └── embeddings.py  # Embedding generation logic
 ├── indexer/
 │   ├── indexer.py     # ProjectIndexer
-│   ├── chunker.py     # Semantic chunking
-│   ├── watcher.py     # File watching
-│   └── file_tracker.py # SQLite persistence
+│   ├── chunker.py     # Semantic chunking logic
+│   ├── watcher.py     # Inotify-based file watching
+│   └── file_tracker.py # SQLite persistence for index state
 └── utils/
     ├── logger.py      # Structured logging
     └── hash.py        # SHA-256 utilities
@@ -455,7 +261,7 @@ MIT License - see LICENSE file for details.
 
 ## Links
 
-- [Repository](https://github.com/Veedubin/memini-ai-dev)
-- [Documentation](https://github.com/Veedubin/memini-ai-dev#readme)
+- [PyPI Project](https://pypi.org/project/memini-ai-dev/)
+- [GitHub Repository](https://github.com/Veedubin/memini-ai-dev)
 - [pgvector](https://github.com/pgvector/pgvector)
 - [FastMCP](https://github.com/jlowin/fastmcp)
