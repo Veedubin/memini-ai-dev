@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 
@@ -31,6 +31,7 @@ from memini_ai.memory.schema import (
 from memini_ai.memory.system import MemorySystem
 from memini_ai.multi_peer import MultiPeerManager, get_multi_peer_manager
 from memini_ai.precompress import PrecompressExtractor
+from memini_ai.thought_chains import ThoughtChains
 from memini_ai.tiered_loader import TieredLoader
 from memini_ai.trust_engine import TrustEngine
 from memini_ai.user_model import UserModel
@@ -73,6 +74,7 @@ class MCPServer:
         self._consolidation_engine: ConsolidationEngine | None = None
         self._multi_peer_manager: MultiPeerManager | None = None
         self._dialectic_engine: DialecticEngine | None = None
+        self._thought_chains: ThoughtChains | None = None
         self._init_error: str | None = None
         self._background_jobs: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._mcp = FastMCP("memini-ai")
@@ -122,6 +124,16 @@ class MCPServer:
         self._mcp.add_tool(self.resolve_contradiction)
         self._mcp.add_tool(self.get_dialectic_history)
         self._mcp.add_tool(self.challenge_memory)
+        # Phase 5: Thought Chains tools
+        self._mcp.add_tool(self.add_thought)
+        self._mcp.add_tool(self.start_thought_chain)
+        self._mcp.add_tool(self.get_thought_chain)
+        self._mcp.add_tool(self.get_related_chains)
+        self._mcp.add_tool(self.revise_thought)
+        self._mcp.add_tool(self.branch_thought)
+        self._mcp.add_tool(self.pause_thought_chain)
+        self._mcp.add_tool(self.resume_thought_chain)
+        self._mcp.add_tool(self.abandon_thought_chain)
 
     def _setup_signal_handlers(self) -> None:
         """Set up SIGINT/SIGTERM handlers."""
@@ -131,10 +143,14 @@ class MCPServer:
             async def shutdown_handler(sig_num: int) -> None:
                 await self._shutdown()
 
+            def signal_handler(sig: signal.Signals) -> None:
+                def signal_callback(s: signal.Signals = sig) -> None:
+                    asyncio.create_task(shutdown_handler(s))
+
+                loop.add_signal_handler(sig, signal_callback)
+
             for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(
-                    sig, lambda s=sig: asyncio.create_task(shutdown_handler(s))
-                )  # type: ignore[misc]
+                signal_handler(sig)
         except (NotImplementedError, AttributeError, RuntimeError):
             # Windows or other platforms without signal handlers
             pass
@@ -173,6 +189,20 @@ class MCPServer:
                 self._consolidation_engine = ConsolidationEngine(memory_system=system)
                 # Initialize multi-peer manager
                 self._multi_peer_manager = get_multi_peer_manager(memory_system=system)
+                # Initialize thought chains (requires DB pool from postgres backend)
+                from memini_ai.config import get_config as _get_config
+
+                _config = _get_config()
+                if (
+                    _config.thought_chains_enabled
+                    and hasattr(system._db, "_pool")
+                    and system._db._pool is not None
+                ):
+                    self._thought_chains = ThoughtChains(
+                        pool=system._db._pool,
+                        memory_system=system,
+                        trust_engine=self._trust_engine,
+                    )
                 return system
             except Exception as e:
                 last_error = e
@@ -663,7 +693,9 @@ class MCPServer:
         user_model_ready = self._user_model is not None and self._user_model.is_enabled
 
         # Check knowledge graph
-        kg_ready = self._knowledge_graph is not None and self._knowledge_graph.is_enabled
+        kg_ready = (
+            self._knowledge_graph is not None and self._knowledge_graph.is_enabled
+        )
 
         # Check multi-peer manager
         multi_peer_ready = (
@@ -673,6 +705,11 @@ class MCPServer:
         # Check dialectic engine
         dialectic_ready = (
             self._dialectic_engine is not None and self._dialectic_engine.is_enabled
+        )
+
+        # Check thought chains
+        thought_chains_ready = (
+            self._thought_chains is not None and self._thought_chains.is_enabled
         )
 
         return {
@@ -688,6 +725,7 @@ class MCPServer:
             "userModelingReady": user_model_ready,
             "multiPeerReady": multi_peer_ready,
             "dialecticReady": dialectic_ready,
+            "thoughtChainsReady": thought_chains_ready,
             "initError": self._init_error,
         }
 
@@ -1426,7 +1464,11 @@ class MCPServer:
             }
         except TimeoutError:
             logger.error("list_fading_memories_timeout")
-            return {"fading_count": 0, "fading_memories": [], "error": "Operation timed out"}
+            return {
+                "fading_count": 0,
+                "fading_memories": [],
+                "error": "Operation timed out",
+            }
         except Exception as e:
             logger.error("list_fading_memories_error", error=str(e))
             return {"fading_count": 0, "fading_memories": [], "error": str(e)}
@@ -1522,11 +1564,14 @@ class MCPServer:
                     self._memory_system = await asyncio.wait_for(
                         self._init_memory_system(), timeout=OPERATION_TIMEOUT
                     )
-                self._knowledge_graph = KnowledgeGraph(memory_system=self._memory_system)
+                self._knowledge_graph = KnowledgeGraph(
+                    memory_system=self._memory_system
+                )
 
             # Parse query string to dict if provided
             if isinstance(query, str):
                 import json as json_module
+
                 query_dict = json_module.loads(query)
             else:
                 query_dict = query
@@ -1579,7 +1624,9 @@ class MCPServer:
                 )
 
             if self._knowledge_graph is None:
-                self._knowledge_graph = KnowledgeGraph(memory_system=self._memory_system)
+                self._knowledge_graph = KnowledgeGraph(
+                    memory_system=self._memory_system
+                )
 
             # Get the memory
             memory = await asyncio.wait_for(
@@ -1653,7 +1700,9 @@ class MCPServer:
                     self._memory_system = await asyncio.wait_for(
                         self._init_memory_system(), timeout=OPERATION_TIMEOUT
                     )
-                self._knowledge_graph = KnowledgeGraph(memory_system=self._memory_system)
+                self._knowledge_graph = KnowledgeGraph(
+                    memory_system=self._memory_system
+                )
 
             result = await asyncio.wait_for(
                 self._knowledge_graph.get_entity_graph(entity_id, depth),
@@ -1711,7 +1760,9 @@ class MCPServer:
                     self._memory_system = await asyncio.wait_for(
                         self._init_memory_system(), timeout=OPERATION_TIMEOUT
                     )
-                self._knowledge_graph = KnowledgeGraph(memory_system=self._memory_system)
+                self._knowledge_graph = KnowledgeGraph(
+                    memory_system=self._memory_system
+                )
 
             # Resolve entity names to IDs
             start_id = await self._knowledge_graph._resolve_entity(start_entity)
@@ -1801,7 +1852,9 @@ class MCPServer:
                     self._memory_system = await asyncio.wait_for(
                         self._init_memory_system(), timeout=OPERATION_TIMEOUT
                     )
-                self._knowledge_graph = KnowledgeGraph(memory_system=self._memory_system)
+                self._knowledge_graph = KnowledgeGraph(
+                    memory_system=self._memory_system
+                )
 
             entities = await asyncio.wait_for(
                 self._knowledge_graph.search_entities(name, limit=limit),
@@ -1853,7 +1906,9 @@ class MCPServer:
                     self._memory_system = await asyncio.wait_for(
                         self._init_memory_system(), timeout=OPERATION_TIMEOUT
                     )
-                self._knowledge_graph = KnowledgeGraph(memory_system=self._memory_system)
+                self._knowledge_graph = KnowledgeGraph(
+                    memory_system=self._memory_system
+                )
 
             await self._knowledge_graph.initialize()
 
@@ -2290,7 +2345,9 @@ class MCPServer:
                 "error": "Operation timed out",
             }
         except Exception as e:
-            logger.error("get_dialectic_history_error", error=str(e), memory_id=memory_id)
+            logger.error(
+                "get_dialectic_history_error", error=str(e), memory_id=memory_id
+            )
             return {
                 "memory_id": memory_id,
                 "notes": [],
@@ -2350,21 +2407,408 @@ class MCPServer:
             logger.error("challenge_memory_timeout", memory_id=memory_id)
             return {"success": False, "error": "Operation timed out"}
         except Exception as e:
-            logger.error(
-                "challenge_memory_error", error=str(e), memory_id=memory_id
+            logger.error("challenge_memory_error", error=str(e), memory_id=memory_id)
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Thought Chains Helper
+    # =========================================================================
+
+    async def _get_thought_chains(self) -> ThoughtChains | dict[str, Any]:
+        """Get or initialize ThoughtChains instance.
+
+        Returns ThoughtChains if available, or error dict if not.
+        """
+        config = get_config()
+        if not config.thought_chains_enabled:
+            return {
+                "error": (
+                    "Thought chains not enabled. "
+                    "Set THOUGHT_CHAINS=true or THOUGHT_CHAINS=1 in environment."
+                ),
+            }
+
+        if self._thought_chains is not None:
+            return self._thought_chains
+
+        # Lazy initialization: need pool from postgres backend
+        if self._memory_system is None:
+            self._memory_system = await asyncio.wait_for(
+                self._init_memory_system(), timeout=OPERATION_TIMEOUT
             )
+
+        db = self._memory_system._db
+        if not hasattr(db, "_pool") or db._pool is None:
+            return {
+                "error": (
+                    "Thought chains require PostgreSQL with pgvector. "
+                    "Database pool not available."
+                ),
+            }
+
+        self._thought_chains = ThoughtChains(
+            pool=db._pool,
+            memory_system=self._memory_system,
+            trust_engine=self._trust_engine,
+        )
+        return self._thought_chains
+
+    # =========================================================================
+    # TOOL: add_thought (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def add_thought(
+        self,
+        thought: str,
+        thoughtNumber: int,  # noqa: N803
+        totalThoughts: int,  # noqa: N803
+        nextThoughtNeeded: bool,  # noqa: N803
+        isRevision: bool = False,  # noqa: N803
+        revisesThought: int | None = None,  # noqa: N803
+        branchFromThought: int | None = None,  # noqa: N803
+        branchId: str | None = None,  # noqa: N803
+        chain_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a thought to a reasoning chain.
+
+        API-compatible with @modelcontextprotocol/server-sequential-thinking.
+        Auto-creates chain if chain_id not provided. Stores thought in BOTH
+        thoughts table AND memories table (sourceType="thought").
+
+        Args:
+            thought: The thought text.
+            thoughtNumber: Current thought number.
+            totalThoughts: Total expected thoughts.
+            nextThoughtNeeded: Whether more thoughts are needed.
+            isRevision: Whether this is a revision.
+            revisesThought: Thought number being revised.
+            branchFromThought: Thought number to branch from.
+            branchId: Branch identifier.
+            chain_id: Chain UUID (auto-created if None).
+            session_id: Session identifier.
+
+        Returns:
+            Dictionary with thoughtNumber, totalThoughts, nextThoughtNeeded,
+            chain_id, branches, thoughtHistoryLength.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.add_thought(
+                    thought=thought,
+                    thought_number=thoughtNumber,
+                    total_thoughts=totalThoughts,
+                    next_thought_needed=nextThoughtNeeded,
+                    is_revision=isRevision,
+                    revises_thought=revisesThought,
+                    branch_from_thought=branchFromThought,
+                    branch_id=branchId,
+                    chain_id=chain_id,
+                    session_id=session_id,
+                ),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("add_thought_timeout")
+            return {"error": "Operation timed out"}
+        except Exception as e:
+            logger.error("add_thought_error", error=str(e))
+            return {"error": str(e)}
+
+    # =========================================================================
+    # TOOL: start_thought_chain (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def start_thought_chain(
+        self,
+        session_id: str | None = None,
+        parent_chain_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new thought chain.
+
+        Args:
+            session_id: Optional session identifier.
+            parent_chain_id: Optional parent chain ID for hierarchical chains.
+
+        Returns:
+            Dictionary with chain_id, session_id, status, created_at.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.start_chain(
+                    session_id=session_id,
+                    parent_chain_id=parent_chain_id,
+                ),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("start_thought_chain_timeout")
+            return {"error": "Operation timed out"}
+        except Exception as e:
+            logger.error("start_thought_chain_error", error=str(e))
+            return {"error": str(e)}
+
+    # =========================================================================
+    # TOOL: get_thought_chain (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def get_thought_chain(self, chain_id: str) -> dict[str, Any]:
+        """Retrieve a full thought chain with all thoughts organized by branch.
+
+        Args:
+            chain_id: UUID of the chain to retrieve.
+
+        Returns:
+            Dictionary with chain_id, session_id, status, thoughts, branchMap,
+            thought_count.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.get_chain(chain_id),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("get_thought_chain_timeout", chain_id=chain_id)
+            return {"error": "Operation timed out"}
+        except Exception as e:
+            logger.error("get_thought_chain_error", error=str(e), chain_id=chain_id)
+            return {"error": str(e)}
+
+    # =========================================================================
+    # TOOL: get_related_chains (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def get_related_chains(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Search for thought chains with similar reasoning to the query.
+
+        Uses pgvector cosine similarity on thought embeddings.
+
+        Args:
+            query: Search query text.
+            limit: Maximum number of results (default 10).
+
+        Returns:
+            Dictionary with count and chains list.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.get_related_chains(query=query, limit=limit),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("get_related_chains_timeout", query=query)
+            return {"count": 0, "chains": [], "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("get_related_chains_error", error=str(e), query=query)
+            return {"count": 0, "chains": [], "error": str(e)}
+
+    # =========================================================================
+    # TOOL: revise_thought (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def revise_thought(
+        self,
+        chain_id: str,
+        thought_number: int,
+        revised_thought: str,
+    ) -> dict[str, Any]:
+        """Create a revision of an existing thought.
+
+        Args:
+            chain_id: UUID of the chain.
+            thought_number: Number of the thought to revise.
+            revised_thought: New thought text.
+
+        Returns:
+            Dictionary with success, thought_id, chain_id, thought_number.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.revise_thought(
+                    chain_id=chain_id,
+                    thought_number=thought_number,
+                    revised_thought=revised_thought,
+                ),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("revise_thought_timeout", chain_id=chain_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("revise_thought_error", error=str(e), chain_id=chain_id)
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # TOOL: branch_thought (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def branch_thought(
+        self,
+        chain_id: str,
+        from_thought_number: int,
+        branchId: str,  # noqa: N803
+        thought: str,
+        thoughtNumber: int,  # noqa: N803
+        totalThoughts: int,  # noqa: N803
+        nextThoughtNeeded: bool,  # noqa: N803
+    ) -> dict[str, Any]:
+        """Start a new branch from an existing thought.
+
+        Args:
+            chain_id: UUID of the chain.
+            from_thought_number: Thought number to branch from.
+            branchId: Branch identifier.
+            thought: New thought text.
+            thoughtNumber: Thought number in new branch.
+            totalThoughts: Total thoughts expected in branch.
+            nextThoughtNeeded: Whether more thoughts follow.
+
+        Returns:
+            Dictionary with success, thought_id, chain_id, branch_id,
+            thought_number.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.branch_thought(
+                    chain_id=chain_id,
+                    from_thought_number=from_thought_number,
+                    branch_id=branchId,
+                    thought=thought,
+                    thought_number=thoughtNumber,
+                    total_thoughts=totalThoughts,
+                    next_thought_needed=nextThoughtNeeded,
+                ),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("branch_thought_timeout", chain_id=chain_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("branch_thought_error", error=str(e), chain_id=chain_id)
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # TOOL: pause_thought_chain (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def pause_thought_chain(self, chain_id: str) -> dict[str, Any]:
+        """Pause a thought chain.
+
+        Args:
+            chain_id: UUID of the chain to pause.
+
+        Returns:
+            Dictionary with success, chain_id, previous_status, new_status.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.pause_chain(chain_id),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("pause_thought_chain_timeout", chain_id=chain_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("pause_thought_chain_error", error=str(e), chain_id=chain_id)
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # TOOL: resume_thought_chain (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def resume_thought_chain(self, chain_id: str) -> dict[str, Any]:
+        """Resume a paused thought chain.
+
+        Returns the last thought so the agent can continue reasoning from
+        where it left off.
+
+        Args:
+            chain_id: UUID of the chain to resume.
+
+        Returns:
+            Dictionary with success, chain_id, previous_status, new_status,
+            thought_count, last_thought.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.resume_chain(chain_id),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("resume_thought_chain_timeout", chain_id=chain_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("resume_thought_chain_error", error=str(e), chain_id=chain_id)
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # TOOL: abandon_thought_chain (Phase 5 - Thought Chains)
+    # =========================================================================
+    async def abandon_thought_chain(self, chain_id: str) -> dict[str, Any]:
+        """Abandon a thought chain. Applies agent_ignored trust signal.
+
+        Args:
+            chain_id: UUID of the chain to abandon.
+
+        Returns:
+            Dictionary with success, chain_id, previous_status, new_status.
+        """
+        try:
+            tc_or_error = await self._get_thought_chains()
+            if isinstance(tc_or_error, dict):
+                return tc_or_error
+
+            return await asyncio.wait_for(
+                tc_or_error.abandon_chain(chain_id),
+                timeout=OPERATION_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.error("abandon_thought_chain_timeout", chain_id=chain_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("abandon_thought_chain_error", error=str(e), chain_id=chain_id)
             return {"success": False, "error": str(e)}
 
     def run(
         self,
-        transport: str = "streamable-http",
+        transport: Literal[
+            "stdio", "http", "sse", "streamable-http"
+        ] = "streamable-http",
         host: str = "127.0.0.1",
         port: int = 8765,
     ) -> None:
         """Run the MCP server.
 
         Args:
-            transport: Transport type - "streamable-http" or "stdio"
+            transport: Transport type - "streamable-http" or other FastMCP option
             host: Host to bind to (default: 127.0.0.1)
             port: Port to bind to (default: 8765)
         """

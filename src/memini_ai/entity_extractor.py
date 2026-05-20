@@ -47,49 +47,49 @@ class EntityExtractor:
     PATTERNS: list[tuple[str, EntityType, float, str]] = [
         # File paths: highest confidence (unambiguous)
         (
-            r'\b([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+)\b',
+            r"\b([a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+)\b",
             EntityType.CODE,
             0.9,
             "file_extension",
         ),
         # Project/Repo names: GitHub-style
         (
-            r'\b([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)\b',
+            r"\b([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-]+)\b",
             EntityType.PROJECT,
             0.85,
             "repo_path",
         ),
         # Function/method names (snake_case)
         (
-            r'\b([a-z][a-z0-9_]{2,30})\s*\(',
+            r"\b([a-z][a-z0-9_]{2,30})\s*\(",
             EntityType.CODE,
             0.8,
             "function_call",
         ),
         # Function definitions (snake_case)
         (
-            r'def\s+([a-z][a-z0-9_]{2,30})',
+            r"def\s+([a-z][a-z0-9_]{2,30})",
             EntityType.CODE,
             0.85,
             "function_def",
         ),
         # Class names (PascalCase)
         (
-            r'\b([A-Z][a-zA-Z0-9]{2,30})\b',
+            r"\b([A-Z][a-zA-Z0-9]{2,30})\b",
             EntityType.CODE,
             0.75,
             "class_name",
         ),
         # Constants (SCREAMING_SNAKE_CASE)
         (
-            r'\b([A-Z][A-Z0-9_]{2,30})\b',
+            r"\b([A-Z][A-Z0-9_]{2,30})\b",
             EntityType.CODE,
             0.7,
             "constant_name",
         ),
         # Variables (camelCase)
         (
-            r'\b([a-z][a-zA-Z0-9]{2,30})\b',
+            r"\b([a-z][a-zA-Z0-9]{2,30})\b",
             EntityType.CODE,
             0.5,
             "camel_case",
@@ -103,21 +103,21 @@ class EntityExtractor:
         ),
         # Organization names (Company Inc/LLC/Ltd/Corp)
         (
-            r'\b([A-Z][a-zA-Z0-9\s]{2,40})\s+(Inc\.?|LLC|Ltd\.?|Corp\.?|Corporation|Company|Co\.?)\b',
+            r"\b([A-Z][a-zA-Z0-9\s]{2,40})\s+(Inc\.?|LLC|Ltd\.?|Corp\.?|Corporation|Company|Co\.?)\b",
             EntityType.ORGANIZATION,
             0.85,
             "company_suffix",
         ),
         # Organization names (The Company pattern)
         (
-            r'\b[Tt]he\s+([A-Z][a-zA-Z0-9\s]{2,30})\s+(Team|Group|Company|Organization)\b',
+            r"\b[Tt]he\s+([A-Z][a-zA-Z0-9\s]{2,30})\s+(Team|Group|Company|Organization)\b",
             EntityType.ORGANIZATION,
             0.8,
             "the_team_pattern",
         ),
         # Person names (First Last pattern)
         (
-            r'\b([A-Z][a-z]{1,20}\s+[A-Z][a-z]{1,20})\b',
+            r"\b([A-Z][a-z]{1,20}\s+[A-Z][a-z]{1,20})\b",
             EntityType.PERSON,
             0.7,
             "person_name",
@@ -138,28 +138,28 @@ class EntityExtractor:
         ),
         # Multi-word concepts (Title Case)
         (
-            r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,5})\b',
+            r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,5})\b",
             EntityType.CONCEPT,
             0.55,
             "title_case_concept",
         ),
         # Database table names (snake_case)
         (
-            r'\b([a-z][a-z0-9_]{2,30}_[a-z][a-z0-9_]{2,30})\b',
+            r"\b([a-z][a-z0-9_]{2,30}_[a-z][a-z0-9_]{2,30})\b",
             EntityType.CODE,
             0.75,
             "table_name",
         ),
         # Environment variables
         (
-            r'\$([A-Z][A-Z0-9_]{2,30})\b',
+            r"\$([A-Z][A-Z0-9_]{2,30})\b",
             EntityType.CODE,
             0.85,
             "env_var",
         ),
         # Command line flags
         (
-            r'(?:-{1,2}[a-z][a-z0-9\-]{1,20})',
+            r"(?:-{1,2}[a-z][a-z0-9\-]{1,20})",
             EntityType.CODE,
             0.6,
             "cli_flag",
@@ -172,31 +172,90 @@ class EntityExtractor:
 
     # Stop words to filter out
     STOP_WORDS: set[str] = {
-        "the", "and", "or", "but", "in", "on", "at", "to", "for", "of",
-        "with", "by", "from", "as", "is", "was", "are", "were", "been",
-        "be", "have", "has", "had", "do", "does", "did", "will", "would",
-        "should", "could", "may", "might", "must", "can", "this", "that",
-        "these", "those", "a", "an", "if", "else", "when", "while", "then",
+        "the",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "as",
+        "is",
+        "was",
+        "are",
+        "were",
+        "been",
+        "be",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "should",
+        "could",
+        "may",
+        "might",
+        "must",
+        "can",
+        "this",
+        "that",
+        "these",
+        "those",
+        "a",
+        "an",
+        "if",
+        "else",
+        "when",
+        "while",
+        "then",
     }
 
     # Common false positives to filter
     FALSE_POSITIVES: set[str] = {
-        "True", "False", "None", "NULL", "undefined",
-        "TODO", "FIXME", "NOTE", "DEBUG",
-        "default", "import", "export", "return", "class",
-        "function", "var", "let", "const", "static",
+        "True",
+        "False",
+        "None",
+        "NULL",
+        "undefined",
+        "TODO",
+        "FIXME",
+        "NOTE",
+        "DEBUG",
+        "default",
+        "import",
+        "export",
+        "return",
+        "class",
+        "function",
+        "var",
+        "let",
+        "const",
+        "static",
     }
 
     def __init__(self) -> None:
         """Initialize entity extractor with compiled patterns."""
-        self._compiled_patterns: list[tuple[re.Pattern[str], EntityType, float, str]] = []
+        self._compiled_patterns: list[
+            tuple[re.Pattern[str], EntityType, float, str]
+        ] = []
         self._compile_patterns()
 
     def _compile_patterns(self) -> None:
         """Compile regex patterns for efficiency."""
         for pattern, entity_type, confidence, pattern_name in self.PATTERNS:
             compiled = re.compile(pattern, re.MULTILINE)
-            self._compiled_patterns.append((compiled, entity_type, confidence, pattern_name))
+            self._compiled_patterns.append(
+                (compiled, entity_type, confidence, pattern_name)
+            )
 
     def extract_from_text(self, text: str) -> list[dict[str, Any]]:
         """Extract entities from text.
@@ -210,11 +269,20 @@ class EntityExtractor:
         seen: dict[str, dict[str, Any]] = {}
         positions: dict[str, tuple[int, int]] = {}
 
-        for compiled, entity_type, base_confidence, pattern_name in self._compiled_patterns:
+        for (
+            compiled,
+            entity_type,
+            base_confidence,
+            pattern_name,
+        ) in self._compiled_patterns:
             for match in compiled.finditer(text):
                 name = match.group(1) if match.lastindex else match.group(0)
 
-                if not name or len(name) < self.MIN_LENGTH or len(name) > self.MAX_LENGTH:
+                if (
+                    not name
+                    or len(name) < self.MIN_LENGTH
+                    or len(name) > self.MAX_LENGTH
+                ):
                     continue
 
                 # Skip stop words and false positives
@@ -285,9 +353,12 @@ class EntityExtractor:
             confidence -= 0.2
 
         # Code entities get confidence boost if they look like real identifiers
-        if entity_type == EntityType.CODE:
-            if re.match(r'^[a-z][a-z0-9_]+$', name) or re.match(r'^[A-Z][a-zA-Z0-9]+$', name) or re.match(r'^[A-Z][A-Z0-9_]+$', name):  # snake_case
-                confidence += 0.1
+        if entity_type == EntityType.CODE and (
+            re.match(r"^[a-z][a-z0-9_]+$", name)
+            or re.match(r"^[A-Z][a-zA-Z0-9]+$", name)
+            or re.match(r"^[A-Z][A-Z0-9_]+$", name)
+        ):
+            confidence += 0.1  # snake_case
 
         # Clamp to valid range
         return max(0.0, min(1.0, confidence))
@@ -340,11 +411,11 @@ class EntityExtractor:
 
         # For code entities, canonical is lowercase
         # Check if it looks like code
-        if re.match(r'^[a-z][a-z0-9_]+$', name):
+        if re.match(r"^[a-z][a-z0-9_]+$", name):
             return name.lower()
-        elif re.match(r'^[A-Z][a-zA-Z0-9]+$', name):
+        elif re.match(r"^[A-Z][a-zA-Z0-9]+$", name):
             return name  # PascalCase stays as-is
-        elif re.match(r'^[A-Z][A-Z0-9_]+$', name):
+        elif re.match(r"^[A-Z][A-Z0-9_]+$", name):
             return name  # SCREAMING_SNAKE stays as-is
 
         # For natural language, title case
@@ -422,10 +493,13 @@ class EntityExtractor:
                     is_duplicate = True
                     break
                 # One contains the other
-                if len(name_lower) > 3 and len(seen) > 3:
-                    if name_lower in seen or seen in name_lower:
-                        is_duplicate = True
-                        break
+                if (
+                    len(name_lower) > 3
+                    and len(seen) > 3
+                    and (name_lower in seen or seen in name_lower)
+                ):
+                    is_duplicate = True
+                    break
 
             if not is_duplicate:
                 result.append(entity)

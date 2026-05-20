@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from memini_ai.config import MeminiConfig
 from memini_ai.memory.schema import (
     MemoryEntry,
     MemorySourceType,
@@ -224,10 +225,13 @@ class TestAddMemory:
             # No vector
         )
 
-        with patch(
-            "memini_ai.memory.system.generate_embedding",
-            AsyncMock(return_value=mock_embedding),
-        ), patch("memini_ai.memory.system.hash_content", return_value="abc123"):
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(return_value=mock_embedding),
+            ),
+            patch("memini_ai.memory.system.hash_content", return_value="abc123"),
+        ):
             await system.add_memory(entry)
 
         assert entry.vector is not None
@@ -286,10 +290,13 @@ class TestAddMemory:
             vector=[0.1] * 1024,
         )
 
-        with patch(
-            "memini_ai.memory.system.generate_embedding",
-            AsyncMock(return_value=mock_embedding),
-        ), patch("memini_ai.memory.system.hash_content", return_value="abc123"):
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(return_value=mock_embedding),
+            ),
+            patch("memini_ai.memory.system.hash_content", return_value="abc123"),
+        ):
             await system.add_memory(entry)
 
         mock_db.add_memory.assert_called_once()

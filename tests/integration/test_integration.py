@@ -152,7 +152,9 @@ class TestFullMemoryCycle:
         await memory_system.delete_memory(memory_id)
 
         # Step 5: Verify deletion - query should not find it
-        results_after = await memory_system.query_memories("list comprehension", options)
+        results_after = await memory_system.query_memories(
+            "list comprehension", options
+        )
         assert not any(r.id == memory_id for r in results_after)
 
 
@@ -243,14 +245,18 @@ class TestProjectIsolation:
         from memini_ai.memory.schema import SearchFilter
 
         filter_a = SearchFilter(project_id="project-a")
-        options_a = SearchOptions(topK=10, strategy=SearchStrategy.TIERED, filter=filter_a)
+        options_a = SearchOptions(
+            topK=10, strategy=SearchStrategy.TIERED, filter=filter_a
+        )
         results_a = await memory_system.query_memories("authentication", options_a)
         assert len(results_a) >= 1
         assert all(r.project_id == "project-a" for r in results_a)
 
         # Query with project B filter - should only find B
         filter_b = SearchFilter(project_id="project-b")
-        options_b = SearchOptions(topK=10, strategy=SearchStrategy.TIERED, filter=filter_b)
+        options_b = SearchOptions(
+            topK=10, strategy=SearchStrategy.TIERED, filter=filter_b
+        )
         results_b = await memory_system.query_memories("database", options_b)
         assert len(results_b) >= 1
         assert all(r.project_id == "project-b" for r in results_b)
@@ -308,7 +314,6 @@ class TestBackgroundIndexing:
 
         try:
             # Trigger background indexing
-            job_id = "test-job-123"
             # Since we can't easily do background indexing in tests,
             # we verify synchronous indexing works and stats are returned
 
@@ -411,7 +416,7 @@ class TestModelFallback:
             with patch("torch.cuda.is_available", return_value=False):
                 manager = ModelManager.get_instance()
                 # Should be able to acquire on CPU - acquire is async
-                model = await manager.acquire()
+                _model = await manager.acquire()
                 dims = manager.get_dimensions()
                 assert dims > 0
                 # Model should be MiniLM (384) or BGE-Large (1024)
@@ -462,7 +467,9 @@ class TestPerformanceValidation:
 
         # Relaxed threshold for CI environments (50ms instead of 10ms)
         # Real systems may have variance
-        assert avg_latency < 50, f"Average latency {avg_latency:.2f}ms exceeds threshold"
+        assert avg_latency < 50, (
+            f"Average latency {avg_latency:.2f}ms exceeds threshold"
+        )
 
 
 # Marker to run integration tests separately

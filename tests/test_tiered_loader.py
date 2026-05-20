@@ -172,21 +172,27 @@ class TestIsEnabled:
     @pytest.mark.asyncio
     async def test_is_enabled_true(self, mock_config_enabled: MagicMock) -> None:
         """is_enabled returns True when config enabled."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
             assert loader.is_enabled is True
 
     @pytest.mark.asyncio
     async def test_is_enabled_false(self, mock_config_disabled: MagicMock) -> None:
         """is_enabled returns False when config disabled."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_disabled
+        ):
             loader = TieredLoader()
             assert loader.is_enabled is False
 
     @pytest.mark.asyncio
     async def test_is_enabled_cached(self, mock_config_enabled: MagicMock) -> None:
         """is_enabled is cached after first call."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
             first = loader.is_enabled
             second = loader.is_enabled
@@ -199,7 +205,9 @@ class TestStats:
     @pytest.mark.asyncio
     async def test_stats_initial(self, mock_config_enabled: MagicMock) -> None:
         """stats returns initial TieredLoadingStats."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
             stats = loader.stats
             assert stats.l0_generations == 0
@@ -215,9 +223,13 @@ class TestStats:
         mock_memories_high_trust: list[MagicMock],
     ) -> None:
         """stats updates after L0 generation."""
-        mock_memory_system.list_memories = AsyncMock(return_value=mock_memories_high_trust)
+        mock_memory_system.list_memories = AsyncMock(
+            return_value=mock_memories_high_trust
+        )
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Override _generate_summary directly instead of mocking HTTP client
@@ -243,7 +255,9 @@ class TestDisabledNoOp:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """When disabled, get_tier0 returns error info."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_disabled
+        ):
             loader = TieredLoader()
             result = await loader.get_tier0()
 
@@ -258,7 +272,9 @@ class TestDisabledNoOp:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """When disabled, get_tier1 returns error info."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_disabled
+        ):
             loader = TieredLoader()
             result = await loader.get_tier1()
 
@@ -281,9 +297,13 @@ class TestTier0Generation:
         mock_http_response: MagicMock,
     ) -> None:
         """get_tier0 generates summary from high-trust memories."""
-        mock_memory_system.list_memories = AsyncMock(return_value=mock_memories_high_trust)
+        mock_memory_system.list_memories = AsyncMock(
+            return_value=mock_memories_high_trust
+        )
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             mock_client = AsyncMock()
@@ -306,7 +326,9 @@ class TestTier0Generation:
         """get_tier0 returns error when no high-trust memories."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             result = await loader.get_tier0()
@@ -325,14 +347,18 @@ class TestTier0Generation:
         # Mix of memories with different trust scores
         memories = [
             MagicMock(id="high", text="High trust", trust_score=0.9, is_archived=False),
-            MagicMock(id="medium", text="Medium trust", trust_score=0.6, is_archived=False),
+            MagicMock(
+                id="medium", text="Medium trust", trust_score=0.6, is_archived=False
+            ),
             MagicMock(id="low", text="Low trust", trust_score=0.3, is_archived=False),
         ]
         mock_memory_system.list_memories = AsyncMock(return_value=memories)
 
         captured_memories: list[tuple[str, str]] = []
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Override _generate_summary to capture input
@@ -366,9 +392,13 @@ class TestTier1Generation:
         mock_http_response: MagicMock,
     ) -> None:
         """get_tier1 generates summary from promoted memories."""
-        mock_memory_system.list_memories = AsyncMock(return_value=mock_memories_promoted)
+        mock_memory_system.list_memories = AsyncMock(
+            return_value=mock_memories_promoted
+        )
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             mock_client = AsyncMock()
@@ -391,19 +421,28 @@ class TestTier1Generation:
         """get_tier1 returns error when no promoted memories (trust >= 0.8)."""
         # Only memories below promotion threshold
         memories = [
-            MagicMock(id="mem-1", text="Some memory", trust_score=0.5, is_archived=False),
-            MagicMock(id="mem-2", text="Another memory", trust_score=0.7, is_archived=False),
+            MagicMock(
+                id="mem-1", text="Some memory", trust_score=0.5, is_archived=False
+            ),
+            MagicMock(
+                id="mem-2", text="Another memory", trust_score=0.7, is_archived=False
+            ),
         ]
         mock_memory_system.list_memories = AsyncMock(return_value=memories)
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             result = await loader.get_tier1()
 
             assert result["tier"] == "L1"
             assert result["content"] is None
-            assert result["error"] == "No promoted memories available (trust >= 0.8 required)"
+            assert (
+                result["error"]
+                == "No promoted memories available (trust >= 0.8 required)"
+            )
 
     @pytest.mark.asyncio
     async def test_tier1_respects_promotion_threshold(
@@ -413,7 +452,9 @@ class TestTier1Generation:
     ) -> None:
         """get_tier1 only uses memories with trust >= 0.8."""
         memories = [
-            MagicMock(id="promoted", text="Promoted", trust_score=0.9, is_archived=False),
+            MagicMock(
+                id="promoted", text="Promoted", trust_score=0.9, is_archived=False
+            ),
             MagicMock(id="high", text="High", trust_score=0.75, is_archived=False),
             MagicMock(id="medium", text="Medium", trust_score=0.5, is_archived=False),
         ]
@@ -421,7 +462,9 @@ class TestTier1Generation:
 
         captured_memories: list[tuple[str, str]] = []
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             async def capture_generate(
@@ -452,7 +495,9 @@ class TestCacheHit:
         """get_tier0 returns cached L0 without regeneration."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Pre-populate cache
@@ -494,7 +539,9 @@ class TestCacheHit:
         """get_tier1 returns cached L1 without regeneration."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Pre-populate cache
@@ -538,9 +585,13 @@ class TestForceRefresh:
         mock_http_response: MagicMock,
     ) -> None:
         """force_refresh=True bypasses cache and regenerates."""
-        mock_memory_system.list_memories = AsyncMock(return_value=mock_memories_high_trust)
+        mock_memory_system.list_memories = AsyncMock(
+            return_value=mock_memories_high_trust
+        )
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Pre-populate cache
@@ -579,7 +630,9 @@ class TestForceRefresh:
         """force_refresh=False (default) uses cache if valid."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             loader._l0_cache = TieredSummary(
@@ -620,9 +673,13 @@ class TestCacheStaleDetection:
         mock_memories_high_trust: list[MagicMock],
     ) -> None:
         """Cache is considered stale after TTL expires."""
-        mock_memory_system.list_memories = AsyncMock(return_value=mock_memories_high_trust)
+        mock_memory_system.list_memories = AsyncMock(
+            return_value=mock_memories_high_trust
+        )
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Create cache that is older than TTL (3600 seconds = 1 hour)
@@ -653,15 +710,17 @@ class TestCacheStaleDetection:
             assert generation_called is True
 
     @pytest.mark.asyncio
-    async def test_cache_valid_within_ttl(
+    async def test_cache_valid_within_ttl_with_refresh(
         self,
         mock_config_enabled: MagicMock,
         mock_memory_system: MagicMock,
     ) -> None:
-        """Cache is valid when within TTL."""
+        """Cache is valid when within TTL after refresh."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Create fresh cache (just now)
@@ -696,7 +755,9 @@ class TestCacheStaleDetection:
         mock_config_enabled: MagicMock,
     ) -> None:
         """mark_stale() sets is_stale flag on cache."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             loader._l0_cache = TieredSummary(
@@ -722,7 +783,9 @@ class TestCacheStaleDetection:
         """Cache is valid when within TTL."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Create fresh cache (just now)
@@ -763,16 +826,26 @@ class TestHighTrustFilter:
     ) -> None:
         """L0 includes only memories with trust >= 0.5."""
         memories = [
-            MagicMock(id="trust-09", text="Very trusted", trust_score=0.9, is_archived=False),
-            MagicMock(id="trust-05", text="Exactly 0.5", trust_score=0.5, is_archived=False),
-            MagicMock(id="trust-04", text="Below 0.5", trust_score=0.4, is_archived=False),
-            MagicMock(id="trust-02", text="Low trust", trust_score=0.2, is_archived=False),
+            MagicMock(
+                id="trust-09", text="Very trusted", trust_score=0.9, is_archived=False
+            ),
+            MagicMock(
+                id="trust-05", text="Exactly 0.5", trust_score=0.5, is_archived=False
+            ),
+            MagicMock(
+                id="trust-04", text="Below 0.5", trust_score=0.4, is_archived=False
+            ),
+            MagicMock(
+                id="trust-02", text="Low trust", trust_score=0.2, is_archived=False
+            ),
         ]
         mock_memory_system.list_memories = AsyncMock(return_value=memories)
 
         captured: list[tuple[str, str]] = []
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             async def capture(
@@ -802,16 +875,32 @@ class TestPromotedFilter:
     ) -> None:
         """L1 includes only memories with trust >= 0.8."""
         memories = [
-            MagicMock(id="promoted-09", text="Very promoted", trust_score=0.95, is_archived=False),
-            MagicMock(id="promoted-08", text="Exactly 0.8", trust_score=0.8, is_archived=False),
-            MagicMock(id="high-07", text="High but not promoted", trust_score=0.7, is_archived=False),
-            MagicMock(id="medium-05", text="Medium trust", trust_score=0.5, is_archived=False),
+            MagicMock(
+                id="promoted-09",
+                text="Very promoted",
+                trust_score=0.95,
+                is_archived=False,
+            ),
+            MagicMock(
+                id="promoted-08", text="Exactly 0.8", trust_score=0.8, is_archived=False
+            ),
+            MagicMock(
+                id="high-07",
+                text="High but not promoted",
+                trust_score=0.7,
+                is_archived=False,
+            ),
+            MagicMock(
+                id="medium-05", text="Medium trust", trust_score=0.5, is_archived=False
+            ),
         ]
         mock_memory_system.list_memories = AsyncMock(return_value=memories)
 
         captured: list[tuple[str, str]] = []
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             async def capture(
@@ -841,14 +930,23 @@ class TestExcludeArchived:
     ) -> None:
         """Archived memories are excluded from both L0 and L1."""
         memories = [
-            MagicMock(id="active", text="Active memory", trust_score=0.9, is_archived=False),
-            MagicMock(id="archived", text="Archived memory", trust_score=0.95, is_archived=True),
+            MagicMock(
+                id="active", text="Active memory", trust_score=0.9, is_archived=False
+            ),
+            MagicMock(
+                id="archived",
+                text="Archived memory",
+                trust_score=0.95,
+                is_archived=True,
+            ),
         ]
         mock_memory_system.list_memories = AsyncMock(return_value=memories)
 
         captured: list[tuple[str, str]] = []
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             async def capture(
@@ -874,14 +972,22 @@ class TestInvalidateCache:
         mock_config_enabled: MagicMock,
     ) -> None:
         """invalidate_cache(tier=None) clears all caches."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             loader._l0_cache = TieredSummary(
-                tier=SummaryTier.L0, content="L0", source_memory_ids=[], generated_at=datetime.utcnow()
+                tier=SummaryTier.L0,
+                content="L0",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
             )
             loader._l1_cache = TieredSummary(
-                tier=SummaryTier.L1, content="L1", source_memory_ids=[], generated_at=datetime.utcnow()
+                tier=SummaryTier.L1,
+                content="L1",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
             )
 
             loader.invalidate_cache()
@@ -895,14 +1001,22 @@ class TestInvalidateCache:
         mock_config_enabled: MagicMock,
     ) -> None:
         """invalidate_cache(tier="L0") clears only L0 cache."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             loader._l0_cache = TieredSummary(
-                tier=SummaryTier.L0, content="L0", source_memory_ids=[], generated_at=datetime.utcnow()
+                tier=SummaryTier.L0,
+                content="L0",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
             )
             loader._l1_cache = TieredSummary(
-                tier=SummaryTier.L1, content="L1", source_memory_ids=[], generated_at=datetime.utcnow()
+                tier=SummaryTier.L1,
+                content="L1",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
             )
 
             loader.invalidate_cache("L0")
@@ -916,14 +1030,22 @@ class TestInvalidateCache:
         mock_config_enabled: MagicMock,
     ) -> None:
         """invalidate_cache(tier="L1") clears only L1 cache."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             loader._l0_cache = TieredSummary(
-                tier=SummaryTier.L0, content="L0", source_memory_ids=[], generated_at=datetime.utcnow()
+                tier=SummaryTier.L0,
+                content="L0",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
             )
             loader._l1_cache = TieredSummary(
-                tier=SummaryTier.L1, content="L1", source_memory_ids=[], generated_at=datetime.utcnow()
+                tier=SummaryTier.L1,
+                content="L1",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
             )
 
             loader.invalidate_cache("L1")
@@ -941,14 +1063,24 @@ class TestMarkStale:
         mock_config_enabled: MagicMock,
     ) -> None:
         """mark_stale(tier=None) marks all caches as stale."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             loader._l0_cache = TieredSummary(
-                tier=SummaryTier.L0, content="L0", source_memory_ids=[], generated_at=datetime.utcnow(), is_stale=False
+                tier=SummaryTier.L0,
+                content="L0",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
+                is_stale=False,
             )
             loader._l1_cache = TieredSummary(
-                tier=SummaryTier.L1, content="L1", source_memory_ids=[], generated_at=datetime.utcnow(), is_stale=False
+                tier=SummaryTier.L1,
+                content="L1",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
+                is_stale=False,
             )
 
             loader.mark_stale()
@@ -962,14 +1094,24 @@ class TestMarkStale:
         mock_config_enabled: MagicMock,
     ) -> None:
         """mark_stale(tier="L0") marks only L0 cache as stale."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             loader._l0_cache = TieredSummary(
-                tier=SummaryTier.L0, content="L0", source_memory_ids=[], generated_at=datetime.utcnow(), is_stale=False
+                tier=SummaryTier.L0,
+                content="L0",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
+                is_stale=False,
             )
             loader._l1_cache = TieredSummary(
-                tier=SummaryTier.L1, content="L1", source_memory_ids=[], generated_at=datetime.utcnow(), is_stale=False
+                tier=SummaryTier.L1,
+                content="L1",
+                source_memory_ids=[],
+                generated_at=datetime.utcnow(),
+                is_stale=False,
             )
 
             loader.mark_stale("L0")
@@ -987,7 +1129,9 @@ class TestGetSummaryStatus:
         mock_config_enabled: MagicMock,
     ) -> None:
         """get_summary_status returns correct format when no cache."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             status = await loader.get_summary_status()
@@ -1003,7 +1147,9 @@ class TestGetSummaryStatus:
         mock_config_enabled: MagicMock,
     ) -> None:
         """get_summary_status returns cache info when cached."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             now = datetime.utcnow()
@@ -1047,9 +1193,13 @@ class TestLLMCallFailure:
         mock_memories_high_trust: list[MagicMock],
     ) -> None:
         """On LLM failure, returns stale cache if available."""
-        mock_memory_system.list_memories = AsyncMock(return_value=mock_memories_high_trust)
+        mock_memory_system.list_memories = AsyncMock(
+            return_value=mock_memories_high_trust
+        )
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             # Pre-populate with stale cache
@@ -1086,9 +1236,13 @@ class TestLLMCallFailure:
         mock_memories_high_trust: list[MagicMock],
     ) -> None:
         """LLM failure increments error count in stats."""
-        mock_memory_system.list_memories = AsyncMock(return_value=mock_memories_high_trust)
+        mock_memory_system.list_memories = AsyncMock(
+            return_value=mock_memories_high_trust
+        )
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             async def fail_generate(
@@ -1110,7 +1264,9 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_with_client(self, mock_config_enabled: MagicMock) -> None:
         """close() properly closes HTTP client."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
             mock_client = AsyncMock()
             mock_client.aclose = AsyncMock()
@@ -1124,7 +1280,9 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_without_client(self, mock_config_enabled: MagicMock) -> None:
         """close() handles None client gracefully."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
             loader._http_client = None
 
@@ -1143,7 +1301,9 @@ class TestEmptyMemories:
         mock_config_enabled: MagicMock,
     ) -> None:
         """_generate_summary returns empty when no memories."""
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader()
 
             content, ids = await loader._generate_summary([], L0_SUMMARY_PROMPT, 100)
@@ -1185,14 +1345,16 @@ class TestSortingByTrust:
 
         captured_order: list[float] = []
 
-        with patch("memini_ai.tiered_loader.get_config", return_value=mock_config_enabled):
+        with patch(
+            "memini_ai.tiered_loader.get_config", return_value=mock_config_enabled
+        ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
             async def capture(
                 memories: list[tuple[str, str]], prompt: str, max_tokens: int
             ) -> tuple[str, list[str]]:
                 # Capture trust scores in order received
-                for mid, text in memories:
+                for mid, _text in memories:
                     mem = next(m for m in mock_memories if m.id == mid)
                     captured_order.append(mem.trust_score)
                 return ("", [])

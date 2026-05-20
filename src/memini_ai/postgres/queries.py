@@ -187,7 +187,7 @@ RETURNING id
 """
 
 GET_ENTITIES = """
-SELECT id, name, entity_type, canonical_name, confidence, mention_count, 
+SELECT id, name, entity_type, canonical_name, confidence, mention_count,
        first_seen_at, last_seen_at, metadata
 FROM entities
 ORDER BY mention_count DESC
@@ -195,7 +195,7 @@ LIMIT $1
 """
 
 GET_ENTITIES_WITH_RELATIONSHIPS = """
-SELECT 
+SELECT
     e.id, e.name, e.entity_type, e.canonical_name, e.confidence,
     er.target_entity_id, er.relationship_type, er.confidence as rel_confidence
 FROM entities e
@@ -260,7 +260,7 @@ RETURNING id
 
 # Entity Statistics
 GET_ENTITY_STATS = """
-SELECT 
+SELECT
     COUNT(*) as total_entities,
     COUNT(*) FILTER (WHERE entity_type = 'PERSON') as persons,
     COUNT(*) FILTER (WHERE entity_type = 'ORGANIZATION') as organizations,
@@ -334,4 +334,124 @@ FROM memories
 WHERE trust_score < $1 AND is_archived = FALSE
 ORDER BY trust_score ASC
 LIMIT $2
+"""
+
+# =============================================================================
+# Thought Chain Queries (Phase 5)
+# =============================================================================
+
+# Thought Chain CRUD
+INSERT_THOUGHT_CHAIN = """
+INSERT INTO thought_chains (id, session_id, parent_chain_id, status)
+VALUES ($1, $2, $3, $4)
+RETURNING id, session_id, parent_chain_id, status, created_at, updated_at
+"""
+
+GET_THOUGHT_CHAIN_BY_ID = """
+SELECT id, session_id, parent_chain_id, status, created_at, updated_at
+FROM thought_chains
+WHERE id = $1
+"""
+
+UPDATE_THOUGHT_CHAIN_STATUS = """
+UPDATE thought_chains
+SET status = $2, updated_at = NOW()
+WHERE id = $1
+RETURNING id, session_id, parent_chain_id, status, created_at, updated_at
+"""
+
+GET_THOUGHT_CHAINS_BY_SESSION = """
+SELECT id, session_id, parent_chain_id, status, created_at, updated_at
+FROM thought_chains
+WHERE session_id = $1
+ORDER BY created_at DESC
+"""
+
+# Thought CRUD
+INSERT_THOUGHT = """
+INSERT INTO thoughts (id, chain_id, thought, thought_number, total_thoughts,
+                      next_thought_needed, is_revision, revises_thought_id,
+                      branch_from_thought_id, branch_id, embedding, content_hash, memory_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+RETURNING id, chain_id, thought, thought_number, total_thoughts,
+           next_thought_needed, is_revision, revises_thought_id,
+           branch_from_thought_id, branch_id, content_hash, memory_id, created_at
+"""
+
+GET_THOUGHTS_BY_CHAIN = """
+SELECT id, chain_id, thought, thought_number, total_thoughts,
+       next_thought_needed, is_revision, revises_thought_id,
+       branch_from_thought_id, branch_id, content_hash, memory_id, created_at
+FROM thoughts
+WHERE chain_id = $1
+ORDER BY thought_number ASC, created_at ASC
+"""
+
+GET_THOUGHT_BY_NUMBER = """
+SELECT id, chain_id, thought, thought_number, total_thoughts,
+       next_thought_needed, is_revision, revises_thought_id,
+       branch_from_thought_id, branch_id, content_hash, memory_id, created_at
+FROM thoughts
+WHERE chain_id = $1 AND thought_number = $2
+ORDER BY created_at DESC
+LIMIT 1
+"""
+
+GET_LAST_THOUGHT_IN_CHAIN = """
+SELECT id, chain_id, thought, thought_number, total_thoughts,
+       next_thought_needed, is_revision, revises_thought_id,
+       branch_from_thought_id, branch_id, content_hash, memory_id, created_at
+FROM thoughts
+WHERE chain_id = $1
+ORDER BY thought_number DESC, created_at DESC
+LIMIT 1
+"""
+
+GET_THOUGHT_BRANCHES = """
+SELECT DISTINCT branch_id
+FROM thoughts
+WHERE chain_id = $1 AND branch_id IS NOT NULL
+ORDER BY branch_id
+"""
+
+COUNT_THOUGHTS_IN_CHAIN = """
+SELECT COUNT(*) as thought_count
+FROM thoughts
+WHERE chain_id = $1
+"""
+
+# Semantic search across thought chains
+SEARCH_THOUGHT_CHAINS_BY_EMBEDDING = """
+WITH ranked_thoughts AS (
+    SELECT
+        t.id,
+        t.chain_id,
+        t.thought,
+        t.thought_number,
+        t.branch_id,
+        t.embedding <=> $1::vector as distance
+    FROM thoughts t
+    JOIN thought_chains tc ON t.chain_id = tc.id
+    WHERE t.embedding IS NOT NULL
+    AND tc.status = 'active'
+    ORDER BY t.embedding <=> $1::vector
+    LIMIT $2
+)
+SELECT
+    rt.chain_id,
+    tc.session_id,
+    rt.thought as snippet,
+    rt.distance as score,
+    (SELECT COUNT(*) FROM thoughts WHERE chain_id = rt.chain_id) as thought_count
+FROM ranked_thoughts rt
+JOIN thought_chains tc ON rt.chain_id = tc.id
+GROUP BY rt.chain_id, tc.session_id, rt.thought, rt.distance, rt.thought_count
+ORDER BY MIN(rt.distance) ASC
+LIMIT $3
+"""
+
+UPDATE_THOUGHT_MEMORY_ID = """
+UPDATE thoughts
+SET memory_id = $2
+WHERE id = $1
 """

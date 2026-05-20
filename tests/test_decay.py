@@ -306,7 +306,7 @@ class TestDecayEngine:
         engine = DecayEngine(memory_system=None)
         mock_config = MagicMock()
         mock_config.decay_enabled = False
-        with patch('memini_ai.decay.get_config', return_value=mock_config):
+        with patch("memini_ai.decay.get_config", return_value=mock_config):
             result = await engine.process_memories()
             assert result["processed"] == 0
             assert result["decayed"] == 0
@@ -373,7 +373,7 @@ class TestConsolidationEngine:
         engine = ConsolidationEngine(memory_system=None)
         mock_config = MagicMock()
         mock_config.decay_enabled = False
-        with patch('memini_ai.decay.get_config', return_value=mock_config):
+        with patch("memini_ai.decay.get_config", return_value=mock_config):
             result = await engine.run_consolidation()
             assert result["consolidated"] == 0
 
@@ -440,7 +440,7 @@ class TestDecayEngineIntegration:
         engine = DecayEngine(memory_system=mock_memory_system)
         mock_config = MagicMock()
         mock_config.decay_enabled = True
-        with patch('memini_ai.decay.get_config', return_value=mock_config):
+        with patch("memini_ai.decay.get_config", return_value=mock_config):
             status = await engine.get_decay_status()
 
             assert status["enabled"] is True
@@ -448,7 +448,9 @@ class TestDecayEngineIntegration:
             assert status["fading_memories"] == []
 
     @pytest.mark.asyncio
-    async def test_get_decay_status_with_memories(self, mock_memory_system: MagicMock) -> None:
+    async def test_get_decay_status_with_memories(
+        self, mock_memory_system: MagicMock
+    ) -> None:
         """Should show fading memories."""
         now = datetime.utcnow()
         memories = [
@@ -477,7 +479,7 @@ class TestDecayEngineIntegration:
         mock_config = MagicMock()
         mock_config.decay_enabled = True
         mock_config.decay_half_life_days = 90
-        with patch('memini_ai.decay.get_config', return_value=mock_config):
+        with patch("memini_ai.decay.get_config", return_value=mock_config):
             status = await engine.get_decay_status()
 
             assert status["enabled"] is True
@@ -515,7 +517,7 @@ class TestDecayEngineIntegration:
         mock_config = MagicMock()
         mock_config.decay_enabled = True
         mock_config.decay_half_life_days = 90
-        with patch('memini_ai.decay.get_config', return_value=mock_config):
+        with patch("memini_ai.decay.get_config", return_value=mock_config):
             fading = await engine.list_fading_memories(limit=10)
 
             # Should have at least the urgent one
@@ -560,7 +562,7 @@ class TestConsolidationWorkflow:
         )
 
         engine = ConsolidationEngine(memory_system=mock_memory_system)
-        result = await engine.consolidate_pair(candidate)
+        _result = await engine.consolidate_pair(candidate)
 
         # Should not raise - consolidation attempted
         # (actual DB update would fail in mock but function handles gracefully)
@@ -593,7 +595,7 @@ class TestDecayEnabledFlag:
 
         mock_config = MagicMock()
         mock_config.decay_enabled = False
-        with patch('memini_ai.decay.get_config', return_value=mock_config):
+        with patch("memini_ai.decay.get_config", return_value=mock_config):
             result = await engine.apply_decay(memory)
             assert result is None
 
@@ -756,10 +758,10 @@ class TestConfigDecayFields:
         """Decay config fields should exist with correct defaults."""
         config = MeminiConfig()
         # Check fields exist with correct defaults
-        assert hasattr(config, 'decay_enabled')
-        assert hasattr(config, 'decay_half_life_days')
-        assert hasattr(config, 'consolidation_interval_hours')
-        assert hasattr(config, 'consolidation_similarity_threshold')
+        assert hasattr(config, "decay_enabled")
+        assert hasattr(config, "decay_half_life_days")
+        assert hasattr(config, "consolidation_interval_hours")
+        assert hasattr(config, "consolidation_similarity_threshold")
         # Defaults are correct
         assert config.decay_enabled is False
         assert config.decay_half_life_days == 90

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
 
-from memini_ai.memory.database import MemoryDatabase
+from memini_ai.memory.database import VectorDatabase
 from memini_ai.memory.schema import MemoryEntry, SearchOptions, SearchStrategy
 from memini_ai.model.embeddings import generate_embedding
 
@@ -21,11 +21,11 @@ class MemorySearch:
     Uses BM25 for text search and RRF for result fusion in parallel mode.
     """
 
-    def __init__(self, db: MemoryDatabase) -> None:
+    def __init__(self, db: VectorDatabase) -> None:
         """Initialize MemorySearch.
 
         Args:
-            db: MemoryDatabase instance for vector operations.
+            db: VectorDatabase instance for vector operations.
         """
         self._db = db
         self._bm25_index: BM25Okapi | None = None

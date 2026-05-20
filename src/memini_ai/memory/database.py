@@ -24,6 +24,8 @@ from memini_ai.utils.hash import hash_content
 
 if TYPE_CHECKING:
     from qdrant_client import AsyncQdrantClient
+    from qdrant_client.conversions.common_types import PointId as QdrantPointId
+    from qdrant_client.models import Condition as QdrantCondition
     from qdrant_client.models import Filter as QdrantFilterType
 
 
@@ -42,6 +44,9 @@ class VectorDatabase(ABC):
     Provides a common interface for different vector database backends
     (Qdrant, pgvector, etc.) to enable backend-agnostic memory operations.
     """
+
+    _initialized: bool
+    _dimension: int | None
 
     @abstractmethod
     async def initialize(self) -> None:
@@ -417,7 +422,10 @@ class QdrantDatabase(VectorDatabase):
     def _payload_to_entry(
         self,
         payload: dict[str, Any] | None,
-        vector: list[float] | None = None,
+        vector: list[float]
+        | list[list[float]]
+        | dict[str, list[float] | Any]
+        | None = None,
         score: float | None = None,
     ) -> MemoryEntry:
         """Convert Qdrant payload to MemoryEntry."""
@@ -600,7 +608,7 @@ class QdrantDatabase(VectorDatabase):
         # Build filter
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        filter_conditions: list[FieldCondition] = [
+        filter_conditions: list[QdrantCondition] = [
             FieldCondition(key="sourcePath", match=MatchValue(value=source_path))
         ]
         if source_type:
@@ -612,7 +620,7 @@ class QdrantDatabase(VectorDatabase):
 
         # Scroll and delete
         deleted_count = 0
-        offset: str | None = None
+        offset: QdrantPointId | None = None
         while True:
             try:
                 result = await client.scroll(
@@ -628,9 +636,11 @@ class QdrantDatabase(VectorDatabase):
                     break
 
                 ids_to_delete = [r.id for r in records]
+                from qdrant_client.models import PointIdsList
+
                 await client.delete(
                     collection_name=collection_name,
-                    points_selector=ids_to_delete,
+                    points_selector=PointIdsList(points=ids_to_delete),
                 )
                 deleted_count += len(ids_to_delete)
 
@@ -694,7 +704,7 @@ class QdrantDatabase(VectorDatabase):
         """Build Qdrant filter from SearchFilter."""
         from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
 
-        conditions: list[FieldCondition] = []
+        conditions: list[QdrantCondition] = []
 
         if filter.source_type:
             conditions.append(
@@ -756,7 +766,7 @@ class QdrantDatabase(VectorDatabase):
             filter_obj = self._build_filter_from_search_filter(filter)
 
         entries: list[MemoryEntry] = []
-        offset: str | None = None
+        offset: QdrantPointId | None = None
         while True:
             try:
                 result = await client.scroll(
@@ -796,8 +806,8 @@ class QdrantDatabase(VectorDatabase):
 
         try:
             result = await client.get_collection(collection_name)
-            # Use indexed_vectors_count or vectors_count
-            return result.vectors_count or 0
+            # Use points_count for total point count
+            return result.points_count or 0
         except Exception:
             return 0
 
@@ -854,7 +864,7 @@ class QdrantDatabase(VectorDatabase):
 
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-        filter_conditions: list[FieldCondition] = [
+        filter_conditions: list[QdrantCondition] = [
             FieldCondition(key="sourcePath", match=MatchValue(value=source_path))
         ]
         if source_type:
@@ -865,7 +875,7 @@ class QdrantDatabase(VectorDatabase):
         filter_obj = Filter(must=filter_conditions)
 
         entries: list[MemoryEntry] = []
-        offset: str | None = None
+        offset: QdrantPointId | None = None
         while True:
             try:
                 result = await client.scroll(
@@ -911,7 +921,7 @@ class QdrantDatabase(VectorDatabase):
         client = await self._get_client()
 
         entries: list[MemoryEntry] = []
-        offset: str | None = None
+        offset: QdrantPointId | None = None
         while True:
             try:
                 result = await client.scroll(
@@ -1076,10 +1086,18 @@ def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
         # Qdrant backend
         return QdrantDatabase(url=config.qdrant_url, project_id=config.project_id)
 
-    if db_url.startswith("postgres://") or db_url.startswith("postgresql://") or db_url == "postgres" or db_url == "pgvector":
+    if (
+        db_url.startswith("postgres://")
+        or db_url.startswith("postgresql://")
+        or db_url == "postgres"
+        or db_url == "pgvector"
+    ):
         # PostgreSQL/pgvector backend
         from memini_ai.postgres import PostgresDatabase
-        return PostgresDatabase(db_url=os.environ.get("MEMINI_DB_URL", ""), project_id=config.project_id)
+
+        return PostgresDatabase(
+            db_url=os.environ.get("MEMINI_DB_URL", ""), project_id=config.project_id
+        )
 
     # Unknown backend
     raise ValueError(

@@ -9,6 +9,7 @@ Provides REST endpoints for:
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -22,7 +23,7 @@ from memini_ai.postgres.database import PostgresDatabase
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage application lifecycle - init and cleanup."""
     # Startup: Initialize PostgreSQL connection
     config = get_config()
@@ -79,10 +80,12 @@ def create_app() -> FastAPI:
             )
 
         try:
-            nodes, edges = await app.state.db.get_entities_with_relationships(limit=limit)
+            nodes, edges = await app.state.db.get_entities_with_relationships(
+                limit=limit
+            )
             return {"nodes": nodes, "edges": edges, "count": len(nodes)}
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.get("/api/graph/stats")
     async def get_graph_stats() -> dict[str, Any]:
@@ -98,13 +101,15 @@ def create_app() -> FastAPI:
             )
 
         try:
-            stats = await app.state.db.get_entity_stats()
+            stats: dict[str, Any] = await app.state.db.get_entity_stats()
             # Get relationship count
-            _nodes, edges = await app.state.db.get_entities_with_relationships(limit=10000)
+            _nodes, edges = await app.state.db.get_entities_with_relationships(
+                limit=10000
+            )
             stats["total_relationships"] = len(edges)
             return stats
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.get("/api/graph/entity/{entity_id}")
     async def get_entity(entity_id: str) -> dict[str, Any]:
@@ -128,10 +133,11 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=404, detail="Entity not found")
 
             # Get relationships for this entity
-            _nodes, edges = await app.state.db.get_entities_with_relationships(limit=10000)
+            _nodes, edges = await app.state.db.get_entities_with_relationships(
+                limit=10000
+            )
             entity_rels = [
-                e for e in edges
-                if e["source"] == entity_id or e["target"] == entity_id
+                e for e in edges if e["source"] == entity_id or e["target"] == entity_id
             ]
 
             return {
@@ -141,7 +147,7 @@ def create_app() -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.get("/api/health")
     async def health_check() -> dict[str, str]:
@@ -163,7 +169,9 @@ def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
     """
     import uvicorn
 
-    uvicorn.run("memini_ai.api.visualization:create_app", factory=True, host=host, port=port)
+    uvicorn.run(
+        "memini_ai.api.visualization:create_app", factory=True, host=host, port=port
+    )
 
 
 if __name__ == "__main__":

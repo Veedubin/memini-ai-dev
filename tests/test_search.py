@@ -142,12 +142,32 @@ class TestRrfFusion:
         search = MemorySearch(MagicMock())
 
         entries1 = [
-            MemoryEntry(id="a", text="Entry A", source_type=MemorySourceType.session, content_hash="a"),
-            MemoryEntry(id="b", text="Entry B", source_type=MemorySourceType.session, content_hash="b"),
+            MemoryEntry(
+                id="a",
+                text="Entry A",
+                source_type=MemorySourceType.session,
+                content_hash="a",
+            ),
+            MemoryEntry(
+                id="b",
+                text="Entry B",
+                source_type=MemorySourceType.session,
+                content_hash="b",
+            ),
         ]
         entries2 = [
-            MemoryEntry(id="b", text="Entry B", source_type=MemorySourceType.session, content_hash="b"),
-            MemoryEntry(id="c", text="Entry C", source_type=MemorySourceType.session, content_hash="c"),
+            MemoryEntry(
+                id="b",
+                text="Entry B",
+                source_type=MemorySourceType.session,
+                content_hash="b",
+            ),
+            MemoryEntry(
+                id="c",
+                text="Entry C",
+                source_type=MemorySourceType.session,
+                content_hash="c",
+            ),
         ]
 
         scores1 = [0.9, 0.8]
@@ -166,7 +186,10 @@ class TestTieredSearch:
 
     @pytest.mark.asyncio
     async def test_tiered_uses_vector_when_above_threshold(
-        self, mock_db: MagicMock, mock_embedding: MagicMock, mock_entries: list[MemoryEntry]
+        self,
+        mock_db: MagicMock,
+        mock_embedding: MagicMock,
+        mock_entries: list[MemoryEntry],
     ) -> None:
         """Should return vector results when top score >= threshold."""
         from memini_ai.memory.search import MemorySearch
@@ -176,7 +199,10 @@ class TestTieredSearch:
 
         search = MemorySearch(mock_db)
 
-        with patch("memini_ai.memory.search.generate_embedding", AsyncMock(return_value=mock_embedding)):
+        with patch(
+            "memini_ai.memory.search.generate_embedding",
+            AsyncMock(return_value=mock_embedding),
+        ):
             results = await search.tiered_search(
                 "python",
                 SearchOptions(top_k=5, threshold=0.72),
@@ -205,7 +231,10 @@ class TestTieredSearch:
 
         search = MemorySearch(mock_db)
 
-        with patch("memini_ai.memory.search.generate_embedding", AsyncMock(return_value=mock_embedding)):
+        with patch(
+            "memini_ai.memory.search.generate_embedding",
+            AsyncMock(return_value=mock_embedding),
+        ):
             results = await search.tiered_search(
                 "python",
                 SearchOptions(top_k=5, threshold=0.72),
@@ -220,7 +249,10 @@ class TestVectorOnlySearch:
 
     @pytest.mark.asyncio
     async def test_vector_only_returns_results(
-        self, mock_db: MagicMock, mock_embedding: MagicMock, mock_entries: list[MemoryEntry]
+        self,
+        mock_db: MagicMock,
+        mock_embedding: MagicMock,
+        mock_entries: list[MemoryEntry],
     ) -> None:
         """Should return vector search results."""
         from memini_ai.memory.search import MemorySearch
@@ -229,8 +261,11 @@ class TestVectorOnlySearch:
 
         search = MemorySearch(mock_db)
 
-        with patch("memini_ai.memory.search.generate_embedding", AsyncMock(return_value=mock_embedding)):
-            results = await search.vector_only_search(
+        with patch(
+            "memini_ai.memory.search.generate_embedding",
+            AsyncMock(return_value=mock_embedding),
+        ):
+            _results = await search.vector_only_search(
                 "python",
                 SearchOptions(top_k=5),
             )
@@ -239,7 +274,10 @@ class TestVectorOnlySearch:
 
     @pytest.mark.asyncio
     async def test_vector_only_uses_collection(
-        self, mock_db: MagicMock, mock_embedding: MagicMock, mock_entries: list[MemoryEntry]
+        self,
+        mock_db: MagicMock,
+        mock_embedding: MagicMock,
+        mock_entries: list[MemoryEntry],
     ) -> None:
         """Should pass collection name to database."""
         from memini_ai.memory.search import MemorySearch
@@ -248,7 +286,10 @@ class TestVectorOnlySearch:
 
         search = MemorySearch(mock_db)
 
-        with patch("memini_ai.memory.search.generate_embedding", AsyncMock(return_value=mock_embedding)):
+        with patch(
+            "memini_ai.memory.search.generate_embedding",
+            AsyncMock(return_value=mock_embedding),
+        ):
             await search.vector_only_search(
                 "python",
                 SearchOptions(top_k=5),
@@ -289,7 +330,9 @@ class TestTextOnlySearch:
         # Build BM25 index
         await search._build_bm25_index()
 
-        results = await search.text_only_search("python programming", SearchOptions(top_k=5))
+        results = await search.text_only_search(
+            "python programming", SearchOptions(top_k=5)
+        )
 
         assert len(results) <= 5
 
@@ -299,7 +342,10 @@ class TestParallelSearch:
 
     @pytest.mark.asyncio
     async def test_parallel_runs_both_searches(
-        self, mock_db: MagicMock, mock_embedding: MagicMock, mock_entries: list[MemoryEntry]
+        self,
+        mock_db: MagicMock,
+        mock_embedding: MagicMock,
+        mock_entries: list[MemoryEntry],
     ) -> None:
         """Should run vector and text searches concurrently."""
         from memini_ai.memory.search import MemorySearch
@@ -309,7 +355,10 @@ class TestParallelSearch:
 
         search = MemorySearch(mock_db)
 
-        with patch("memini_ai.memory.search.generate_embedding", AsyncMock(return_value=mock_embedding)):
+        with patch(
+            "memini_ai.memory.search.generate_embedding",
+            AsyncMock(return_value=mock_embedding),
+        ):
             results = await search.parallel_search(
                 "python",
                 SearchOptions(top_k=5),
@@ -349,7 +398,7 @@ class TestGetSimilar:
 
         search = MemorySearch(mock_db)
 
-        results = await search.get_similar("entry-1", SearchOptions())
+        await search.get_similar("entry-1", SearchOptions())
 
         mock_db.query_memories.assert_called_once()
 

@@ -11,6 +11,7 @@ from typing import Any
 from memini_ai.memory.database import VectorDatabase, create_database
 from memini_ai.memory.schema import (
     MemoryEntry,
+    MemorySourceType,
     SearchFilter,
     SearchOptions,
     SearchStrategy,
@@ -68,9 +69,9 @@ class MemorySystem:
                 return
 
             # Apply config to Qdrant-specific attributes if present
-            if hasattr(self._db, '_url') and self._config.qdrant_url:
+            if hasattr(self._db, "_url") and self._config.qdrant_url:
                 self._db._url = self._config.qdrant_url
-            if hasattr(self._db, '_project_id') and self._config.project_id:
+            if hasattr(self._db, "_project_id") and self._config.project_id:
                 self._db._project_id = self._config.project_id
 
             # Initialize database
@@ -122,6 +123,44 @@ class MemorySystem:
             input.content_hash = hash_content(input.text)
 
         return await self._db.add_memory(input)
+
+    async def add_memory_by_text(
+        self,
+        text: str,
+        source_type: MemorySourceType = MemorySourceType.session,
+        source_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> str:
+        """Add a memory entry by text with automatic embedding generation.
+
+        Convenience method that creates a MemoryEntry and adds it.
+
+        Args:
+            text: The memory content text.
+            source_type: Source type for the memory.
+            source_path: Optional source path or URL.
+            metadata: Optional metadata dict.
+            session_id: Optional session ID.
+
+        Returns:
+            The ID of the added memory entry.
+
+        Raises:
+            ValueError: If content already exists and deduplication is enabled.
+        """
+        entry = MemoryEntry(
+            text=text,
+            sourceType=source_type,
+            sourcePath=source_path,
+        )
+        if session_id:
+            entry.session_id = session_id
+        if metadata:
+            import json
+
+            entry.metadata_json = json.dumps(metadata)
+        return await self.add_memory(entry)
 
     async def get_memory(self, memory_id: str) -> MemoryEntry | None:
         """Get a memory entry by ID.
@@ -402,6 +441,22 @@ class MemorySystem:
             await self.initialize()
 
         await self._db.increment_retrieval_count(memory_id)
+
+    async def set_payload(
+        self,
+        memory_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Set payload fields for a memory entry.
+
+        Args:
+            memory_id: ID of the memory entry.
+            payload: Dictionary of payload fields to set.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        await self._db.set_payload(memory_id, payload)
 
     # =============================================================================
     # MEMORY GRAPH METHODS

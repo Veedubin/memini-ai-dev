@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 
 from memini_ai.server import server
@@ -42,7 +41,7 @@ def main() -> None:
         # Run as HTTP server
         logger.info("starting_mcp_http", host=args.host, port=args.port)
         try:
-            asyncio.run(server.run(transport="streamable-http", host=args.host, port=args.port))
+            server.run(transport="streamable-http", host=args.host, port=args.port)
         except KeyboardInterrupt:
             logger.info("server_interrupted")
             sys.exit(0)

@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import httpx
 
 from memini_ai.config import get_config
 from memini_ai.memory.schema import MemoryEntry, MemorySourceType
 from memini_ai.utils.logger import logger
+
+if TYPE_CHECKING:
+    from memini_ai.memory.system import MemorySystem
 
 EXTRACTION_PROMPT = """
 Analyze the following conversation and extract:
@@ -87,7 +91,7 @@ class MemoryExtractor:
 
     def __init__(
         self,
-        memory_system=None,
+        memory_system: MemorySystem | None = None,
         llm_url: str | None = None,
     ) -> None:
         self._memory_system = memory_system

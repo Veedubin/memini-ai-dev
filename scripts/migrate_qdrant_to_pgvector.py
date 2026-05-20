@@ -40,7 +40,9 @@ async def verify_migration(
     # Use first N memories with vectors as test queries
     test_memories = [m for m in all_memories if m.vector][:sample_size]
     if not test_memories:
-        print(f"No memories with vectors found for verification (tested {sample_size} samples)")
+        print(
+            f"No memories with vectors found for verification (tested {sample_size} samples)"
+        )
         return True
 
     print(f"Testing {len(test_memories)} random vector searches...")
@@ -51,7 +53,9 @@ async def verify_migration(
             continue
 
         # Query both databases
-        options = SearchOptions(top_k=5, threshold=0.0, strategy=SearchStrategy.VECTOR_ONLY)
+        options = SearchOptions(
+            top_k=5, threshold=0.0, strategy=SearchStrategy.VECTOR_ONLY
+        )
 
         qdrant_results = await qdrant.query_memories(memory.vector, options)
         pg_results = await pg.query_memories(memory.vector, options)
@@ -64,9 +68,11 @@ async def verify_migration(
         total = len(qdrant_ids | pg_ids)
         similarity = overlap / total if total > 0 else 0.0
 
-        print(f"  [{i}/{len(test_memories)}] Query '{memory.text[:50]}...': "
-              f"Qdrant={len(qdrant_ids)} results, PG={len(pg_ids)} results, "
-              f"ID overlap={overlap}/{total} ({similarity*100:.1f}%)")
+        print(
+            f"  [{i}/{len(test_memories)}] Query '{memory.text[:50]}...': "
+            f"Qdrant={len(qdrant_ids)} results, PG={len(pg_ids)} results, "
+            f"ID overlap={overlap}/{total} ({similarity * 100:.1f}%)"
+        )
 
         if similarity < 0.7:
             print("    ⚠ Low overlap - investigate if this is expected")
@@ -113,11 +119,14 @@ async def migrate() -> None:
     errors = []
 
     for i in range(0, total_count, BATCH_SIZE):
-        batch = all_memories[i:i + BATCH_SIZE]
+        batch = all_memories[i : i + BATCH_SIZE]
         batch_num = (i // BATCH_SIZE) + 1
         total_batches = (total_count + BATCH_SIZE - 1) // BATCH_SIZE
 
-        print(f"  Batch {batch_num}/{total_batches}: Processing {len(batch)} memories...", end=" ")
+        print(
+            f"  Batch {batch_num}/{total_batches}: Processing {len(batch)} memories...",
+            end=" ",
+        )
 
         # Process batch - collect records first
         records = []
@@ -128,11 +137,10 @@ async def migrate() -> None:
         # Insert batch with transaction
         try:
             pool = await pg._get_pool()
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    for record in records:
-                        await conn.fetchval(
-                            """
+            async with pool.acquire() as conn, conn.transaction():
+                for record in records:
+                    await conn.fetchval(
+                        """
                             INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata)
                             VALUES ($1, $2, $3, $4, $5, $6)
                             ON CONFLICT (id) DO UPDATE SET
@@ -142,13 +150,13 @@ async def migrate() -> None:
                                 content_hash = EXCLUDED.content_hash,
                                 metadata = EXCLUDED.metadata
                             """,
-                            record["id"],
-                            record["text"],
-                            record["embedding"],
-                            record["source_type"],
-                            record["content_hash"],
-                            record["metadata"],
-                        )
+                        record["id"],
+                        record["text"],
+                        record["embedding"],
+                        record["source_type"],
+                        record["content_hash"],
+                        record["metadata"],
+                    )
 
             migrated += len(batch)
             print(f"✓ ({migrated}/{total_count})")

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from memini_ai.config import get_config
-from memini_ai.memory.schema import RelationshipType
+from memini_ai.memory.schema import RelationshipType, TrustSignal
 from memini_ai.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -367,19 +367,21 @@ class DialecticEngine:
                             ):
                                 continue
 
-                        contradictions.append({
-                            "memory_a": {
-                                "id": memory.id,
-                                "text": memory.text[:200],  # Truncate for display
-                                "trust_score": memory.trust_score,
-                            },
-                            "memory_b": {
-                                "id": target_memory.id,
-                                "text": target_memory.text[:200],
-                                "trust_score": target_memory.trust_score,
-                            },
-                            "confidence": rel.confidence,
-                        })
+                        contradictions.append(
+                            {
+                                "memory_a": {
+                                    "id": memory.id,
+                                    "text": memory.text[:200],  # Truncate for display
+                                    "trust_score": memory.trust_score,
+                                },
+                                "memory_b": {
+                                    "id": target_memory.id,
+                                    "text": target_memory.text[:200],
+                                    "trust_score": target_memory.trust_score,
+                                },
+                                "confidence": rel.confidence,
+                            }
+                        )
 
                         if len(contradictions) >= limit:
                             break
@@ -429,19 +431,21 @@ class DialecticEngine:
                 if rel.relationship_type == RelationshipType.CONTRADICTS:
                     target = await self._memory_system.get_memory(rel.target_id)
                     if target:
-                        contradictions.append({
-                            "memory_a": {
-                                "id": source.id,
-                                "text": source.text[:200],
-                                "trust_score": source.trust_score,
-                            },
-                            "memory_b": {
-                                "id": target.id,
-                                "text": target.text[:200],
-                                "trust_score": target.trust_score,
-                            },
-                            "confidence": rel.confidence,
-                        })
+                        contradictions.append(
+                            {
+                                "memory_a": {
+                                    "id": source.id,
+                                    "text": source.text[:200],
+                                    "trust_score": source.trust_score,
+                                },
+                                "memory_b": {
+                                    "id": target.id,
+                                    "text": target.text[:200],
+                                    "trust_score": target.trust_score,
+                                },
+                                "confidence": rel.confidence,
+                            }
+                        )
 
             # Also search reverse relationships (memories that contradict this one)
             all_memories = await self._memory_system.list_memories()
@@ -453,24 +457,28 @@ class DialecticEngine:
                         rel.relationship_type == RelationshipType.CONTRADICTS
                         and rel.target_id == memory_id
                     ):
-                        contradictions.append({
-                            "memory_a": {
-                                "id": memory.id,
-                                "text": memory.text[:200],
-                                "trust_score": memory.trust_score,
-                            },
-                            "memory_b": {
-                                "id": source.id,
-                                "text": source.text[:200],
-                                "trust_score": source.trust_score,
-                            },
-                            "confidence": rel.confidence,
-                        })
+                        contradictions.append(
+                            {
+                                "memory_a": {
+                                    "id": memory.id,
+                                    "text": memory.text[:200],
+                                    "trust_score": memory.trust_score,
+                                },
+                                "memory_b": {
+                                    "id": source.id,
+                                    "text": source.text[:200],
+                                    "trust_score": source.trust_score,
+                                },
+                                "confidence": rel.confidence,
+                            }
+                        )
 
             return contradictions[:limit]
 
         except Exception:
-            logger.warning("dialectic_find_related_contradictions_failed", error=str(Exception))
+            logger.warning(
+                "dialectic_find_related_contradictions_failed", error=str(Exception)
+            )
             return [{"error": str(Exception)}]
 
     # =============================================================================
@@ -528,7 +536,7 @@ class DialecticEngine:
                 )
                 if not json_match:
                     # Try broader JSON match
-                    json_match = re.search(r'\{.*\}', arguments_result, re.DOTALL)
+                    json_match = re.search(r"\{.*\}", arguments_result, re.DOTALL)
 
                 if json_match:
                     data = json.loads(json_match.group())
@@ -644,7 +652,7 @@ class DialecticEngine:
 
             # Parse resolution
             try:
-                json_match = re.search(r'\{.*\}', resolution_text, re.DOTALL)
+                json_match = re.search(r"\{.*\}", resolution_text, re.DOTALL)
                 if json_match:
                     data = json.loads(json_match.group())
                 else:
@@ -695,7 +703,9 @@ class DialecticEngine:
             return resolution
 
         except Exception:
-            logger.warning("dialectic_resolve_contradiction_failed", error=str(Exception))
+            logger.warning(
+                "dialectic_resolve_contradiction_failed", error=str(Exception)
+            )
             return None
 
     # =============================================================================
@@ -754,7 +764,7 @@ class DialecticEngine:
 
             # Parse response
             try:
-                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
                 if json_match:
                     data = json.loads(json_match.group())
                 else:
@@ -1004,10 +1014,7 @@ class DialecticEngine:
             trust_engine = TrustEngine(memory_system=self._memory_system)
 
             # Map delta to trust signal
-            if delta > 0:
-                signal = "agent_used"
-            else:
-                signal = "agent_ignored"
+            signal = TrustSignal.AGENT_USED if delta > 0 else TrustSignal.AGENT_IGNORED
 
             await trust_engine.adjust_trust(memory_id, signal)
 

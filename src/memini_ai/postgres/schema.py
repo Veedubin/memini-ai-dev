@@ -20,6 +20,8 @@ TABLE_PEERS = "peers"
 TABLE_MEMORY_SHARING = "memory_sharing"
 TABLE_USER_PROFILES = "user_profiles"
 TABLE_TRUST_ADJUSTMENTS = "trust_adjustments"
+TABLE_THOUGHT_CHAINS = "thought_chains"
+TABLE_THOUGHTS = "thoughts"
 
 # SQL for creating all extensions
 SQL_CREATE_EXTENSIONS = """
@@ -258,6 +260,74 @@ CREATE INDEX IF NOT EXISTS idx_trust_adj_memory ON trust_adjustments(memory_id);
 CREATE INDEX IF NOT EXISTS idx_trust_adj_created ON trust_adjustments(created_at);
 """
 
+# =============================================================================
+# Thought Chains tables (Phase 5)
+# =============================================================================
+
+# SQL for thought_chains table
+SQL_CREATE_THOUGHT_CHAINS_TABLE = """
+CREATE TABLE IF NOT EXISTS thought_chains (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255),
+    parent_chain_id UUID REFERENCES thought_chains(id) ON DELETE SET NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'paused', 'completed', 'abandoned')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+"""
+
+# SQL for thought_chains indexes
+SQL_CREATE_THOUGHT_CHAINS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_thought_chains_session ON thought_chains(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_thought_chains_parent ON thought_chains(parent_chain_id) WHERE parent_chain_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_thought_chains_status ON thought_chains(status) WHERE status = 'active';
+"""
+
+# SQL for thoughts table
+SQL_CREATE_THOUGHTS_TABLE = """
+CREATE TABLE IF NOT EXISTS thoughts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chain_id UUID NOT NULL REFERENCES thought_chains(id) ON DELETE CASCADE,
+
+    -- Original sequential-thinking fields
+    thought TEXT NOT NULL,
+    thought_number INTEGER NOT NULL CHECK (thought_number >= 1),
+    total_thoughts INTEGER NOT NULL CHECK (total_thoughts >= 1),
+    next_thought_needed BOOLEAN NOT NULL,
+
+    -- Revision support
+    is_revision BOOLEAN DEFAULT FALSE,
+    revises_thought_id UUID REFERENCES thoughts(id) ON DELETE SET NULL,
+
+    -- Branching support
+    branch_from_thought_id UUID REFERENCES thoughts(id) ON DELETE SET NULL,
+    branch_id VARCHAR(255),
+
+    -- memini-ai additions
+    embedding vector(384),
+    content_hash VARCHAR(64),
+    memory_id UUID REFERENCES memories(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+"""
+
+# SQL for thoughts indexes
+SQL_CREATE_THOUGHTS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_thoughts_chain ON thoughts(chain_id);
+CREATE INDEX IF NOT EXISTS idx_thoughts_embedding ON thoughts USING diskann (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_thoughts_branch ON thoughts(branch_id) WHERE branch_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_thoughts_revises ON thoughts(revises_thought_id) WHERE revises_thought_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_thoughts_memory ON thoughts(memory_id) WHERE memory_id IS NOT NULL;
+"""
+
+# SQL to update memories source_type CHECK constraint to include 'thought'
+SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK = """
+ALTER TABLE memories DROP CONSTRAINT IF EXISTS memories_source_type_check;
+ALTER TABLE memories ADD CONSTRAINT memories_source_type_check
+    CHECK (source_type IN ('session', 'file', 'web', 'boomerang', 'project', 'thought'));
+"""
+
 
 def get_schema_sql() -> str:
     """Return all SQL schema definitions as a single concatenated string.
@@ -266,23 +336,32 @@ def get_schema_sql() -> str:
         Complete SQL script for creating all tables, indexes, and extensions
         for the pgvector/pgvectorscale backend.
     """
-    return "\n".join([
-        SQL_CREATE_EXTENSIONS,
-        SQL_CREATE_PEERS_TABLE,  # Must be first - other tables reference it
-        SQL_CREATE_MEMORIES_TABLE,
-        SQL_CREATE_MEMORIES_EMBEDDING_INDEX,
-        SQL_CREATE_MEMORIES_INDEXES,
-        SQL_CREATE_MEMORY_RELATIONSHIPS_TABLE,
-        SQL_CREATE_MEMORY_RELATIONSHIPS_INDEXES,
-        SQL_CREATE_ENTITIES_TABLE,  # References peers
-        SQL_CREATE_ENTITIES_EMBEDDING_INDEX,
-        SQL_CREATE_ENTITIES_INDEXES,
-        SQL_CREATE_ENTITY_RELATIONSHIPS_TABLE,
-        SQL_CREATE_ENTITY_RELATIONSHIPS_INDEXES,
-        SQL_CREATE_MEMORY_SHARING_TABLE,  # References peers
-        SQL_CREATE_MEMORY_SHARING_INDEXES,
-        SQL_CREATE_USER_PROFILES_TABLE,
-        SQL_CREATE_USER_PROFILES_INDEXES,
-        SQL_CREATE_TRUST_ADJUSTMENTS_TABLE,
-        SQL_CREATE_TRUST_ADJUSTMENTS_INDEXES,
-    ])
+    return "\n".join(
+        [
+            SQL_CREATE_EXTENSIONS,
+            SQL_CREATE_PEERS_TABLE,  # Must be first - other tables reference it
+            SQL_CREATE_MEMORIES_TABLE,
+            SQL_CREATE_MEMORIES_EMBEDDING_INDEX,
+            SQL_CREATE_MEMORIES_INDEXES,
+            SQL_CREATE_MEMORY_RELATIONSHIPS_TABLE,
+            SQL_CREATE_MEMORY_RELATIONSHIPS_INDEXES,
+            SQL_CREATE_ENTITIES_TABLE,  # References peers
+            SQL_CREATE_ENTITIES_EMBEDDING_INDEX,
+            SQL_CREATE_ENTITIES_INDEXES,
+            SQL_CREATE_ENTITY_RELATIONSHIPS_TABLE,
+            SQL_CREATE_ENTITY_RELATIONSHIPS_INDEXES,
+            SQL_CREATE_MEMORY_SHARING_TABLE,  # References peers
+            SQL_CREATE_MEMORY_SHARING_INDEXES,
+            SQL_CREATE_USER_PROFILES_TABLE,
+            SQL_CREATE_USER_PROFILES_INDEXES,
+            SQL_CREATE_TRUST_ADJUSTMENTS_TABLE,
+            SQL_CREATE_TRUST_ADJUSTMENTS_INDEXES,
+            # Phase 5: Thought Chains
+            SQL_CREATE_THOUGHT_CHAINS_TABLE,
+            SQL_CREATE_THOUGHT_CHAINS_INDEXES,
+            SQL_CREATE_THOUGHTS_TABLE,
+            SQL_CREATE_THOUGHTS_INDEXES,
+            # Update memories source_type CHECK constraint
+            SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK,
+        ]
+    )

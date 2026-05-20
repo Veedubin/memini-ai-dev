@@ -346,7 +346,7 @@ class TestCountMemories:
         self, db: MemoryDatabase, mock_qdrant: MagicMock
     ) -> None:
         """Should return vector count from collection."""
-        mock_qdrant.get_collection = AsyncMock(return_value=MagicMock(vectors_count=42))
+        mock_qdrant.get_collection = AsyncMock(return_value=MagicMock(points_count=42))
 
         with patch(
             "memini_ai.memory.database._client_cache",

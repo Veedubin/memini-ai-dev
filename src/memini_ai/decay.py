@@ -158,7 +158,7 @@ class DecayEngine:
         # Effective decay days = actual days * decay_rate
         effective_days = days_elapsed * decay_rate
         # Half-life formula: score * 0.5^(effective_days/half_life)
-        decay_factor = 0.5 ** (effective_days / half_life_days)
+        decay_factor = float(0.5 ** (effective_days / half_life_days))
         return trust_score * decay_factor
 
     def calculate_days_until_archive(
@@ -212,7 +212,9 @@ class DecayEngine:
         days_elapsed = (datetime.utcnow() - last_accessed).total_seconds() / 86400
 
         # Apply decay
-        memory_decay_rate = memory.decay_rate if hasattr(memory, 'decay_rate') else self._decay_rate
+        memory_decay_rate = (
+            memory.decay_rate if hasattr(memory, "decay_rate") else self._decay_rate
+        )
         new_score = self.calculate_decay(
             memory.trust_score,
             memory_decay_rate,
@@ -284,13 +286,13 @@ class DecayEngine:
             "archived": archived,
         }
 
-    def _update_memory_decay(
+    async def _update_memory_decay(
         self,
         memory_id: str,
         trust_score: float,
         is_archived: bool,
     ) -> None:
-        """Update decay fields in database (sync wrapper).
+        """Update decay fields in database.
 
         Args:
             memory_id: Memory ID.
@@ -308,7 +310,7 @@ class DecayEngine:
         client = _client_cache[config.qdrant_url]
 
         with contextlib.suppress(Exception):
-            client.set_payload(
+            await client.set_payload(
                 collection_name=collection_name,
                 payload={
                     "trustScore": trust_score,
@@ -340,7 +342,10 @@ class DecayEngine:
                     continue
 
                 last_accessed = memory.last_accessed or memory.timestamp
-                days_elapsed = (datetime.utcnow() - last_accessed).total_seconds() / 86400
+                # Calculate days_elapsed for future use if needed (currently unused)
+                _days_elapsed = (
+                    datetime.utcnow() - last_accessed
+                ).total_seconds() / 86400
 
                 # Determine trust level
                 if memory.trust_score < 0.2:
@@ -355,7 +360,11 @@ class DecayEngine:
                     level = TrustLevel.PROMOTED
 
                 # Calculate days until archive
-                memory_decay_rate = memory.decay_rate if hasattr(memory, 'decay_rate') else self._decay_rate
+                memory_decay_rate = (
+                    memory.decay_rate
+                    if hasattr(memory, "decay_rate")
+                    else self._decay_rate
+                )
                 days_until = self.calculate_days_until_archive(
                     memory.trust_score,
                     memory_decay_rate,
@@ -368,17 +377,22 @@ class DecayEngine:
                 ) or memory.trust_score < 0.3
 
                 if is_fading:
-                    fading_memories.append(MemoryDecayInfo(
-                        memory_id=memory.id,
-                        text_preview=memory.text[:50] + ("..." if len(memory.text) > 50 else ""),
-                        current_decay_rate=memory_decay_rate,
-                        trust_score=memory.trust_score,
-                        trust_level=level,
-                        last_accessed=last_accessed,
-                        access_count=memory.retrieval_count if hasattr(memory, 'retrieval_count') else 0,
-                        days_until_archive=days_until,
-                        is_fading=is_fading,
-                    ))
+                    fading_memories.append(
+                        MemoryDecayInfo(
+                            memory_id=memory.id,
+                            text_preview=memory.text[:50]
+                            + ("..." if len(memory.text) > 50 else ""),
+                            current_decay_rate=memory_decay_rate,
+                            trust_score=memory.trust_score,
+                            trust_level=level,
+                            last_accessed=last_accessed,
+                            access_count=memory.retrieval_count
+                            if hasattr(memory, "retrieval_count")
+                            else 0,
+                            days_until_archive=days_until,
+                            is_fading=is_fading,
+                        )
+                    )
 
         return {
             "enabled": True,
@@ -388,7 +402,9 @@ class DecayEngine:
                 "memories_decayed": self._stats.memories_decayed,
                 "memories_archived": self._stats.memories_archived,
                 "total_decay_events": self._stats.total_decay_events,
-                "last_run": self._stats.last_run.isoformat() if self._stats.last_run else None,
+                "last_run": self._stats.last_run.isoformat()
+                if self._stats.last_run
+                else None,
             },
             "fading_count": len(fading_memories),
             "fading_memories": [
@@ -398,7 +414,9 @@ class DecayEngine:
                     "decay_rate": m.current_decay_rate,
                     "trust_score": m.trust_score,
                     "trust_level": m.trust_level.value,
-                    "last_accessed": m.last_accessed.isoformat() if m.last_accessed else None,
+                    "last_accessed": m.last_accessed.isoformat()
+                    if m.last_accessed
+                    else None,
                     "access_count": m.access_count,
                     "days_until_archive": m.days_until_archive,
                     "is_fading": m.is_fading,
@@ -430,7 +448,9 @@ class DecayEngine:
         last_accessed = memory.last_accessed or memory.timestamp
         days_elapsed = (datetime.utcnow() - last_accessed).total_seconds() / 86400
 
-        memory_decay_rate = memory.decay_rate if hasattr(memory, 'decay_rate') else self._decay_rate
+        memory_decay_rate = (
+            memory.decay_rate if hasattr(memory, "decay_rate") else self._decay_rate
+        )
         days_until = self.calculate_days_until_archive(
             memory.trust_score,
             memory_decay_rate,
@@ -497,7 +517,7 @@ class ConsolidationEngine:
             return []
 
         candidates: list[ConsolidationCandidate] = []
-        config = get_config()
+        # config = get_config()  # Unused in ConsolidationEngine
 
         try:
             all_memories = await self._memory_system.list_memories()
@@ -507,7 +527,7 @@ class ConsolidationEngine:
                 if mem_a.is_archived:
                     continue
 
-                for mem_b in all_memories[i + 1:]:
+                for mem_b in all_memories[i + 1 :]:
                     if mem_b.is_archived:
                         continue
 
@@ -520,13 +540,15 @@ class ConsolidationEngine:
 
                     if similarity >= threshold:
                         combined = self._combine_texts(mem_a.text, mem_b.text)
-                        candidates.append(ConsolidationCandidate(
-                            memory_a=mem_a,
-                            memory_b=mem_b,
-                            similarity=similarity,
-                            combined_text=combined,
-                            suggested_action="merge",
-                        ))
+                        candidates.append(
+                            ConsolidationCandidate(
+                                memory_a=mem_a,
+                                memory_b=mem_b,
+                                similarity=similarity,
+                                combined_text=combined,
+                                suggested_action="merge",
+                            )
+                        )
 
         except Exception as e:
             logger.warning("consolidation_find_error", error=str(e))
@@ -625,10 +647,12 @@ class ConsolidationEngine:
             return True
 
         except Exception as e:
-            logger.warning("consolidation_pair_error", memory_a=candidate.memory_a.id, error=str(e))
+            logger.warning(
+                "consolidation_pair_error", memory_a=candidate.memory_a.id, error=str(e)
+            )
             return False
 
-    def _update_memory_on_consolidation(
+    async def _update_memory_on_consolidation(
         self,
         memory_id: str,
         text: str,
@@ -646,7 +670,7 @@ class ConsolidationEngine:
         client = _client_cache[config.qdrant_url]
 
         with contextlib.suppress(Exception):
-            client.set_payload(
+            await client.set_payload(
                 collection_name=collection_name,
                 payload={
                     "text": text,
@@ -655,7 +679,7 @@ class ConsolidationEngine:
                 points=[memory_id],
             )
 
-    def _archive_memory(self, memory_id: str) -> None:
+    async def _archive_memory(self, memory_id: str) -> None:
         """Archive a memory (mark as deleted/archived)."""
         from memini_ai.memory.database import _client_cache, _get_collection_name
 
@@ -668,7 +692,7 @@ class ConsolidationEngine:
         client = _client_cache[config.qdrant_url]
 
         with contextlib.suppress(Exception):
-            client.set_payload(
+            await client.set_payload(
                 collection_name=collection_name,
                 payload={"isArchived": True},
                 points=[memory_id],
@@ -686,7 +710,9 @@ class ConsolidationEngine:
             return {"consolidated": 0, "pairs_found": 0, "pairs_merged": 0}
 
         config = get_config()
-        candidates = await self.find_similar_pairs(config.consolidation_similarity_threshold)
+        candidates = await self.find_similar_pairs(
+            config.consolidation_similarity_threshold
+        )
 
         merged = 0
         for candidate in candidates:
@@ -727,7 +753,9 @@ class ConsolidationEngine:
                     continue
 
                 # Calculate if fading
-                memory_decay_rate = memory.decay_rate if hasattr(memory, 'decay_rate') else 1.0
+                memory_decay_rate = (
+                    memory.decay_rate if hasattr(memory, "decay_rate") else 1.0
+                )
                 days_until = decay_engine.calculate_days_until_archive(
                     memory.trust_score,
                     memory_decay_rate,
@@ -736,18 +764,27 @@ class ConsolidationEngine:
                 )
 
                 # Consider fading if days_until < 30 or trust < 0.3
-                if (days_until is not None and days_until < 30) or memory.trust_score < 0.3:
+                if (
+                    days_until is not None and days_until < 30
+                ) or memory.trust_score < 0.3:
                     last_accessed = memory.last_accessed or memory.timestamp
 
-                    fading.append({
-                        "memory_id": memory.id,
-                        "text_preview": memory.text[:50] + ("..." if len(memory.text) > 50 else ""),
-                        "trust_score": memory.trust_score,
-                        "decay_rate": memory_decay_rate,
-                        "last_accessed": last_accessed.isoformat(),
-                        "days_until_archive": round(days_until, 2) if days_until else 0,
-                        "access_count": memory.retrieval_count if hasattr(memory, 'retrieval_count') else 0,
-                    })
+                    fading.append(
+                        {
+                            "memory_id": memory.id,
+                            "text_preview": memory.text[:50]
+                            + ("..." if len(memory.text) > 50 else ""),
+                            "trust_score": memory.trust_score,
+                            "decay_rate": memory_decay_rate,
+                            "last_accessed": last_accessed.isoformat(),
+                            "days_until_archive": round(days_until, 2)
+                            if days_until
+                            else 0,
+                            "access_count": memory.retrieval_count
+                            if hasattr(memory, "retrieval_count")
+                            else 0,
+                        }
+                    )
 
             # Sort by days_until (most urgent first)
             fading.sort(key=lambda x: x["days_until_archive"] or 0)
@@ -781,7 +818,7 @@ async def adjust_decay_rate(
         return {"success": False, "error": "Memory not found"}
 
     # Update decay rate on memory object
-    if hasattr(memory, 'decay_rate'):
+    if hasattr(memory, "decay_rate"):
         memory.decay_rate = decay_rate
     else:
         # Add decay_rate attribute if not present
@@ -797,7 +834,7 @@ async def adjust_decay_rate(
     if config.qdrant_url in _client_cache:
         client = _client_cache[config.qdrant_url]
         with contextlib.suppress(Exception):
-            client.set_payload(
+            await client.set_payload(
                 collection_name=collection_name,
                 payload={"decayRate": decay_rate},
                 points=[memory_id],

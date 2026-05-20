@@ -101,8 +101,12 @@ class MeminiConfig(BaseSettings):
     # Phase 4A: Memory Decay settings
     decay_enabled: bool = Field(default=False, alias="DECAY_ENABLED")
     decay_half_life_days: int = Field(default=90, alias="DECAY_HALF_LIFE_DAYS")
-    consolidation_interval_hours: int = Field(default=168, alias="CONSOLIDATION_INTERVAL_HOURS")
-    consolidation_similarity_threshold: float = Field(default=0.92, alias="CONSOLIDATION_SIMILARITY_THRESHOLD")
+    consolidation_interval_hours: int = Field(
+        default=168, alias="CONSOLIDATION_INTERVAL_HOURS"
+    )
+    consolidation_similarity_threshold: float = Field(
+        default=0.92, alias="CONSOLIDATION_SIMILARITY_THRESHOLD"
+    )
 
     # Phase 4B: Knowledge Graph settings
     knowledge_graph_enabled: bool = Field(default=False, alias="KG_ENABLED")
@@ -112,13 +116,22 @@ class MeminiConfig(BaseSettings):
 
     # Phase 4C: Multi-Peer settings
     multi_peer_enabled: bool = Field(default=False, alias="MULTI_PEER_ENABLED")
-    multi_peer_allow_guest_sharing: bool = Field(default=True, alias="MULTI_PEER_GUEST_SHARING")
+    multi_peer_allow_guest_sharing: bool = Field(
+        default=True, alias="MULTI_PEER_GUEST_SHARING"
+    )
 
     # Phase 4D: Dialectic settings
     dialectic_enabled: bool = Field(default=False, alias="DIALECTIC_ENABLED")
-    dialectic_llm_provider: str = Field(default="ollama", alias="DIALECTIC_LLM_PROVIDER")
+    dialectic_llm_provider: str = Field(
+        default="ollama", alias="DIALECTIC_LLM_PROVIDER"
+    )
     dialectic_llm_model: str = Field(default="llama3", alias="DIALECTIC_LLM_MODEL")
-    dialectic_auto_threshold: float = Field(default=0.5, alias="DIALECTIC_AUTO_THRESHOLD")
+    dialectic_auto_threshold: float = Field(
+        default=0.5, alias="DIALECTIC_AUTO_THRESHOLD"
+    )
+
+    # Thought Chains settings (Phase 5)
+    thought_chains_enabled: bool = Field(default=False, alias="THOUGHT_CHAINS")
 
     _json_config_loaded: bool = False
 

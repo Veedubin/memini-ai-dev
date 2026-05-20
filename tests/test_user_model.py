@@ -255,7 +255,9 @@ class TestIsEnabled:
     @pytest.mark.asyncio
     async def test_is_enabled_false(self, mock_config_disabled: MagicMock) -> None:
         """is_enabled returns False when config disabled."""
-        with patch("memini_ai.user_model.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.user_model.get_config", return_value=mock_config_disabled
+        ):
             user_model = UserModel()
             assert user_model.is_enabled is False
 
@@ -278,7 +280,9 @@ class TestIsWarmedUp:
     """Tests for is_warmed_up property."""
 
     @pytest.mark.asyncio
-    async def test_not_warmed_up_initially(self, mock_config_enabled: MagicMock) -> None:
+    async def test_not_warmed_up_initially(
+        self, mock_config_enabled: MagicMock
+    ) -> None:
         """Not warmed up when cache is None."""
         with patch("memini_ai.user_model.get_config", return_value=mock_config_enabled):
             user_model = UserModel()
@@ -356,7 +360,9 @@ class TestGetProfile:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """When disabled, get_profile returns error info."""
-        with patch("memini_ai.user_model.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.user_model.get_config", return_value=mock_config_disabled
+        ):
             user_model = UserModel()
             result = await user_model.get_profile()
             assert "error" in result
@@ -465,7 +471,9 @@ class TestGetProfileSummary:
     @pytest.mark.asyncio
     async def test_disabled_returns_none(self, mock_config_disabled: MagicMock) -> None:
         """When disabled, get_profile_summary returns None."""
-        with patch("memini_ai.user_model.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.user_model.get_config", return_value=mock_config_disabled
+        ):
             user_model = UserModel()
             result = await user_model.get_profile_summary()
             assert result is None
@@ -558,7 +566,9 @@ class TestUpdateProfileFromSession:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """When disabled, update_profile_from_session returns error."""
-        with patch("memini_ai.user_model.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.user_model.get_config", return_value=mock_config_disabled
+        ):
             user_model = UserModel()
             result = await user_model.update_profile_from_session("test conversation")
             assert result["success"] is False
@@ -681,7 +691,9 @@ class TestDisabledNoOp:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """When disabled, get_profile returns error info."""
-        with patch("memini_ai.user_model.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.user_model.get_config", return_value=mock_config_disabled
+        ):
             user_model = UserModel()
             result = await user_model.get_profile()
             assert result["error"] == "User modeling disabled"
@@ -691,7 +703,9 @@ class TestDisabledNoOp:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """When disabled, get_profile_summary returns None."""
-        with patch("memini_ai.user_model.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.user_model.get_config", return_value=mock_config_disabled
+        ):
             user_model = UserModel()
             result = await user_model.get_profile_summary()
             assert result is None
@@ -701,7 +715,9 @@ class TestDisabledNoOp:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """When disabled, update_profile_from_session returns error."""
-        with patch("memini_ai.user_model.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.user_model.get_config", return_value=mock_config_disabled
+        ):
             user_model = UserModel()
             result = await user_model.update_profile_from_session("test conversation")
             assert result["success"] is False
@@ -724,9 +740,7 @@ class TestProfileStorage:
         mock_profile_entry: MagicMock,
     ) -> None:
         """Loads profile from memory system."""
-        mock_memory_system.query_memories = AsyncMock(
-            return_value=[mock_profile_entry]
-        )
+        mock_memory_system.query_memories = AsyncMock(return_value=[mock_profile_entry])
 
         with patch("memini_ai.user_model.get_config", return_value=mock_config_enabled):
             user_model = UserModel(memory_system=mock_memory_system)
@@ -848,12 +862,12 @@ class TestModuleLevelSingleton:
         mock_config.effective_project_id = "test"
 
         with patch("memini_ai.user_model.get_config", return_value=mock_config):
-            from memini_ai.user_model import _user_model, get_user_model
+            import memini_ai.user_model as um
 
             # Reset singleton
-            _user_model = None
+            um._user_model = None  # noqa: SLF001
 
-            result = get_user_model(None)
+            result = um.get_user_model(None)
             assert result is not None
             assert isinstance(result, UserModel)
 
@@ -867,11 +881,11 @@ class TestModuleLevelSingleton:
         mock_config.effective_project_id = "test"
 
         with patch("memini_ai.user_model.get_config", return_value=mock_config):
-            from memini_ai.user_model import _user_model, get_user_model
+            import memini_ai.user_model as um
 
             # Reset singleton
-            _user_model = None
+            um._user_model = None  # noqa: SLF001
 
-            first = get_user_model(None)
-            second = get_user_model(None)
+            first = um.get_user_model(None)
+            second = um.get_user_model(None)
             assert first is second

@@ -83,6 +83,7 @@ def mock_memory_system() -> MagicMock:
     system.delete_memory = AsyncMock(return_value=True)
     system.get_memory = AsyncMock(return_value=None)
     system.update_memory = AsyncMock(return_value=True)
+    system.set_payload = AsyncMock(return_value=True)
     system.is_ready = True
     return system
 
@@ -330,7 +331,8 @@ class TestIsEnabled:
     ) -> None:
         """is_enabled returns False when multi_peer_enabled is False."""
         with patch(
-            "memini_ai.multi_peer.get_config", return_value=mock_config_user_modeling_only
+            "memini_ai.multi_peer.get_config",
+            return_value=mock_config_user_modeling_only,
         ):
             manager = MultiPeerManager()
             assert manager.is_enabled is False
@@ -340,7 +342,9 @@ class TestIsEnabled:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """is_enabled returns False when user_modeling_enabled is False."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             assert manager.is_enabled is False
 
@@ -356,7 +360,9 @@ class TestListPeers:
     @pytest.mark.asyncio
     async def test_list_peers_disabled(self, mock_config_disabled: MagicMock) -> None:
         """Returns error when disabled."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             result = await manager.list_peers()
             assert "error" in result
@@ -397,7 +403,9 @@ class TestAddPeer:
     @pytest.mark.asyncio
     async def test_add_peer_disabled(self, mock_config_disabled: MagicMock) -> None:
         """Returns error when disabled."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             result = await manager.add_peer(
                 peer_id="new-peer",
@@ -473,7 +481,9 @@ class TestSwitchPeerContext:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """Returns error when disabled."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             result = await manager.switch_peer_context("peer-123")
             assert result["success"] is False
@@ -541,7 +551,9 @@ class TestGetCurrentContext:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """Returns default context when disabled."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             result = await manager.get_current_context()
 
@@ -576,7 +588,9 @@ class TestShareMemory:
     @pytest.mark.asyncio
     async def test_share_memory_disabled(self, mock_config_disabled: MagicMock) -> None:
         """Returns error when disabled."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             result = await manager.share_memory(
                 memory_id="mem-123",
@@ -659,7 +673,9 @@ class TestGetPeerMemories:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """Returns error when disabled."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             result = await manager.get_peer_memories("peer-456")
             assert "error" in result
@@ -679,7 +695,9 @@ class TestGetSharedMemories:
         self, mock_config_disabled: MagicMock
     ) -> None:
         """Returns error when disabled."""
-        with patch("memini_ai.multi_peer.get_config", return_value=mock_config_disabled):
+        with patch(
+            "memini_ai.multi_peer.get_config", return_value=mock_config_disabled
+        ):
             manager = MultiPeerManager()
             result = await manager.get_shared_memories()
             assert "error" in result
@@ -694,15 +712,15 @@ class TestGetSharedMemories:
 class TestCurrentPeerId:
     """Tests for current_peer_id property."""
 
-    def test_current_peer_id_initially_none(self, mock_config_enabled: MagicMock) -> None:
+    def test_current_peer_id_initially_none(
+        self, mock_config_enabled: MagicMock
+    ) -> None:
         """current_peer_id is None initially."""
         with patch("memini_ai.multi_peer.get_config", return_value=mock_config_enabled):
             manager = MultiPeerManager()
             assert manager.current_peer_id is None
 
-    def test_current_peer_id_after_switch(
-        self, mock_config_enabled: MagicMock
-    ) -> None:
+    def test_current_peer_id_after_switch(self, mock_config_enabled: MagicMock) -> None:
         """current_peer_id reflects context switch."""
         with patch("memini_ai.multi_peer.get_config", return_value=mock_config_enabled):
             manager = MultiPeerManager()
@@ -749,7 +767,6 @@ class TestModuleLevelSingleton:
     ) -> None:
         """get_multi_peer_manager creates instance when called first time."""
         with patch("memini_ai.multi_peer.get_config", return_value=mock_config_enabled):
-
             # Reset singleton
             import memini_ai.multi_peer
 
@@ -764,7 +781,6 @@ class TestModuleLevelSingleton:
     ) -> None:
         """get_multi_peer_manager returns same instance on subsequent calls."""
         with patch("memini_ai.multi_peer.get_config", return_value=mock_config_enabled):
-
             # Reset singleton
             import memini_ai.multi_peer
 

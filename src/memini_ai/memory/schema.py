@@ -21,6 +21,7 @@ class MemorySourceType(str, Enum):
     web = "web"
     boomerang = "boomerang"
     project = "project"
+    thought = "thought"
 
 
 class TrustLevel(str, Enum):

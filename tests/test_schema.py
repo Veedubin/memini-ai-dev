@@ -98,7 +98,7 @@ class TestMemoryEntry:
             content_hash="hash",
         )
         # Should not raise
-        uuid_obj = uuid_module.UUID(entry.id)
+        _uuid_obj = uuid_module.UUID(entry.id)
 
     def test_timestamp_default_is_reasonable(self) -> None:
         """Default timestamp should be recent (within last minute)."""
@@ -108,7 +108,11 @@ class TestMemoryEntry:
             content_hash="hash",
         )
         now = datetime.now(UTC)
-        diff = abs((entry.timestamp.replace(tzinfo=None) - now.replace(tzinfo=None)).total_seconds())
+        diff = abs(
+            (
+                entry.timestamp.replace(tzinfo=None) - now.replace(tzinfo=None)
+            ).total_seconds()
+        )
         assert diff < 60  # Within 1 minute
 
     def test_populate_by_name_with_camel_case_alias(self) -> None:

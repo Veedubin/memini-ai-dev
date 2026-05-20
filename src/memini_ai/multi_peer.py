@@ -13,6 +13,7 @@ Features:
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -196,7 +197,9 @@ class MultiPeerManager:
         """Check if multi-peer features are enabled."""
         if self._enabled is None:
             # Multi-peer requires user modeling to be enabled
-            self._enabled = self._config.multi_peer_enabled and self._config.user_modeling_enabled
+            self._enabled = (
+                self._config.multi_peer_enabled and self._config.user_modeling_enabled
+            )
         return self._enabled
 
     @property
@@ -384,7 +387,9 @@ class MultiPeerManager:
             # Update cache
             self._peer_cache[peer_id] = peer
 
-            logger.info("multi_peer_added", peer_id=peer_id, name=name, role=peer_role.value)
+            logger.info(
+                "multi_peer_added", peer_id=peer_id, name=name, role=peer_role.value
+            )
 
             return {
                 "success": True,
@@ -442,6 +447,9 @@ class MultiPeerManager:
         peer.last_active = datetime.utcnow()
 
         # Save updated peer
+        if self._memory_system is None:
+            return {"success": False, "error": "Memory system not initialized"}
+
         try:
             peer_json = json.dumps(peer.to_dict())
             metadata = {
@@ -509,7 +517,9 @@ class MultiPeerManager:
             return {
                 "success": True,
                 "peer_id": peer_id,
-                "previous_peer_id": self._context_stack[-1] if self._context_stack else None,
+                "previous_peer_id": self._context_stack[-1]
+                if self._context_stack
+                else None,
                 "stack_depth": len(self._context_stack),
             }
         else:
@@ -575,7 +585,10 @@ class MultiPeerManager:
         # Verify target peer exists
         peer_result = await self.get_peer(target_peer_id)
         if "error" in peer_result:
-            return {"success": False, "error": f"Target peer not found: {target_peer_id}"}
+            return {
+                "success": False,
+                "error": f"Target peer not found: {target_peer_id}",
+            }
 
         # Parse permission
         try:
@@ -588,6 +601,9 @@ class MultiPeerManager:
 
         # Determine owner peer_id
         owner_peer_id = self._current_peer_id or self._config.effective_project_id
+
+        if self._memory_system is None:
+            return {"success": False, "error": "Memory system not initialized"}
 
         try:
             # Create sharing record
@@ -609,10 +625,8 @@ class MultiPeerManager:
             # Parse existing metadata
             metadata = {}
             if memory.metadata_json:
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     metadata = json.loads(memory.metadata_json)
-                except json.JSONDecodeError:
-                    pass
 
             # Add sharing info
             if "sharing" not in metadata:
@@ -620,9 +634,10 @@ class MultiPeerManager:
             metadata["sharing"].append(sharing.to_dict())
             metadata["peer_id"] = owner_peer_id  # Mark owner
 
-            # Update memory
-            memory.metadata_json = json.dumps(metadata)
-            await self._memory_system.update_memory(memory)
+            # Update memory via set_payload
+            await self._memory_system.set_payload(
+                memory_id, {"metadataJson": json.dumps(metadata)}
+            )
 
             logger.info(
                 "multi_peer_memory_shared",
@@ -638,9 +653,9 @@ class MultiPeerManager:
                 "permission": perm.value,
                 "sharing": sharing.to_dict(),
             }
-        except Exception:
-            logger.warning("multi_peer_share_memory_failed", error=str(Exception))
-            return {"success": False, "error": str(Exception)}
+        except Exception as e:
+            logger.warning("multi_peer_share_memory_failed", error=str(e))
+            return {"success": False, "error": str(e)}
 
     async def get_peer_memories(
         self,
@@ -671,14 +686,18 @@ class MultiPeerManager:
             return {"error": peer_result["error"], "memories": [], "count": 0}
 
         if self._memory_system is None:
-            return {"error": "Memory system not initialized", "memories": [], "count": 0}
+            return {
+                "error": "Memory system not initialized",
+                "memories": [],
+                "count": 0,
+            }
 
         # Check if current user has access to this peer's memories
         current_peer = self._current_peer_id or self._config.effective_project_id
         if current_peer != peer_id:
             # Check if we're in the target peer's shared_with list
             peer = PeerProfile.from_dict(peer_result["peer"])
-            if current_peer not in peer.shared_collections and peer.permission != MemoryPermission.PRIVATE.value:
+            if current_peer not in peer.shared_collections:
                 return {
                     "error": f"No access to peer {peer_id}'s memories",
                     "memories": [],
@@ -705,15 +724,21 @@ class MultiPeerManager:
                         if metadata.get("peer_id") == peer_id:
                             # Check if shared with current user
                             sharing = metadata.get("sharing", [])
-                            current_user = self._current_peer_id or self._config.effective_project_id
+                            current_user = (
+                                self._current_peer_id
+                                or self._config.effective_project_id
+                            )
                             has_access = any(
-                                s.get("target_peer_id") == current_user or s.get("owner_peer_id") == peer_id
+                                s.get("target_peer_id") == current_user
+                                or s.get("owner_peer_id") == peer_id
                                 for s in sharing
                             )
-                            if has_access or peer.permission == MemoryPermission.PRIVATE.value:
+                            if has_access:
                                 entry_dict = entry.model_dump(by_alias=True)
                                 if entry_dict.get("timestamp"):
-                                    entry_dict["timestamp"] = entry.timestamp.isoformat()
+                                    entry_dict["timestamp"] = (
+                                        entry.timestamp.isoformat()
+                                    )
                                 memories.append(entry_dict)
                     except json.JSONDecodeError:
                         continue
@@ -743,16 +768,18 @@ class MultiPeerManager:
         current_peer = self._current_peer_id or self._config.effective_project_id
 
         if self._memory_system is None:
-            return {"error": "Memory system not initialized", "memories": [], "count": 0}
+            return {
+                "error": "Memory system not initialized",
+                "memories": [],
+                "count": 0,
+            }
 
         try:
             # Search for all memories with sharing metadata
             filter_opts = SearchFilter(sourceType=MemorySourceType.project)
             options = SearchOptions(topK=100, filter=filter_opts)
 
-            results = await self._memory_system.query_memories(
-                "shared memory", options
-            )
+            results = await self._memory_system.query_memories("shared memory", options)
 
             memories = []
             for entry in results:
@@ -766,7 +793,9 @@ class MultiPeerManager:
                             if s.get("target_peer_id") == current_peer:
                                 entry_dict = entry.model_dump(by_alias=True)
                                 if entry_dict.get("timestamp"):
-                                    entry_dict["timestamp"] = entry.timestamp.isoformat()
+                                    entry_dict["timestamp"] = (
+                                        entry.timestamp.isoformat()
+                                    )
                                 entry_dict["sharing_permission"] = s.get("permission")
                                 entry_dict["shared_by"] = s.get("shared_by")
                                 entry_dict["owner_peer_id"] = s.get("owner_peer_id")
@@ -784,7 +813,9 @@ class MultiPeerManager:
                 "current_peer_id": current_peer,
             }
         except Exception:
-            logger.warning("multi_peer_get_shared_memories_failed", error=str(Exception))
+            logger.warning(
+                "multi_peer_get_shared_memories_failed", error=str(Exception)
+            )
             return {"error": str(Exception), "memories": [], "count": 0}
 
     async def revoke_sharing(
@@ -804,6 +835,9 @@ class MultiPeerManager:
         if not self.is_enabled:
             return {"success": False, "error": "Multi-peer disabled"}
 
+        if self._memory_system is None:
+            return {"success": False, "error": "Memory system not initialized"}
+
         try:
             memory = await self._memory_system.get_memory(memory_id)
             if memory is None:
@@ -812,10 +846,8 @@ class MultiPeerManager:
             # Parse and update metadata
             metadata = {}
             if memory.metadata_json:
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     metadata = json.loads(memory.metadata_json)
-                except json.JSONDecodeError:
-                    pass
 
             # Remove sharing for target peer
             sharing = metadata.get("sharing", [])
@@ -823,8 +855,10 @@ class MultiPeerManager:
                 s for s in sharing if s.get("target_peer_id") != target_peer_id
             ]
 
-            memory.metadata_json = json.dumps(metadata)
-            await self._memory_system.update_memory(memory)
+            # Update memory via set_payload
+            await self._memory_system.set_payload(
+                memory_id, {"metadataJson": json.dumps(metadata)}
+            )
 
             logger.info(
                 "multi_peer_sharing_revoked",
@@ -846,7 +880,9 @@ class MultiPeerManager:
 _multi_peer_manager: MultiPeerManager | None = None
 
 
-def get_multi_peer_manager(memory_system: MemorySystem | None = None) -> MultiPeerManager:
+def get_multi_peer_manager(
+    memory_system: MemorySystem | None = None,
+) -> MultiPeerManager:
     """Get or create the global MultiPeerManager instance.
 
     Args:

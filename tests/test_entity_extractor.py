@@ -124,7 +124,9 @@ class TestEntityExtractor:
 
     def test_deduplication(self, extractor: EntityExtractor) -> None:
         """Test deduplication of entities."""
-        text = "The UserService is used by UserService to handle UserService operations."
+        text = (
+            "The UserService is used by UserService to handle UserService operations."
+        )
         entities = extractor.extract_from_text(text)
         names_lower = [e["name"].lower() for e in entities]
         # Should not have duplicates
@@ -158,17 +160,23 @@ class TestEntityExtractor:
         for entity in entities:
             assert "context" in entity
 
-    def test_resolve_canonical_form_snake_case(self, extractor: EntityExtractor) -> None:
+    def test_resolve_canonical_form_snake_case(
+        self, extractor: EntityExtractor
+    ) -> None:
         """Test canonical form for snake_case."""
         canonical = extractor.resolve_canonical_form("my_function_name")
         assert canonical == "my_function_name"
 
-    def test_resolve_canonical_form_pascal_case(self, extractor: EntityExtractor) -> None:
+    def test_resolve_canonical_form_pascal_case(
+        self, extractor: EntityExtractor
+    ) -> None:
         """Test canonical form for PascalCase."""
         canonical = extractor.resolve_canonical_form("MyClassName")
         assert canonical == "MyClassName"
 
-    def test_resolve_canonical_form_title_case(self, extractor: EntityExtractor) -> None:
+    def test_resolve_canonical_form_title_case(
+        self, extractor: EntityExtractor
+    ) -> None:
         """Test canonical form for title case phrases."""
         canonical = extractor.resolve_canonical_form("memory system")
         assert canonical == "Memory System"
@@ -191,9 +199,24 @@ class TestEntityExtractor:
     def test_deduplicate_by_similarity(self, extractor: EntityExtractor) -> None:
         """Test deduplication by similarity."""
         entities = [
-            {"name": "MyFunction", "type": EntityType.CODE, "confidence": 0.9, "pattern_matched": ""},
-            {"name": "myfunction", "type": EntityType.CODE, "confidence": 0.8, "pattern_matched": ""},
-            {"name": "OtherFunction", "type": EntityType.CODE, "confidence": 0.7, "pattern_matched": ""},
+            {
+                "name": "MyFunction",
+                "type": EntityType.CODE,
+                "confidence": 0.9,
+                "pattern_matched": "",
+            },
+            {
+                "name": "myfunction",
+                "type": EntityType.CODE,
+                "confidence": 0.8,
+                "pattern_matched": "",
+            },
+            {
+                "name": "OtherFunction",
+                "type": EntityType.CODE,
+                "confidence": 0.7,
+                "pattern_matched": "",
+            },
         ]
         deduped = extractor.deduplicate_by_similarity(entities)
         assert len(deduped) == 2  # MyFunction and myfunction should merge
@@ -261,5 +284,5 @@ class TestEntityExtractorPatterns:
         assert len(entities) > 0
 
         # Should have various types
-        types = set(e["type"] for e in entities)
+        types = {e["type"] for e in entities}
         assert len(types) > 1  # At least CODE and something else
