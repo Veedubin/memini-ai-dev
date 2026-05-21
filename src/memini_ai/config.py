@@ -48,7 +48,7 @@ class MeminiConfig(BaseSettings):
     # Valid sslmode values: disable, allow, prefer, require, verify-ca, verify-full
     # See: https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-SSLMODE-STATEMENTS
     db_sslmode: str = Field(
-        default="prefer",
+        default="disable",
         alias="DB_SSLMODE",
         description="PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)",
     )
