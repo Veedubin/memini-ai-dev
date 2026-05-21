@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-19
+
+### Features
+
+- Memory Delta Model: Partial memory updates with `supersedes_id`, `structured_fields`, `change_ratio`
+- Epoch-ms timestamps (`created_at_ms`) for temporal ordering in supersession chains
+- Supersession chain traversal: `get_supersession_chain`, `get_superseded_memory`
+- New `PARTIAL_UPDATE` relationship type alongside `SUPERSEDES`
+- New `src/memini_ai/memory/merger.py` for structured field merging
+- New migration script: `scripts/migrate_delta_model.py`
+- Updated MCP tools with delta-aware parameters
+- Self-referencing relationships filtered out in `find_related_memories`
+
+### Tests
+
+- 693 tests passing (37 PostgreSQL connection errors due to local DB not running)
+
+### Bug Fixes
+
+- Fixed self-referencing relationships being returned in `find_related_memories`
+
+### Breaking Changes
+
+- None (backward compatible)
+
 ## [0.2.0] - 2026-05-18
 
 ### Features
