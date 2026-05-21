@@ -162,26 +162,15 @@ class TrustEngine:
             trust_score: New trust score.
             is_archived: New archived status.
         """
-        from memini_ai.memory.database import _client_cache, _get_collection_name
-
-        config = get_config()
-        collection_name = _get_collection_name(config.embedding_dim)
-
-        if config.qdrant_url not in _client_cache:
+        if self._memory_system is None:
             return
 
-        client = _client_cache[config.qdrant_url]
-
-        # Update only trust-related fields using set payload
         with contextlib.suppress(Exception):
-            # Note: set_payload is sync in qdrant-client REST client
-            client.set_payload(  # type: ignore[unused-coroutine]
-                collection_name=collection_name,
-                payload={
-                    "trustScore": trust_score,
-                    "isArchived": is_archived,
-                },
-                points=[memory_id],
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                self._memory_system._db.update_trust_fields(
+                    memory_id, trust_score, is_archived
+                )
             )
 
     async def get_trust_score(self, memory_id: str) -> dict[str, object] | None:
@@ -237,20 +226,15 @@ class TrustEngine:
 
     def _update_retrieval_count(self, memory_id: str, count: int) -> None:
         """Update retrieval count in database."""
-        from memini_ai.memory.database import _client_cache, _get_collection_name
-
-        config = get_config()
-        if config.qdrant_url not in _client_cache:
+        if self._memory_system is None:
             return
 
-        client = _client_cache[config.qdrant_url]
-        collection_name = _get_collection_name(config.embedding_dim)
-
         with contextlib.suppress(Exception):
-            client.set_payload(  # type: ignore[unused-coroutine]
-                collection_name=collection_name,
-                payload={"retrievalCount": count},
-                points=[memory_id],
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                self._memory_system._db.set_payload(
+                    memory_id, {"retrievalCount": count}
+                )
             )
 
     async def list_archived(

@@ -658,7 +658,7 @@ class TestDecayFieldOnMemoryEntry:
 
 
 class TestMemoryEntryAliasing:
-    """Tests for MemoryEntry field aliasing (for Qdrant compatibility)."""
+    """MemoryEntry field aliasing tests."""
 
     def test_decay_rate_alias(self) -> None:
         """decayRate alias should map to decay_rate."""

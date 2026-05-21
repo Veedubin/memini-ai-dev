@@ -376,7 +376,7 @@ Each phase requires:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| MEMINI_DB_URL | PostgreSQL connection URL | postgresql://postgres:password@localhost:5432/postgres |
+| MEMINI_DB_URL | PostgreSQL connection URL | Set via `.env` (see `.env.example`) |
 | MEMINI_PROJECT_ID | Project namespace | auto-generated |
 | MEMINI_EMBEDDING_DIM | 1024 or 384 | 1024 |
 | MEMINI_DEVICE | auto, gpu, cpu | auto |

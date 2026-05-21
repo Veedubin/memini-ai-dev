@@ -299,24 +299,12 @@ class DecayEngine:
             trust_score: New trust score.
             is_archived: New archived status.
         """
-        from memini_ai.memory.database import _client_cache, _get_collection_name
-
-        config = get_config()
-        collection_name = _get_collection_name(config.embedding_dim)
-
-        if config.qdrant_url not in _client_cache:
+        if self._memory_system is None:
             return
 
-        client = _client_cache[config.qdrant_url]
-
         with contextlib.suppress(Exception):
-            await client.set_payload(
-                collection_name=collection_name,
-                payload={
-                    "trustScore": trust_score,
-                    "isArchived": is_archived,
-                },
-                points=[memory_id],
+            await self._memory_system._db.update_trust_fields(
+                memory_id, trust_score, is_archived
             )
 
     async def get_decay_status(self) -> dict[str, Any]:
@@ -659,44 +647,21 @@ class ConsolidationEngine:
         trust_score: float,
     ) -> None:
         """Update memory after consolidation."""
-        from memini_ai.memory.database import _client_cache, _get_collection_name
-
-        config = get_config()
-        collection_name = _get_collection_name(config.embedding_dim)
-
-        if config.qdrant_url not in _client_cache:
+        if self._memory_system is None:
             return
 
-        client = _client_cache[config.qdrant_url]
-
         with contextlib.suppress(Exception):
-            await client.set_payload(
-                collection_name=collection_name,
-                payload={
-                    "text": text,
-                    "trustScore": trust_score,
-                },
-                points=[memory_id],
+            await self._memory_system._db.set_payload(
+                memory_id, {"text": text, "trustScore": trust_score}
             )
 
     async def _archive_memory(self, memory_id: str) -> None:
         """Archive a memory (mark as deleted/archived)."""
-        from memini_ai.memory.database import _client_cache, _get_collection_name
-
-        config = get_config()
-        collection_name = _get_collection_name(config.embedding_dim)
-
-        if config.qdrant_url not in _client_cache:
+        if self._memory_system is None:
             return
 
-        client = _client_cache[config.qdrant_url]
-
         with contextlib.suppress(Exception):
-            await client.set_payload(
-                collection_name=collection_name,
-                payload={"isArchived": True},
-                points=[memory_id],
-            )
+            await self._memory_system._db.set_payload(memory_id, {"isArchived": True})
 
     async def run_consolidation(self) -> dict[str, Any]:
         """Run a full consolidation cycle.
@@ -825,20 +790,8 @@ async def adjust_decay_rate(
         memory.decay_rate = decay_rate
 
     # Persist to database
-    from memini_ai.config import get_config
-    from memini_ai.memory.database import _client_cache, _get_collection_name
-
-    config = get_config()
-    collection_name = _get_collection_name(config.embedding_dim)
-
-    if config.qdrant_url in _client_cache:
-        client = _client_cache[config.qdrant_url]
-        with contextlib.suppress(Exception):
-            await client.set_payload(
-                collection_name=collection_name,
-                payload={"decayRate": decay_rate},
-                points=[memory_id],
-            )
+    with contextlib.suppress(Exception):
+        await memory_system._db.set_payload(memory_id, {"decayRate": decay_rate})
 
     return {
         "success": True,

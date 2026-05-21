@@ -86,6 +86,8 @@ def mock_memory_system() -> MagicMock:
     system.get_memory = AsyncMock(return_value=None)
     system.add_memory = AsyncMock(return_value="new-memory-id")
     system.query_memories = AsyncMock(return_value=[])
+    system.get_supersession_chain = AsyncMock(return_value=[])
+    system.get_superseded_memory = AsyncMock(return_value=None)
     system._db = MagicMock()
     system._db.set_payload = AsyncMock(return_value=True)
     return system
@@ -327,7 +329,9 @@ class TestMemoryGraphFindRelated:
             content_hash="hash3",
         )
 
-        async def get_memory_side_effect(memory_id: str) -> MemoryEntry | None:
+        async def get_memory_side_effect(
+            memory_id: str, include_archived: bool = False
+        ) -> MemoryEntry | None:
             if memory_id == "test-memory-123":
                 return memory_with_relationships
             if memory_id == "mem-1":
@@ -402,18 +406,20 @@ class TestMemoryGraphFindRelated:
     ) -> None:
         """Should respect limit parameter."""
         # Add more relationships
-        memory_with_relationships.relationships.extend([
-            Relationship(
-                target_id="mem-4",
-                relationship_type=RelationshipType.RELATED_TO,
-                confidence=0.6,
-            ),
-            Relationship(
-                target_id="mem-5",
-                relationship_type=RelationshipType.RELATED_TO,
-                confidence=0.6,
-            ),
-        ])
+        memory_with_relationships.relationships.extend(
+            [
+                Relationship(
+                    target_id="mem-4",
+                    relationship_type=RelationshipType.RELATED_TO,
+                    confidence=0.6,
+                ),
+                Relationship(
+                    target_id="mem-5",
+                    relationship_type=RelationshipType.RELATED_TO,
+                    confidence=0.6,
+                ),
+            ]
+        )
         mock_memory_system.get_memory.return_value = memory_with_relationships
 
         with patch("memini_ai.graph.get_config") as mock_config:
@@ -455,7 +461,10 @@ class TestMemoryGraphCreateRelationship:
             # Verify the relationship was added
             assert len(sample_memory.relationships) == 1
             assert sample_memory.relationships[0].target_id == "target-memory-456"
-            assert sample_memory.relationships[0].relationship_type == RelationshipType.RELATED_TO
+            assert (
+                sample_memory.relationships[0].relationship_type
+                == RelationshipType.RELATED_TO
+            )
             assert sample_memory.relationships[0].confidence == 0.75
 
     @pytest.mark.asyncio
@@ -692,7 +701,10 @@ class TestMemoryGraphAllRelationshipTypes:
                 RelationshipType.SUPERSEDES,
             )
 
-            assert sample_memory.relationships[0].relationship_type == RelationshipType.SUPERSEDES
+            assert (
+                sample_memory.relationships[0].relationship_type
+                == RelationshipType.SUPERSEDES
+            )
 
     @pytest.mark.asyncio
     async def test_create_contradicts_relationship(
@@ -714,7 +726,10 @@ class TestMemoryGraphAllRelationshipTypes:
                 RelationshipType.CONTRADICTS,
             )
 
-            assert sample_memory.relationships[0].relationship_type == RelationshipType.CONTRADICTS
+            assert (
+                sample_memory.relationships[0].relationship_type
+                == RelationshipType.CONTRADICTS
+            )
 
     @pytest.mark.asyncio
     async def test_create_derived_from_relationship(
@@ -736,7 +751,10 @@ class TestMemoryGraphAllRelationshipTypes:
                 RelationshipType.DERIVED_FROM,
             )
 
-            assert sample_memory.relationships[0].relationship_type == RelationshipType.DERIVED_FROM
+            assert (
+                sample_memory.relationships[0].relationship_type
+                == RelationshipType.DERIVED_FROM
+            )
 
 
 class TestMemoryGraphEdgeCases:
@@ -799,9 +817,7 @@ class TestMemoryGraphEdgeCases:
     ) -> None:
         """Should handle case where only similar memory is self.
 
-        Note: Current implementation does NOT filter out self-references,
-        so it will return the self-referencing memory. This may be a bug
-        but we test actual behavior.
+        Self-referencing relationships are now correctly filtered out.
         """
         sample_memory.relationships = [
             Relationship(
@@ -810,6 +826,7 @@ class TestMemoryGraphEdgeCases:
             ),
         ]
         mock_memory_system.get_memory.return_value = sample_memory
+        mock_memory_system.get_supersession_chain.return_value = []
 
         with patch("memini_ai.graph.get_config") as mock_config:
             mock_config.return_value.memory_graph_enabled = True
@@ -817,7 +834,5 @@ class TestMemoryGraphEdgeCases:
             graph = MemoryGraph(memory_system=mock_memory_system)
             results = await graph.find_related_memories("test-memory-123")
 
-            # Current behavior: returns self-referencing memory
-            # This is a known limitation - self-references should perhaps be filtered
-            assert len(results) == 1
-            assert results[0].id == "test-memory-123"
+            # Self-referencing memory is filtered out
+            assert len(results) == 0

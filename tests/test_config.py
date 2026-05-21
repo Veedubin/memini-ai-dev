@@ -28,7 +28,6 @@ class TestMeminiConfigDefaults:
     def test_database_settings_defaults(self) -> None:
         """Should have correct defaults for database settings."""
         config = MeminiConfig()
-        assert config.qdrant_url == "http://localhost:6333"
         assert config.table_name == "memories"
         assert config.project_id is None
         assert config.query_collections is None
@@ -49,8 +48,6 @@ class TestMeminiConfigDefaults:
     def test_performance_defaults(self) -> None:
         """Should have correct defaults for performance settings."""
         config = MeminiConfig()
-        assert config.qdrant_max_retries == 3
-        assert config.qdrant_retry_delay_ms == 1000
         # workers depends on CPU count, so just check it's positive
         assert config.workers >= 1
 
@@ -60,12 +57,12 @@ class TestMeminiConfigEnvVars:
 
     def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Environment variables should override defaults."""
-        monkeypatch.setenv("MEMINI_QDRANT_URL", "http://custom:6333")
+        monkeypatch.setenv("MEMINI_PRECISION", "fp32")
         monkeypatch.setenv("MEMINI_EMBEDDING_DIM", "384")
         monkeypatch.setenv("MEMINI_LOG_LEVEL", "debug")
 
         config = MeminiConfig()
-        assert config.qdrant_url == "http://custom:6333"
+        assert config.precision == "fp32"
         assert config.embedding_dim == 384
         assert config.log_level == "debug"
 
@@ -83,7 +80,9 @@ class TestMeminiConfigEnvVars:
 
     def test_env_var_list_conversion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """List env vars should be properly converted via JSON."""
-        monkeypatch.setenv("MEMINI_EXCLUDE_PATTERNS", '["venv", "__pycache__", "build"]')
+        monkeypatch.setenv(
+            "MEMINI_EXCLUDE_PATTERNS", '["venv", "__pycache__", "build"]'
+        )
         config = MeminiConfig()
         assert config.exclude_patterns == ["venv", "__pycache__", "build"]
 
@@ -99,7 +98,6 @@ class TestMeminiConfigJsonConfig:
             config_path.write_text(
                 json.dumps(
                     {
-                        "qdrant_url": "http://json-config:6333",
                         "embedding_dim": 512,
                         "chunk_size": 256,
                     }
@@ -109,7 +107,6 @@ class TestMeminiConfigJsonConfig:
             # Change to temp directory so config is found
             monkeypatch.chdir(tmpdir)
             config = MeminiConfig()
-            assert config.qdrant_url == "http://json-config:6333"
             assert config.embedding_dim == 512
             assert config.chunk_size == 256
 
@@ -117,9 +114,11 @@ class TestMeminiConfigJsonConfig:
         """Should skip if JSON config file doesn't exist."""
         config = MeminiConfig()
         # Should use defaults if no JSON config
-        assert config.qdrant_url == "http://localhost:6333"
+        assert config.table_name == "memories"
 
-    def test_json_config_invalid_json_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_json_config_invalid_json_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Should skip invalid JSON config file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / ".opencode" / "memini-ai" / "config.json"
@@ -138,12 +137,12 @@ class TestMeminiConfigJsonConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / ".opencode" / "memini-ai" / "config.json"
             config_path.parent.mkdir(parents=True)
-            config_path.write_text(json.dumps({"qdrant_url": "http://json-only"}))
+            config_path.write_text(json.dumps({"embedding_dim": 512}))
 
             monkeypatch.chdir(tmpdir)
-            monkeypatch.setenv("MEMINI_QDRANT_URL", "http://env-override")
+            monkeypatch.setenv("MEMINI_EMBEDDING_DIM", "384")
             config = MeminiConfig()
-            assert config.qdrant_url == "http://env-override"
+            assert config.embedding_dim == 384
 
 
 class TestMeminiConfigValidation:
@@ -162,26 +161,6 @@ class TestMeminiConfigValidation:
         monkeypatch.setenv("MEMINI_WORKERS", "16")
         config = MeminiConfig()
         assert config.workers == 16
-
-    def test_qdrant_max_retries_clamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """qdrant_max_retries should be clamped between 1 and 10."""
-        monkeypatch.setenv("MEMINI_QDRANT_MAX_RETRIES", "0")
-        config = MeminiConfig()
-        assert config.qdrant_max_retries == 1
-
-        monkeypatch.setenv("MEMINI_QDRANT_MAX_RETRIES", "20")
-        config = MeminiConfig()
-        assert config.qdrant_max_retries == 10
-
-    def test_qdrant_retry_delay_clamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """qdrant_retry_delay_ms should be clamped between 100 and 30000."""
-        monkeypatch.setenv("MEMINI_QDRANT_RETRY_DELAY_MS", "50")
-        config = MeminiConfig()
-        assert config.qdrant_retry_delay_ms == 100
-
-        monkeypatch.setenv("MEMINI_QDRANT_RETRY_DELAY_MS", "50000")
-        config = MeminiConfig()
-        assert config.qdrant_retry_delay_ms == 30000
 
     def test_chunk_size_clamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """chunk_size should be clamped between 64 and 8192."""

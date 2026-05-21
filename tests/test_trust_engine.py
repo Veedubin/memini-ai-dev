@@ -164,11 +164,12 @@ class TestTrustEngineAdjustments:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.AGENT_USED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.AGENT_USED
+            )
 
             assert result is not None
             assert result.old_score == 0.5
@@ -185,11 +186,12 @@ class TestTrustEngineAdjustments:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.AGENT_IGNORED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.AGENT_IGNORED
+            )
 
             assert result is not None
             assert result.old_score == 0.5
@@ -206,11 +208,12 @@ class TestTrustEngineAdjustments:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.USER_CORRECTED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.USER_CORRECTED
+            )
 
             assert result is not None
             assert result.old_score == 0.5
@@ -227,11 +230,12 @@ class TestTrustEngineAdjustments:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.USER_CONFIRMED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.USER_CONFIRMED
+            )
 
             assert result is not None
             assert result.old_score == 0.5
@@ -252,12 +256,13 @@ class TestTrustEngineClamping:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
             # USER_CORRECTED is -0.15, which would go negative
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.USER_CORRECTED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.USER_CORRECTED
+            )
 
             assert result is not None
             assert result.new_score == 0.0  # Clamped to minimum
@@ -272,12 +277,13 @@ class TestTrustEngineClamping:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
             # USER_CONFIRMED is +0.10, which would exceed 1.0
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.USER_CONFIRMED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.USER_CONFIRMED
+            )
 
             assert result is not None
             assert result.new_score == 1.0  # Clamped to maximum
@@ -297,12 +303,14 @@ class TestTrustEngineArchive:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
+
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
             # USER_CORRECTED is -0.15, 0.25 - 0.15 = 0.10 < 0.2
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.USER_CORRECTED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.USER_CORRECTED
+            )
 
             assert result is not None
             assert result.new_score == 0.10
@@ -324,12 +332,14 @@ class TestTrustEnginePromote:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
+
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
             # USER_CONFIRMED is +0.10, 0.75 + 0.10 = 0.85 > 0.8
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.USER_CONFIRMED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.USER_CONFIRMED
+            )
 
             assert result is not None
             assert result.new_score == 0.85
@@ -479,7 +489,7 @@ class TestTrustEngineRecordRetrieval:
 
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = True
-            mock_config.return_value.qdrant_url = "http://localhost:6333"
+
             mock_config.return_value.embedding_dim = 1024
 
             engine = TrustEngine(memory_system=mock_memory_system)
@@ -514,12 +524,16 @@ class TestTrustEngineDisabled:
             mock_config.return_value.trust_engine_enabled = False
 
             engine = TrustEngine(memory_system=mock_memory_system)
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.AGENT_USED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.AGENT_USED
+            )
 
             assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_trust_score_disabled(self, mock_memory_system: MagicMock) -> None:
+    async def test_get_trust_score_disabled(
+        self, mock_memory_system: MagicMock
+    ) -> None:
         """Returns None when engine is disabled."""
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = False
@@ -552,7 +566,9 @@ class TestTrustEngineDisabled:
             assert result == []
 
     @pytest.mark.asyncio
-    async def test_record_retrieval_disabled(self, mock_memory_system: MagicMock) -> None:
+    async def test_record_retrieval_disabled(
+        self, mock_memory_system: MagicMock
+    ) -> None:
         """Does nothing when engine is disabled."""
         with patch("memini_ai.trust_engine.get_config") as mock_config:
             mock_config.return_value.trust_engine_enabled = False
@@ -572,7 +588,9 @@ class TestTrustEngineNoMemorySystem:
             mock_config.return_value.trust_engine_enabled = True
 
             engine = TrustEngine(memory_system=None)
-            result = await engine.adjust_trust("test-memory-123", TrustSignal.AGENT_USED)
+            result = await engine.adjust_trust(
+                "test-memory-123", TrustSignal.AGENT_USED
+            )
 
             assert result is None
 

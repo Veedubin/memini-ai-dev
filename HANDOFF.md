@@ -102,7 +102,7 @@ src/memini_ai/
 
 ```bash
 cd memini-ai-dev
-export MEMINI_DB_URL="postgresql://postgres:password@localhost:5434/postgres"
+export MEMINI_DB_URL="postgresql://user:password@localhost:5434/postgres"  # Set your actual DB URL
 python -m uvicorn memini_ai.api.visualization:create_app --factory True --host 0.0.0.0 --port 8000
 ```
 
@@ -143,7 +143,7 @@ MEMINI_DEVICE=auto
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| MEMINI_DB_URL | PostgreSQL connection URL | postgresql://postgres:password@localhost:5432/postgres |
+| MEMINI_DB_URL | PostgreSQL connection URL | Set via `.env` (see `.env.example`) |
 | MEMINI_PROJECT_ID | Project namespace | auto-generated |
 | MEMINI_EMBEDDING_DIM | 1024 or 384 | 1024 |
 | MEMINI_DEVICE | auto, gpu, cpu | auto |

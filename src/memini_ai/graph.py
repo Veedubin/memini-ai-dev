@@ -173,13 +173,20 @@ class MemoryGraph:
         memory_id: str,
         relationship_type: Any = None,
         limit: int = 10,
+        include_archived: bool = True,
+        max_chain_depth: int = 10,
     ) -> list[Any]:
         """Find memories related to given memory.
+
+        For SUPERSEDES and PARTIAL_UPDATE relationships, will traverse the
+        supersession chain including archived memories to find the full history.
 
         Args:
             memory_id: Reference memory ID.
             relationship_type: Optional filter by relationship type.
             limit: Maximum results.
+            include_archived: Include archived memories for SUPERSEDES chains (default True).
+            max_chain_depth: Maximum depth for supersession chain traversal (default 10).
 
         Returns:
             List of related MemoryEntry objects.
@@ -187,23 +194,38 @@ class MemoryGraph:
         if self._memory_system is None:
             return []
 
-        # Get the source memory
-        source = await self._memory_system.get_memory(memory_id)
+        # Get the source memory (include archived for SUPERSEDES traversal)
+        source = await self._memory_system.get_memory(memory_id, include_archived=True)
         if source is None:
             return []
 
-        # Find related memories through relationships field
-        related_ids: list[str] = []
-        for rel in source.relationships:
-            if relationship_type is None or rel.relationship_type == relationship_type:
-                related_ids.append(rel.target_id)
-
-        # Fetch related memories
         results: list[Any] = []
-        for rel_id in related_ids[:limit]:
-            memory = await self._memory_system.get_memory(rel_id)
-            if memory is not None:
-                results.append(memory)
+        seen_ids: set[str] = {memory_id}
+
+        # Handle SUPERSEDES and PARTIAL_UPDATE relationships specially
+        if relationship_type is None or relationship_type.value in (
+            "SUPERSEDES",
+            "PARTIAL_UPDATE",
+        ):
+            chain = await self._memory_system.get_supersession_chain(
+                memory_id, max_chain_depth
+            )
+            for mem in chain:
+                if mem.id not in seen_ids and len(results) < limit:
+                    results.append(mem)
+                    seen_ids.add(mem.id)
+
+        # Find related memories through relationships field
+        for rel in source.relationships:
+            if (
+                relationship_type is None or rel.relationship_type == relationship_type
+            ) and rel.target_id not in seen_ids:
+                memory = await self._memory_system.get_memory(
+                    rel.target_id, include_archived=include_archived
+                )
+                if memory is not None and len(results) < limit:
+                    results.append(memory)
+                    seen_ids.add(memory.id)
 
         return results
 

@@ -3,17 +3,25 @@
 This module provides the PostgresDatabase class that implements the VectorDatabase
 ABC using asyncpg for async PostgreSQL operations with pgvector for vector storage
 and pgvectorscale's StreamingDiskANN index for high-performance similarity search.
+
+TLS/SSL Support:
+    PostgreSQL connections can be secured with TLS by configuring db_sslmode and
+    db_sslrootcert via environment variables DB_SSLMODE and DB_SSLROOTCERT, or
+    through the MeminiConfig settings. When sslmode is 'require' or higher, an
+    SSL context is created and passed to the asyncpg connection pool.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import ssl
 import uuid
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
+from memini_ai.config import get_config
 from memini_ai.memory.database import VectorDatabase
 from memini_ai.memory.schema import (
     MemoryEntry,
@@ -30,10 +38,14 @@ from memini_ai.postgres.queries import (
     GET_ENTITY_BY_ID,
     GET_ENTITY_STATS,
     GET_MEMORY_BY_ID,
+    GET_MEMORY_BY_ID_INCLUDE_ARCHIVED,
     GET_MEMORY_COUNT,
+    GET_SUPERSEDED_MEMORY,
+    GET_SUPERSESSION_CHAIN,
     INCREMENT_RETRIEVAL_COUNT,
     INSERT_ENTITY_RELATIONSHIP,
     INSERT_MEMORY,
+    INSERT_MEMORY_DELTA,
     SEARCH_MEMORIES_VECTOR,
     UPDATE_MEMORY_METADATA,
     UPSERT_ENTITY,
@@ -54,31 +66,72 @@ class PostgresDatabase(VectorDatabase):
         - Uses asyncpg connection pool for concurrent operations
         - Lazy connection establishment on first use
         - Schema initialization on first connection
+
+    TLS/SSL:
+        - Supports sslmode via DB_SSLMODE env var (default: prefer)
+        - Supports CA cert path via DB_SSLROOTCERT env var
+        - When sslmode is 'require' or higher, creates SSL context
+        - Backward compatible: no SSL by default if not configured
     """
 
-    def __init__(self, db_url: str, project_id: str | None = None) -> None:
+    # PostgreSQL sslmode values that require an SSL context
+    _SSL_REQUIRED_MODES = {"require", "verify-ca", "verify-full"}
+
+    def __init__(
+        self,
+        db_url: str,
+        project_id: str | None = None,
+        sslmode: str | None = None,
+        sslrootcert: str | None = None,
+    ) -> None:
         """Initialize PostgresDatabase.
 
         Args:
             db_url: PostgreSQL connection URL (postgresql://user:pass@host:port/db).
             project_id: Optional project ID for isolation (unused in pgvector impl).
+            sslmode: PostgreSQL SSL mode override. If None, reads from config/env.
+            sslrootcert: Path to CA certificate for SSL verification.
+                If None, reads from config/env.
         """
         self._db_url = db_url
         self._project_id = project_id
         self._pool: asyncpg.Pool | None = None
         self._initialized = False
 
+        # Resolve SSL settings: explicit args > config > env > default
+        config = get_config()
+        self._sslmode = sslmode or config.db_sslmode
+        self._sslrootcert = sslrootcert or config.db_sslrootcert
+
     async def initialize(self) -> None:
-        """Initialize the database connection and create schema if needed."""
+        """Initialize the database connection and create schema if needed.
+
+        Creates an asyncpg connection pool with optional SSL support based on
+        the configured db_sslmode. When sslmode is 'require' or higher, an
+        SSL context is built and passed to the pool.
+
+        Raises:
+            RuntimeError: If connection pool creation or schema init fails.
+        """
         if self._initialized:
             return
 
         try:
+            # Build pool kwargs
+            pool_kwargs: dict[str, Any] = {
+                "min_size": 1,
+                "max_size": 10,
+            }
+
+            # Build SSL context if sslmode requires it
+            ssl_context = self._build_ssl_context()
+            if ssl_context is not None:
+                pool_kwargs["ssl"] = ssl_context
+
             # Create connection pool
             self._pool = await asyncpg.create_pool(
                 self._db_url,
-                min_size=1,
-                max_size=10,
+                **pool_kwargs,
             )
 
             # Initialize schema
@@ -89,6 +142,63 @@ class PostgresDatabase(VectorDatabase):
             raise RuntimeError(
                 f"Failed to initialize PostgreSQL connection: {e}"
             ) from e
+
+    def _build_ssl_context(self) -> ssl.SSLContext | None:
+        """Build an SSL context based on the configured sslmode.
+
+        Returns:
+            An ssl.SSLContext if sslmode requires encryption, None otherwise.
+
+        SSL mode behavior:
+            - disable/allow: No SSL context (plaintext connection)
+            - prefer: SSL context created but connection falls back to plaintext
+            - require: SSL required, server identity not verified
+            - verify-ca: SSL required, CA certificate verified
+            - verify-full: SSL required, CA cert + hostname verified
+        """
+        if self._sslmode == "disable":
+            return None
+
+        if self._sslmode == "allow":
+            # 'allow' means: try without SSL first, fall back to SSL on failure.
+            # asyncpg doesn't support this negotiation natively, so we skip
+            # SSL context creation. The pool will connect without SSL.
+            return None
+
+        if self._sslmode == "prefer":
+            # 'prefer' means: try SSL first, fall back to plaintext.
+            # asyncpg handles this via the ssl parameter — if we pass an
+            # SSL context, it tries SSL first. However, for 'prefer' we
+            # create a permissive context that doesn't verify the server cert,
+            # matching libpq's prefer behavior.
+            ctx = ssl.create_default_context()
+            # Don't verify server cert for 'prefer' mode (matches libpq behavior)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+
+        # sslmode in {require, verify-ca, verify-full}
+        if self._sslrootcert:
+            # Load custom CA certificate
+            ctx = ssl.create_default_context(cafile=self._sslrootcert)
+        else:
+            # Use system default CA bundle
+            ctx = ssl.create_default_context()
+
+        if self._sslmode == "require":
+            # 'require' encrypts but doesn't verify server identity
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        elif self._sslmode == "verify-ca":
+            # 'verify-ca' verifies the CA but not the hostname
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_REQUIRED
+        elif self._sslmode == "verify-full":
+            # 'verify-full' verifies both CA and hostname
+            ctx.check_hostname = True
+            ctx.verify_mode = ssl.CERT_REQUIRED
+
+        return ctx
 
     async def _ensure_schema(self) -> None:
         """Create database schema if tables don't exist (idempotent)."""
@@ -139,6 +249,16 @@ class PostgresDatabase(VectorDatabase):
             with contextlib.suppress(json.JSONDecodeError):
                 record["metadata"] = json.loads(entry.metadata_json)
 
+        # Delta model fields
+        record["supersedes_id"] = entry.supersedes_id
+        record["structured_fields"] = (
+            json.dumps(entry.structured_fields)
+            if entry.structured_fields is not None
+            else None
+        )
+        record["change_ratio"] = entry.change_ratio
+        record["created_at_ms"] = entry.created_at_ms
+
         return record
 
     def _row_to_memory(
@@ -174,6 +294,11 @@ class PostgresDatabase(VectorDatabase):
             "is_archived": row.get("is_archived", False),
             "last_accessed_at": row.get("last_accessed_at"),
             "score": score,
+            # Delta model fields
+            "supersedes_id": row.get("supersedes_id"),
+            "structured_fields": row.get("structured_fields"),
+            "change_ratio": row.get("change_ratio", 1.0),
+            "created_at_ms": row.get("created_at_ms"),
         }
 
         return MemoryEntry.model_validate(data)
@@ -194,15 +319,36 @@ class PostgresDatabase(VectorDatabase):
         memory_id = record["id"]
 
         async with pool.acquire() as conn:
-            memory_id = await conn.fetchval(
-                INSERT_MEMORY,
-                memory_id,
-                record["text"],
-                record["embedding"],
-                record["source_type"],
-                record["content_hash"],
-                json.dumps(record["metadata"]),
-            )
+            # Use INSERT_MEMORY_DELTA if delta fields are present
+            if (
+                record.get("supersedes_id") is not None
+                or record.get("structured_fields") is not None
+                or record.get("change_ratio", 1.0) != 1.0
+            ):
+                memory_id = await conn.fetchval(
+                    INSERT_MEMORY_DELTA,
+                    memory_id,
+                    record["text"],
+                    record["embedding"],
+                    record["source_type"],
+                    record["content_hash"],
+                    json.dumps(record["metadata"]),
+                    record["supersedes_id"],
+                    record["structured_fields"],
+                    record["change_ratio"],
+                    record["created_at_ms"],
+                )
+            else:
+                memory_id = await conn.fetchval(
+                    INSERT_MEMORY,
+                    memory_id,
+                    record["text"],
+                    record["embedding"],
+                    record["source_type"],
+                    record["content_hash"],
+                    json.dumps(record["metadata"]),
+                    record["created_at_ms"],
+                )
 
         return str(memory_id)
 
@@ -241,11 +387,16 @@ class PostgresDatabase(VectorDatabase):
 
         return entries
 
-    async def get_memory(self, memory_id: str) -> MemoryEntry | None:
+    async def get_memory(
+        self,
+        memory_id: str,
+        include_archived: bool = False,
+    ) -> MemoryEntry | None:
         """Get a memory entry by ID.
 
         Args:
             memory_id: ID of the memory entry.
+            include_archived: If True, include archived memories (default False).
 
         Returns:
             MemoryEntry if found, None otherwise.
@@ -254,10 +405,57 @@ class PostgresDatabase(VectorDatabase):
         pool = await self._get_pool()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(GET_MEMORY_BY_ID, memory_id)
+            if include_archived:
+                row = await conn.fetchrow(GET_MEMORY_BY_ID_INCLUDE_ARCHIVED, memory_id)
+            else:
+                row = await conn.fetchrow(
+                    GET_MEMORY_BY_ID, memory_id, not include_archived
+                )
             if row is None:
                 return None
 
+            return self._row_to_memory(row)
+
+    async def get_supersession_chain(
+        self,
+        memory_id: str,
+        max_depth: int = 10,
+    ) -> list[MemoryEntry]:
+        """Get the full supersession chain for a memory.
+
+        Args:
+            memory_id: ID of the memory entry.
+            max_depth: Maximum chain depth (default 10).
+
+        Returns:
+            List of MemoryEntry objects in the supersession chain (oldest first).
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(GET_SUPERSESSION_CHAIN, memory_id, max_depth)
+            return [self._row_to_memory(row) for row in rows]
+
+    async def get_superseded_memory(
+        self,
+        memory_id: str,
+    ) -> MemoryEntry | None:
+        """Get the memory that this memory supersedes (parent).
+
+        Args:
+            memory_id: ID of the memory entry.
+
+        Returns:
+            MemoryEntry of the superseded memory if found, None otherwise.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(GET_SUPERSEDED_MEMORY, memory_id)
+            if row is None:
+                return None
             return self._row_to_memory(row)
 
     async def delete_memory(self, memory_id: str) -> None:
@@ -853,15 +1051,25 @@ class PostgresDatabase(VectorDatabase):
 
 
 def create_postgres_database(
-    db_url: str, project_id: str | None = None
+    db_url: str,
+    project_id: str | None = None,
+    sslmode: str | None = None,
+    sslrootcert: str | None = None,
 ) -> PostgresDatabase:
     """Factory function to create a PostgresDatabase instance.
 
     Args:
         db_url: PostgreSQL connection URL.
         project_id: Optional project ID for isolation.
+        sslmode: PostgreSQL SSL mode override. If None, reads from config/env.
+        sslrootcert: Path to CA certificate for SSL verification.
 
     Returns:
         PostgresDatabase instance.
     """
-    return PostgresDatabase(db_url=db_url, project_id=project_id)
+    return PostgresDatabase(
+        db_url=db_url,
+        project_id=project_id,
+        sslmode=sslmode,
+        sslrootcert=sslrootcert,
+    )

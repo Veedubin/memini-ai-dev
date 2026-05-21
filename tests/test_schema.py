@@ -5,10 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from memini_ai.memory.schema import (
-    DEFAULT_QDRANT_URL,
     MEMORY_TABLE_NAME,
-    QDRANT_HNSW_CONFIG,
-    QDRANT_METADATA_COLLECTION,
     MemoryEntry,
     MemorySourceType,
     SearchFilter,
@@ -232,17 +229,3 @@ class TestConstants:
     def test_memory_table_name(self) -> None:
         """MEMORY_TABLE_NAME should be 'memories'."""
         assert MEMORY_TABLE_NAME == "memories"
-
-    def test_qdrant_metadata_collection(self) -> None:
-        """QDRANT_METADATA_COLLECTION should be 'model_metadata'."""
-        assert QDRANT_METADATA_COLLECTION == "model_metadata"
-
-    def test_default_qdrant_url(self) -> None:
-        """DEFAULT_QDRANT_URL should be localhost."""
-        assert DEFAULT_QDRANT_URL == "http://localhost:6333"
-
-    def test_qdrant_hnsw_config(self) -> None:
-        """QDRANT_HNSW_CONFIG should have correct structure."""
-        assert QDRANT_HNSW_CONFIG["m"] == 16
-        assert QDRANT_HNSW_CONFIG["ef_construct"] == 128
-        assert QDRANT_HNSW_CONFIG["full_scan_threshold"] == 10000

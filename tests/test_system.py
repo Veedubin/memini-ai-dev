@@ -30,7 +30,6 @@ def mock_db() -> MagicMock:
     db.content_exists = AsyncMock(return_value=False)
     db._initialized = True
     db._dimension = 1024
-    db._url = "http://localhost:6333"
     db._project_id = None
     return db
 
@@ -69,7 +68,6 @@ def mock_config() -> MeminiConfig:
     """Create mock MeminiConfig."""
     config = MagicMock()
     config.embedding_dim = 1024
-    config.qdrant_url = "http://localhost:6333"
     config.table_name = "memories"
     config.project_id = None
     config.query_collections = None
@@ -82,7 +80,6 @@ class TestMemorySystemConfig:
     def test_default_values(self) -> None:
         """Should have sensible defaults."""
         config = MemorySystemConfig()
-        assert config.qdrant_url is None
         assert config.project_id is None
         assert config.query_collections is None
         assert config.enable_cascade is True
@@ -91,13 +88,11 @@ class TestMemorySystemConfig:
     def test_custom_values(self) -> None:
         """Should accept custom values."""
         config = MemorySystemConfig(
-            qdrant_url="http://custom:6333",
             project_id="my-project",
             query_collections=["memories_1024", "memories_384"],
             enable_cascade=False,
             enable_deduplication=False,
         )
-        assert config.qdrant_url == "http://custom:6333"
         assert config.project_id == "my-project"
         assert len(config.query_collections) == 2
         assert config.enable_cascade is False
@@ -144,28 +139,14 @@ class TestInitialize:
         assert system._initialized is True
 
     @pytest.mark.asyncio
-    async def test_applies_config_url(
-        self, mock_db: MagicMock, mock_search: MagicMock
-    ) -> None:
-        """Should apply config URL to database."""
-        config = MemorySystemConfig(qdrant_url="http://custom:6333")
-        system = MemorySystem(db=mock_db, search=mock_search, config=config)
-
-        await system.initialize()
-
-        assert mock_db._url == "http://custom:6333"
-
-    @pytest.mark.asyncio
     async def test_applies_project_id(
         self, mock_db: MagicMock, mock_search: MagicMock
     ) -> None:
-        """Should apply project ID to database."""
+        """Should store project ID in config."""
         config = MemorySystemConfig(project_id="my-project")
         system = MemorySystem(db=mock_db, search=mock_search, config=config)
 
-        await system.initialize()
-
-        assert mock_db._project_id == "my-project"
+        assert system._config.project_id == "my-project"
 
 
 class TestIsInitialized:

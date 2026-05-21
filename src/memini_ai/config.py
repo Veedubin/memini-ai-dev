@@ -34,16 +34,29 @@ class MeminiConfig(BaseSettings):
     eager_load: bool = False
 
     # Database settings
-    qdrant_url: str = "http://localhost:6333"
     table_name: str = "memories"
     project_id: str | None = None
     query_collections: list[str] | None = None
 
     # PostgreSQL / pgvector settings
-    db_url: str = ""  # e.g., "postgresql://postgres:password@localhost:5434/postgres"
+    db_url: str = ""  # Set via MEMINI_DB_URL env var or .env file
     db_pool_size: int = 10
     db_min_size: int = 2
     db_max_size: int = 20
+
+    # PostgreSQL TLS/SSL settings
+    # Valid sslmode values: disable, allow, prefer, require, verify-ca, verify-full
+    # See: https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-SSLMODE-STATEMENTS
+    db_sslmode: str = Field(
+        default="prefer",
+        alias="DB_SSLMODE",
+        description="PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)",
+    )
+    db_sslrootcert: str | None = Field(
+        default=None,
+        alias="DB_SSLROOTCERT",
+        description="Path to CA certificate for SSL server verification",
+    )
 
     # Indexer settings
     chunk_size: int = 512
@@ -57,8 +70,6 @@ class MeminiConfig(BaseSettings):
     log_level: str = "info"
 
     # Performance
-    qdrant_max_retries: int = 3
-    qdrant_retry_delay_ms: int = 1000
     workers: int = Field(default_factory=lambda: os.cpu_count() or 4)
 
     # Trust Engine settings
@@ -133,6 +144,23 @@ class MeminiConfig(BaseSettings):
     # Thought Chains settings (Phase 5)
     thought_chains_enabled: bool = Field(default=False, alias="THOUGHT_CHAINS")
 
+    # Phase 2.1: Input Validation settings
+    max_memory_content_size: int = Field(
+        default=102400,  # 100KB
+        alias="MAX_MEMORY_CONTENT_SIZE",
+        description="Maximum memory content size in bytes (default 100KB)",
+    )
+    rate_limit_per_minute: int = Field(
+        default=100,
+        alias="RATE_LIMIT_PER_MINUTE",
+        description="Maximum add_memory calls per peer per minute (default 100)",
+    )
+    sanitize_content: bool = Field(
+        default=True,
+        alias="SANITIZE_CONTENT",
+        description="Enable content sanitization on add_memory (default True)",
+    )
+
     _json_config_loaded: bool = False
 
     @field_validator("workers", mode="before")
@@ -144,28 +172,6 @@ class MeminiConfig(BaseSettings):
             return 1
         if val > 64:
             return 64
-        return val
-
-    @field_validator("qdrant_max_retries", mode="before")
-    @classmethod
-    def _clamp_retries(cls, v: int | str) -> int:
-        """Clamp retry count to safe range."""
-        val = int(v) if isinstance(v, str) else v
-        if val < 1:
-            return 1
-        if val > 10:
-            return 10
-        return val
-
-    @field_validator("qdrant_retry_delay_ms", mode="before")
-    @classmethod
-    def _clamp_retry_delay(cls, v: int | str) -> int:
-        """Clamp retry delay to safe range."""
-        val = int(v) if isinstance(v, str) else v
-        if val < 100:
-            return 100
-        if val > 30000:
-            return 30000
         return val
 
     @field_validator("chunk_size", mode="before")
@@ -325,6 +331,47 @@ class MeminiConfig(BaseSettings):
             return 0.0
         if val > 1.0:
             return 1.0
+        return val
+
+    @field_validator("db_sslmode", mode="before")
+    @classmethod
+    def _validate_db_sslmode(cls, v: str) -> str:
+        """Validate PostgreSQL SSL mode against supported values."""
+        val = v.lower().strip() if isinstance(v, str) else str(v).lower().strip()
+        valid_modes = {
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full",
+        }
+        if val not in valid_modes:
+            raise ValueError(
+                f"Invalid db_sslmode '{val}'. Must be one of: {', '.join(sorted(valid_modes))}"
+            )
+        return val
+
+    @field_validator("max_memory_content_size", mode="before")
+    @classmethod
+    def _clamp_max_memory_content_size(cls, v: int | str) -> int:
+        """Clamp max memory content size to valid range (1KB - 10MB)."""
+        val = int(v) if isinstance(v, str) else v
+        if val < 1024:
+            return 1024  # Minimum 1KB
+        if val > 10 * 1024 * 1024:
+            return 10 * 1024 * 1024  # Maximum 10MB
+        return val
+
+    @field_validator("rate_limit_per_minute", mode="before")
+    @classmethod
+    def _clamp_rate_limit_per_minute(cls, v: int | str) -> int:
+        """Clamp rate limit to valid range."""
+        val = int(v) if isinstance(v, str) else v
+        if val < 1:
+            return 1
+        if val > 10000:
+            return 10000
         return val
 
     def model_post_init(self, _context: object) -> None:

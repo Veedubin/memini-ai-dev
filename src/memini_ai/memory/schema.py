@@ -47,6 +47,7 @@ class RelationshipType(str, Enum):
     """Types of relationships between memories."""
 
     SUPERSEDES = "SUPERSEDES"
+    PARTIAL_UPDATE = "PARTIAL_UPDATE"
     RELATED_TO = "RELATED_TO"
     CONTRADICTS = "CONTRADICTS"
     DERIVED_FROM = "DERIVED_FROM"
@@ -260,6 +261,31 @@ class MemoryEntry(BaseModel):
         description="Owner peer ID for multi-peer memories (null = primary user)",
     )
 
+    # Delta model fields for partial updates
+    supersedes_id: str | None = Field(
+        default=None,
+        alias="supersedesId",
+        description="ID of memory this partially updates (for PARTIAL_UPDATE relationships)",
+    )
+
+    structured_fields: dict[str, Any] | None = Field(
+        default=None,
+        alias="structuredFields",
+        description="Key-value extracted fields for granular merge instead of full text replacement",
+    )
+
+    change_ratio: float = Field(
+        default=1.0,
+        alias="changeRatio",
+        description="Fraction of content that is new/changed (0.0-1.0). 1.0 = full replacement, <1.0 = partial update",
+    )
+
+    created_at_ms: int = Field(
+        default_factory=lambda: int(datetime.utcnow().timestamp() * 1000),
+        alias="createdAtMs",
+        description="Unix timestamp in milliseconds when this memory was created. Useful for temporal ordering and hierarchy.",
+    )
+
     @model_validator(mode="after")
     def compute_content_hash_if_missing(self) -> MemoryEntry:
         """Auto-compute content_hash from text if not provided."""
@@ -302,6 +328,5 @@ class SearchOptions(BaseModel):
 
 # Constants
 MEMORY_TABLE_NAME = "memories"
-QDRANT_METADATA_COLLECTION = "model_metadata"
-DEFAULT_QDRANT_URL = "http://localhost:6333"
-QDRANT_HNSW_CONFIG = {"m": 16, "ef_construct": 128, "full_scan_threshold": 10000}
+
+SCHEMA_VERSION = 2

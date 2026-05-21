@@ -16,7 +16,7 @@ Query Categories:
 
 SEARCH_MEMORIES_VECTOR = """
 SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
-       embedding,
+       embedding, supersedes_id, structured_fields, change_ratio,
        embedding <=> $1::vector as distance
 FROM memories
 WHERE embedding <=> $1::vector < $2
@@ -41,17 +41,68 @@ LIMIT $2
 # =============================================================================
 
 INSERT_MEMORY = """
-INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata, created_at_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id
+"""
+
+# Delta Model: Insert memory with delta fields
+INSERT_MEMORY_DELTA = """
+INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata,
+                     supersedes_id, structured_fields, change_ratio, created_at_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING id
 """
 
 GET_MEMORY_BY_ID = """
 SELECT id, text, embedding, source_type, content_hash, metadata,
        trust_score, retrieval_count, is_archived, last_accessed_at,
-       created_at, updated_at
+       created_at, updated_at,
+       supersedes_id, structured_fields, change_ratio
 FROM memories
-WHERE id = $1 AND is_archived = FALSE
+WHERE id = $1 AND ($2::boolean OR is_archived = FALSE)
+"""
+
+# Delta Model: Get memory with optional inclusion of archived
+GET_MEMORY_BY_ID_INCLUDE_ARCHIVED = """
+SELECT id, text, embedding, source_type, content_hash, metadata,
+       trust_score, retrieval_count, is_archived, last_accessed_at,
+       created_at, updated_at,
+       supersedes_id, structured_fields, change_ratio
+FROM memories
+WHERE id = $1
+"""
+
+# Delta Model: Get full supersession chain (including archived) via recursive CTE
+GET_SUPERSESSION_CHAIN = """
+WITH RECURSIVE chain AS (
+    SELECT id, text, trust_score, is_archived, supersedes_id,
+           structured_fields, change_ratio, source_type, metadata,
+           created_at_ms,
+           1 as depth,
+           ARRAY[id] as path
+    FROM memories WHERE id = $1
+    UNION ALL
+    SELECT m.id, m.text, m.trust_score, m.is_archived, m.supersedes_id,
+           m.structured_fields, m.change_ratio, m.source_type, m.metadata,
+           m.created_at_ms,
+           c.depth + 1,
+           c.path || m.id
+    FROM memories m
+    JOIN chain c ON m.id = c.supersedes_id
+    WHERE c.depth < $2
+    AND c.depth < 20  -- Safety limit
+)
+SELECT * FROM chain ORDER BY created_at_ms DESC
+"""
+
+# Delta Model: Get the superseded memory (parent) if exists
+GET_SUPERSEDED_MEMORY = """
+SELECT id, text, trust_score, is_archived, supersedes_id,
+       structured_fields, change_ratio, source_type, metadata,
+       created_at_ms
+FROM memories
+WHERE id = (SELECT supersedes_id FROM memories WHERE id = $1)
 """
 
 UPDATE_MEMORY_TEXT = """

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import sys
 import uuid
 from typing import Any, Literal
 
@@ -31,11 +32,18 @@ from memini_ai.memory.schema import (
 from memini_ai.memory.system import MemorySystem
 from memini_ai.multi_peer import MultiPeerManager, get_multi_peer_manager
 from memini_ai.precompress import PrecompressExtractor
+from memini_ai.rate_limiter import AsyncRateLimiter
 from memini_ai.thought_chains import ThoughtChains
 from memini_ai.tiered_loader import TieredLoader
 from memini_ai.trust_engine import TrustEngine
 from memini_ai.user_model import UserModel
 from memini_ai.utils.logger import logger
+from memini_ai.utils.sanitizer import (
+    ContentTooLargeError,
+    RateLimitExceededError,
+    sanitize_content,
+    validate_content_size,
+)
 
 # Operation timeout in seconds
 OPERATION_TIMEOUT = 30.0
@@ -53,7 +61,7 @@ class MCPServer:
     - get_status: Get server component status
 
     Features:
-    - Graceful degradation when Qdrant unavailable
+    - Graceful degradation when database unavailable
     - Memory initialization with exponential backoff retry
     - Background job tracking for indexing
     - SIGINT/SIGTERM graceful shutdown
@@ -77,6 +85,14 @@ class MCPServer:
         self._thought_chains: ThoughtChains | None = None
         self._init_error: str | None = None
         self._background_jobs: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._shutdown_in_progress: bool = False
+        self._stdio_watch_task: asyncio.Task[None] | None = None
+        # Phase 2.1: Rate limiter for add_memory
+        config = get_config()
+        self._rate_limiter = AsyncRateLimiter(
+            max_requests=config.rate_limit_per_minute,
+            window_seconds=60,
+        )
         self._mcp = FastMCP("memini-ai")
         self._setup_tools()
         self._setup_signal_handlers()
@@ -145,6 +161,13 @@ class MCPServer:
 
             def signal_handler(sig: signal.Signals) -> None:
                 def signal_callback(s: signal.Signals = sig) -> None:
+                    if self._shutdown_in_progress:
+                        logger.warning(
+                            "shutdown_already_in_progress",
+                            signal=s.name,
+                        )
+                        return
+                    self._shutdown_in_progress = True
                     asyncio.create_task(shutdown_handler(s))
 
                 loop.add_signal_handler(sig, signal_callback)
@@ -159,7 +182,7 @@ class MCPServer:
         """Initialize memory system with exponential backoff retry."""
         system = MemorySystem()
 
-        # Exponential backoff retry for Qdrant
+        # Exponential backoff retry for database connection
         max_attempts = 3
         base_delay = 1.0
         last_error: Exception | None = None
@@ -313,6 +336,10 @@ class MCPServer:
         sourceType: str = "manual",  # noqa: N803
         sourcePath: str | None = None,  # noqa: N803
         metadata: dict[str, Any] | None = None,
+        peerId: str | None = None,  # noqa: N803
+        supersedesId: str | None = None,  # noqa: N803
+        structuredFields: dict[str, Any] | None = None,  # noqa: N803
+        changeRatio: float = 1.0,  # noqa: N803
     ) -> dict[str, Any]:
         """Add a new memory entry with deduplication.
 
@@ -321,10 +348,53 @@ class MCPServer:
             sourceType: Source type - "session", "file", "web", "boomerang", "project" (default "manual").
             sourcePath: Optional source path or URL.
             metadata: Optional metadata dictionary.
+            peerId: Optional peer ID for rate limiting (defaults to "default").
+            supersedesId: Optional ID of memory this partially updates (for PARTIAL_UPDATE relationships).
+            structuredFields: Optional key-value fields for granular merge.
+            changeRatio: Fraction of content that is new/changed (0.0-1.0). Default 1.0 = full replacement.
 
         Returns:
             Dictionary with success status, memory ID, and message.
         """
+        config = get_config()
+
+        # Phase 2.1: Rate limiting check
+        effective_peer_id = peerId or sourcePath or "default"
+        try:
+            await self._rate_limiter.check_and_raise(effective_peer_id)
+        except RateLimitExceededError as e:
+            logger.warning(
+                "add_memory_rate_limited",
+                peer_id=effective_peer_id,
+                limit=config.rate_limit_per_minute,
+            )
+            return {
+                "success": False,
+                "id": "",
+                "message": str(e),
+                "error": "rate_limit_exceeded",
+            }
+
+        # Phase 2.1: Content size validation
+        try:
+            validate_content_size(content, config.max_memory_content_size)
+        except ContentTooLargeError as e:
+            logger.warning(
+                "add_memory_content_too_large",
+                content_size=e.content_size,
+                max_size=e.max_size,
+            )
+            return {
+                "success": False,
+                "id": "",
+                "message": str(e),
+                "error": "content_too_large",
+            }
+
+        # Phase 2.1: Content sanitization
+        if config.sanitize_content:
+            content = sanitize_content(content)
+
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
@@ -337,11 +407,14 @@ class MCPServer:
             except ValueError:
                 src_type = MemorySourceType.session
 
-            # Create memory entry
+            # Create memory entry with delta fields
             entry = MemoryEntry(
                 text=content,
                 sourceType=src_type,
                 sourcePath=sourcePath,
+                supersedesId=supersedesId,
+                structuredFields=structuredFields,
+                changeRatio=changeRatio,
             )
 
             # Add metadata if provided
@@ -893,13 +966,20 @@ class MCPServer:
         memoryId: str,  # noqa: N803
         relationshipType: str | None = None,  # noqa: N803
         limit: int = 10,
+        includeArchived: bool = True,  # noqa: N803
+        maxChainDepth: int = 10,  # noqa: N803
     ) -> dict[str, Any]:
         """Find memories related to a given memory.
 
+        For SUPERSEDES and PARTIAL_UPDATE relationships, will traverse the
+        supersession chain including archived memories to find the full history.
+
         Args:
             memoryId: ID of the reference memory.
-            relationshipType: Optional filter by relationship type ("SUPERSEDES", "RELATED_TO", "CONTRADICTS", "DERIVED_FROM").
+            relationshipType: Optional filter by relationship type ("SUPERSEDES", "PARTIAL_UPDATE", "RELATED_TO", "CONTRADICTS", "DERIVED_FROM").
             limit: Maximum number of results (default 10).
+            includeArchived: Include archived memories for SUPERSEDES chains (default True).
+            maxChainDepth: Maximum depth for supersession chain traversal (default 10).
 
         Returns:
             Dictionary with count, memories list, and relationshipType used.
@@ -924,7 +1004,9 @@ class MCPServer:
                     }
 
             results = await asyncio.wait_for(
-                self._memory_system.find_related_memories(memoryId, rel_type, limit),
+                self._memory_system.find_related_memories(
+                    memoryId, rel_type, limit, includeArchived, maxChainDepth
+                ),
                 timeout=OPERATION_TIMEOUT,
             )
 
@@ -962,7 +1044,7 @@ class MCPServer:
         Args:
             sourceId: ID of the source memory.
             targetId: ID of the target memory.
-            relationshipType: Type of relationship - "SUPERSEDES", "RELATED_TO", "CONTRADICTS", "DERIVED_FROM".
+            relationshipType: Type of relationship - "SUPERSEDES", "PARTIAL_UPDATE", "RELATED_TO", "CONTRADICTS", "DERIVED_FROM".
             confidence: Relationship confidence 0.0-1.0 (default 1.0).
 
         Returns:
@@ -1520,6 +1602,11 @@ class MCPServer:
     # =========================================================================
     async def _shutdown(self) -> None:
         """Graceful shutdown handler."""
+        if self._shutdown_in_progress:
+            logger.warning("shutdown_already_in_progress")
+            return
+        self._shutdown_in_progress = True
+
         logger.info("server_shutdown_started")
 
         # Cancel all background jobs
@@ -1528,16 +1615,28 @@ class MCPServer:
                 task.cancel()
                 logger.info("background_job_cancelled", job_id=job_id)
 
+        # Cancel stdio watch task if running
+        if self._stdio_watch_task is not None and not self._stdio_watch_task.done():
+            self._stdio_watch_task.cancel()
+            logger.info("stdio_watch_task_cancelled")
+
         # Stop indexer
         if self._indexer is not None and self._indexer.is_running:
             await self._indexer.stop()
             logger.info("indexer_stopped")
 
-        # Stop memory system (close db connections)
+        # Close memory system (closes DB pool)
         if self._memory_system is not None and self._memory_system.is_initialized:
-            # MemorySystem doesn't have a close method yet
-            # but we log the shutdown
-            logger.info("memory_system_shutdown")
+            await self._memory_system.close()
+            logger.info("memory_system_closed")
+
+        # Close thought chains DB pool if active
+        # ThoughtChains shares the same pool as the memory system,
+        # so closing memory_system above already closes it.
+        # Just clear the reference.
+        if self._thought_chains is not None:
+            self._thought_chains = None
+            logger.info("thought_chains_cleared")
 
         logger.info("server_shutdown_complete")
 
@@ -2797,6 +2896,53 @@ class MCPServer:
             logger.error("abandon_thought_chain_error", error=str(e), chain_id=chain_id)
             return {"success": False, "error": str(e)}
 
+    async def _watch_stdio_eof(self) -> None:
+        """Watch stdin for EOF and trigger graceful shutdown.
+
+        When running in stdio transport mode, OpenCode communicates via
+        stdin/stdout. If OpenCode closes its side of the pipe, stdin
+        will return EOF (empty bytes). This coroutine monitors for that
+        condition and triggers a clean shutdown.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            reader = asyncio.StreamReader()
+
+            try:
+                read_transport, _ = await loop.connect_read_pipe(
+                    lambda: asyncio.StreamReaderProtocol(reader),
+                    sys.stdin,
+                )
+            except (OSError, ValueError, RuntimeError):
+                # If we can't connect to stdin pipe, just wait for signal
+                logger.warning("stdio_watch_pipe_connect_failed")
+                return
+
+            try:
+                # Read until EOF - when OpenCode closes pipe, this returns empty
+                while True:
+                    chunk = await reader.read(4096)
+                    if not chunk:
+                        logger.info("stdio_eof_detected")
+                        break
+            except asyncio.CancelledError:
+                # Task was cancelled during shutdown - that's fine
+                return
+            finally:
+                # Clean up the transport
+                if hasattr(read_transport, "close"):
+                    read_transport.close()
+
+            # Trigger graceful shutdown
+            await self._shutdown()
+            sys.exit(0)
+        except asyncio.CancelledError:
+            # Expected during shutdown
+            pass
+        except Exception:
+            # Unexpected error in stdio watcher - don't crash, just log
+            logger.warning("stdio_watch_error")
+
     def run(
         self,
         transport: Literal[
@@ -2808,10 +2954,22 @@ class MCPServer:
         """Run the MCP server.
 
         Args:
-            transport: Transport type - "streamable-http" or other FastMCP option
+            transport: Transport type - "stdio", "streamable-http" or other FastMCP option
             host: Host to bind to (default: 127.0.0.1)
             port: Port to bind to (default: 8765)
         """
+        if transport == "stdio":
+            # Start stdio EOF watcher as a background task
+            # This detects when OpenCode closes its side of the pipe
+            try:
+                loop = asyncio.get_running_loop()
+                self._stdio_watch_task = loop.create_task(self._watch_stdio_eof())
+                logger.info("stdio_eof_watcher_started")
+            except RuntimeError:
+                # No running loop yet, will be created by FastMCP
+                self._stdio_watch_task = asyncio.ensure_future(self._watch_stdio_eof())
+                logger.info("stdio_eof_watcher_started")
+
         self._mcp.run(transport=transport, host=host, port=port)
 
 

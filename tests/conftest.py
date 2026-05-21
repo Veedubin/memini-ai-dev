@@ -9,17 +9,6 @@ import pytest
 
 
 @pytest.fixture
-def mock_qdrant_client() -> MagicMock:
-    """Create a mock Qdrant client."""
-    client = MagicMock()
-    client.search.return_value = []
-    client.upsert.return_value = {"status": "completed"}
-    client.delete.return_value = {"status": "completed"}
-    client.get_collection.return_value = {"status": "green"}
-    return client
-
-
-@pytest.fixture
 def mock_sentence_transformer() -> MagicMock:
     """Create a mock sentence transformer model."""
     model = MagicMock()

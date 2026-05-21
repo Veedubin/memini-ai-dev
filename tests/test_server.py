@@ -54,7 +54,9 @@ class TestQueryMemories:
         """Test query_memories returns empty results when no memories exist."""
         mcp_server._memory_system = mock_memory_system
 
-        result = await mcp_server.query_memories(query="test query", limit=10, strategy="tiered")
+        result = await mcp_server.query_memories(
+            query="test query", limit=10, strategy="tiered"
+        )
 
         assert result["count"] == 0
         assert result["memories"] == []
@@ -83,7 +85,9 @@ class TestQueryMemories:
         mock_memory_system.query_memories = AsyncMock(return_value=mock_entries)
         mcp_server._memory_system = mock_memory_system
 
-        result = await mcp_server.query_memories(query="test query", limit=10, strategy="tiered")
+        result = await mcp_server.query_memories(
+            query="test query", limit=10, strategy="tiered"
+        )
 
         assert result["count"] == 2
         assert len(result["memories"]) == 2
@@ -141,7 +145,9 @@ class TestSearchProject:
         """Test search_project returns empty when no results."""
         mcp_server._indexer = mock_indexer
 
-        result = await mcp_server.search_project(query="test", topK=20, fileTypes=None, paths=None)
+        result = await mcp_server.search_project(
+            query="test", topK=20, fileTypes=None, paths=None
+        )
 
         assert result["count"] == 0
         assert result["chunks"] == []
@@ -188,7 +194,10 @@ class TestGetStatus:
 
     @pytest.mark.asyncio
     async def test_get_status_returns_component_status(
-        self, mcp_server: MCPServer, mock_memory_system: MagicMock, mock_indexer: MagicMock
+        self,
+        mcp_server: MCPServer,
+        mock_memory_system: MagicMock,
+        mock_indexer: MagicMock,
     ) -> None:
         """Test get_status returns status for all components."""
         mcp_server._memory_system = mock_memory_system
@@ -203,11 +212,11 @@ class TestGetStatus:
 
 
 class TestGracefulDegradation:
-    """Tests for graceful degradation when Qdrant is unavailable."""
+    """Tests for graceful degradation when database is unavailable."""
 
     @pytest.mark.asyncio
-    async def test_server_starts_without_qdrant(self, mcp_server: MCPServer) -> None:
-        """Test that server can be created even without Qdrant."""
+    async def test_server_starts_without_database(self, mcp_server: MCPServer) -> None:
+        """Test that server can be created even without database."""
         # Server creation should not raise
         assert mcp_server is not None
 

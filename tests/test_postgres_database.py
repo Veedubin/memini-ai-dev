@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import numpy as np
@@ -15,7 +16,10 @@ from memini_ai.postgres.database import PostgresDatabase
 # Test Configuration
 # =============================================================================
 
-TEST_DB_URL = "postgresql://postgres:password@localhost:5434/postgres"
+TEST_DB_URL = os.getenv(
+    "TEST_DB_URL",
+    os.getenv("MEMINI_DB_URL", "postgresql://user:password@localhost:5434/postgres"),
+)
 TEST_DB_NAME = f"test_memini_{uuid.uuid4().hex[:8]}"
 
 

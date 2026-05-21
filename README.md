@@ -67,7 +67,7 @@ Configured via environment variables or a JSON config file.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEMINI_DB_URL` | (empty) | PostgreSQL connection URL (e.g., `postgresql://postgres:password@localhost:5432/postgres`) |
+| `MEMINI_DB_URL` | (empty) | PostgreSQL connection URL (set via `.env`, see `.env.example`) |
 | `MEMINI_PROJECT_ID` | auto-generated | Project identifier for isolation |
 | `MEMINI_EMBEDDING_DIM` | `384` | Embedding dimension (384 for MiniLM, 1024 for BGE-Large) |
 | `MEMINI_CHUNK_SIZE` | `512` | Chunk size for file indexing |
@@ -106,6 +106,46 @@ Set to `true` to enable these professional memory capabilities.
 | `MEMINI_TRUST_DELTA_IGNORED` | `-0.05` | Trust delta for `agent_ignored` signal |
 | `MEMINI_TRUST_DELTA_CORRECT` | `-0.15` | Trust delta for `user_corrected` signal |
 | `MEMINI_TRUST_DELTA_CONFIRM` | `+0.10` | Trust delta for `user_confirmed` signal |
+
+#### TLS/SSL Configuration
+
+PostgreSQL connections support TLS encryption to prevent data exfiltration on the network.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_SSLMODE` | `prefer` | PostgreSQL SSL mode — see table below |
+| `DB_SSLROOTCERT` | _(empty)_ | Path to CA certificate for server verification |
+
+**SSL Mode Values** (from [libpq docs](https://www.postgresql.org/docs/current/libpq-ssl.html)):
+
+| Value | Encryption | Server Cert Verified | Hostname Verified | Use Case |
+|-------|-----------|---------------------|-------------------|----------|
+| `disable` | No | No | No | Development only (no TLS) |
+| `allow` | Optional | No | No | Rarely useful |
+| `prefer` | Tried first | No | No | **Default** — fallback to plaintext |
+| `require` | Yes | No | No | Encrypted but no identity check |
+| `verify-ca` | Yes | Yes | No | CA verified, hostname not checked |
+| `verify-full` | Yes | Yes | Yes | **Recommended for production** |
+
+**Quick Start — Local Development with TLS:**
+
+```bash
+# 1. Generate self-signed certificates
+cd memini-ai-dev
+./scripts/generate-local-certs.sh
+
+# 2. Configure PostgreSQL to use the generated certs
+#    (see docker-compose.yml for commented SSL config)
+
+# 3. Set environment variables
+export DB_SSLMODE=require
+export DB_SSLROOTCERT=/path/to/memini-ai-dev/certs/ca.crt
+
+# 4. Start the server
+uvx --from memini-ai-dev memini-ai --stdio
+```
+
+**Production Recommendation:** Use `DB_SSLMODE=verify-full` with certificates from a trusted CA, not self-signed certificates.
 
 ## Usage
 
@@ -201,7 +241,7 @@ services:
     depends_on:
       - postgres
     environment:
-      - MEMINI_DB_URL=postgresql://postgres:password@postgres:5432/postgres
+      - MEMINI_DB_URL=postgresql://user:password@postgres:5432/postgres  # Set via .env
       - THOUGHT_CHAINS=true
     volumes:
       - .:/app

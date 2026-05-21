@@ -25,7 +25,6 @@ from memini_ai.utils.hash import hash_content
 class MemorySystemConfig:
     """Configuration for MemorySystem."""
 
-    qdrant_url: str | None = None
     project_id: str | None = None
     query_collections: list[str] | None = None
     enable_cascade: bool = True
@@ -68,12 +67,6 @@ class MemorySystem:
             if self._initialized:
                 return
 
-            # Apply config to Qdrant-specific attributes if present
-            if hasattr(self._db, "_url") and self._config.qdrant_url:
-                self._db._url = self._config.qdrant_url
-            if hasattr(self._db, "_project_id") and self._config.project_id:
-                self._db._project_id = self._config.project_id
-
             # Initialize database
             await self._db.initialize()
 
@@ -88,6 +81,16 @@ class MemorySystem:
     def is_ready(self) -> bool:
         """Check if system is ready for operations."""
         return self._initialized and self._db._initialized
+
+    async def close(self) -> None:
+        """Close the memory system and release resources.
+
+        Closes the underlying database connection pool.
+        After calling close(), the system should not be used further.
+        """
+        if self._initialized:
+            await self._db.close()
+            self._initialized = False
 
     async def add_memory(
         self,
@@ -162,11 +165,16 @@ class MemorySystem:
             entry.metadata_json = json.dumps(metadata)
         return await self.add_memory(entry)
 
-    async def get_memory(self, memory_id: str) -> MemoryEntry | None:
+    async def get_memory(
+        self,
+        memory_id: str,
+        include_archived: bool = False,
+    ) -> MemoryEntry | None:
         """Get a memory entry by ID.
 
         Args:
             memory_id: ID of the memory entry.
+            include_archived: If True, include archived memories (default False).
 
         Returns:
             MemoryEntry if found, None otherwise.
@@ -174,7 +182,43 @@ class MemorySystem:
         if not self._initialized:
             await self.initialize()
 
-        return await self._db.get_memory(memory_id)
+        return await self._db.get_memory(memory_id, include_archived)
+
+    async def get_supersession_chain(
+        self,
+        memory_id: str,
+        max_depth: int = 10,
+    ) -> list[MemoryEntry]:
+        """Get the full supersession chain for a memory.
+
+        Args:
+            memory_id: ID of the memory entry.
+            max_depth: Maximum chain depth (default 10).
+
+        Returns:
+            List of MemoryEntry objects in the supersession chain.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        return await self._db.get_supersession_chain(memory_id, max_depth)
+
+    async def get_superseded_memory(
+        self,
+        memory_id: str,
+    ) -> MemoryEntry | None:
+        """Get the memory that this memory supersedes (parent).
+
+        Args:
+            memory_id: ID of the memory entry.
+
+        Returns:
+            MemoryEntry of the superseded memory if found, None otherwise.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        return await self._db.get_superseded_memory(memory_id)
 
     async def delete_memory(self, memory_id: str) -> None:
         """Delete a memory entry.
@@ -467,13 +511,20 @@ class MemorySystem:
         memory_id: str,
         relationship_type: Any = None,
         limit: int = 10,
+        include_archived: bool = True,
+        max_chain_depth: int = 10,
     ) -> list[MemoryEntry]:
         """Find memories related to given memory.
+
+        For SUPERSEDES and PARTIAL_UPDATE relationships, will traverse the
+        supersession chain including archived memories.
 
         Args:
             memory_id: Reference memory ID.
             relationship_type: Optional filter by relationship type.
             limit: Maximum results.
+            include_archived: Include archived memories for SUPERSEDES chains (default True).
+            max_chain_depth: Maximum depth for supersession chain traversal (default 10).
 
         Returns:
             List of related MemoryEntry objects.
@@ -481,20 +532,31 @@ class MemorySystem:
         if not self._initialized:
             await self.initialize()
 
-        source = await self._db.get_memory(memory_id)
+        source = await self._db.get_memory(memory_id, include_archived=True)
         if source is None:
             return []
 
-        related_ids: list[str] = []
-        for rel in source.relationships:
-            if relationship_type is None or rel.relationship_type == relationship_type:
-                related_ids.append(rel.target_id)
-
         results: list[MemoryEntry] = []
-        for rel_id in related_ids[:limit]:
-            memory = await self._db.get_memory(rel_id)
-            if memory is not None:
-                results.append(memory)
+        seen_ids: set[str] = {memory_id}
+
+        if relationship_type is None or str(relationship_type.value) in (
+            "SUPERSEDES",
+            "PARTIAL_UPDATE",
+        ):
+            chain = await self._db.get_supersession_chain(memory_id, max_chain_depth)
+            for mem in chain:
+                if mem.id not in seen_ids and len(results) < limit:
+                    results.append(mem)
+                    seen_ids.add(mem.id)
+
+        for rel in source.relationships:
+            if (
+                relationship_type is None or rel.relationship_type == relationship_type
+            ) and rel.target_id not in seen_ids:
+                memory = await self._db.get_memory(rel.target_id, include_archived)
+                if memory is not None and len(results) < limit:
+                    results.append(memory)
+                    seen_ids.add(memory.id)
 
         return results
 

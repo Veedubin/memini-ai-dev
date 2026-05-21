@@ -28,7 +28,7 @@ python -m pytest tests/ -v
 ## Environment Variables (key ones)
 | Variable | Description | Default |
 |-----------|-------------|---------|
-| MEMINI_DB_URL | PostgreSQL connection | postgresql://postgres:password@localhost:5432/postgres |
+| MEMINI_DB_URL | PostgreSQL connection | Set via `.env` (see `.env.example`) |
 | MEMINI_EMBEDDING_DIM | 384 or 1024 | 384 |
 | MEMINI_TRUST_ENGINE | Enable trust scoring | false |
 | MEMINI_MEMORY_GRAPH | Enable memory graph | false |
