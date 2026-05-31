@@ -1,8 +1,9 @@
 """PostgreSQL/pgvector implementation of VectorDatabase using asyncpg.
 
 This module provides the PostgresDatabase class that implements the VectorDatabase
-ABC using asyncpg for async PostgreSQL operations with pgvector for vector storage
-and pgvectorscale's StreamingDiskANN index for high-performance similarity search.
+ABC using asyncpg for async PostgreSQL operations with pgvector for vector storage.
+It supports both pgvectorscale's StreamingDiskANN index (preferred) and pgvector's
+HNSW index as a fallback when vectorscale is unavailable.
 
 TLS/SSL Support:
     PostgreSQL connections can be secured with TLS by configuring db_sslmode and
@@ -20,6 +21,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 
 from memini_ai.config import get_config
 from memini_ai.memory.database import VectorDatabase
@@ -51,6 +53,7 @@ from memini_ai.postgres.queries import (
     UPSERT_ENTITY,
 )
 from memini_ai.postgres.schema import get_schema_sql
+from memini_ai.utils.logger import logger
 
 if TYPE_CHECKING:
     pass
@@ -128,9 +131,18 @@ class PostgresDatabase(VectorDatabase):
             if ssl_context is not None:
                 pool_kwargs["ssl"] = ssl_context
 
-            # Create connection pool
+            # Register pgvector type codec on every new connection via init callback.
+            # This ensures all pool connections can bind Python lists to the vector
+            # column type. Without this, only the first manually-acquired connection
+            # has the codec, and subsequent pool connections fail with:
+            #   "expected str, got list" when binding vector parameters.
+            async def _init_conn(conn: asyncpg.Connection) -> None:
+                await register_vector(conn)
+
+            # Create connection pool with pgvector codec initializer
             self._pool = await asyncpg.create_pool(
                 self._db_url,
+                init=_init_conn,
                 **pool_kwargs,
             )
 
@@ -200,12 +212,40 @@ class PostgresDatabase(VectorDatabase):
 
         return ctx
 
-    async def _ensure_schema(self) -> None:
-        """Create database schema if tables don't exist (idempotent)."""
+    async def _detect_vectorscale(self) -> bool:
+        """Check if pgvectorscale extension is available in the database.
+
+        Returns:
+            True if vectorscale extension can be created, False otherwise.
+        """
         if self._pool is None:
             raise RuntimeError("Database pool not initialized")
 
-        schema_sql = get_schema_sql()
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM pg_available_extensions WHERE name = 'vectorscale'"
+            )
+            return row is not None
+
+    async def _ensure_schema(self) -> None:
+        """Create database schema if tables don't exist (idempotent).
+
+        Automatically detects whether pgvectorscale is available and uses
+        StreamingDiskANN indexes when possible, falling back to HNSW indexes
+        otherwise.
+        """
+        if self._pool is None:
+            raise RuntimeError("Database pool not initialized")
+
+        # Detect vectorscale availability and generate appropriate schema
+        use_vectorscale = await self._detect_vectorscale()
+        schema_sql = get_schema_sql(use_vectorscale=use_vectorscale)
+
+        logger.info(
+            "schema_initialization",
+            use_vectorscale=use_vectorscale,
+            index_type="diskann" if use_vectorscale else "hnsw",
+        )
 
         async with self._pool.acquire() as conn:
             # Execute schema creation (IF NOT EXISTS makes it idempotent)
@@ -229,16 +269,16 @@ class PostgresDatabase(VectorDatabase):
             else entry.source_type,
         }
 
-        # Convert vector to string for PostgreSQL pgvector
+        # Convert vector to Python list for PostgreSQL pgvector via asyncpg
+        # register_vector() (called in initialize) sets up proper type codec
+        # so Python lists bind correctly to vector columns.
         if entry.vector is not None:
             import numpy as np
 
             if isinstance(entry.vector, np.ndarray):
-                vec_list = entry.vector.tolist()
+                record["embedding"] = entry.vector.tolist()
             else:
-                vec_list = list(entry.vector)
-            # pgvector expects string format '[0.1, 0.2, ...]'
-            record["embedding"] = "[" + ", ".join(str(x) for x in vec_list) + "]"
+                record["embedding"] = list(entry.vector)
         else:
             record["embedding"] = None
 
@@ -383,6 +423,7 @@ class PostgresDatabase(VectorDatabase):
                     record["source_type"],
                     record["content_hash"],
                     json.dumps(record["metadata"]),
+                    record["created_at_ms"],
                 )
 
         return entries
@@ -408,9 +449,7 @@ class PostgresDatabase(VectorDatabase):
             if include_archived:
                 row = await conn.fetchrow(GET_MEMORY_BY_ID_INCLUDE_ARCHIVED, memory_id)
             else:
-                row = await conn.fetchrow(
-                    GET_MEMORY_BY_ID, memory_id, not include_archived
-                )
+                row = await conn.fetchrow(GET_MEMORY_BY_ID, memory_id, include_archived)
             if row is None:
                 return None
 
@@ -530,9 +569,10 @@ class PostgresDatabase(VectorDatabase):
         await self.initialize()
         pool = await self._get_pool()
 
-        # Convert vector to string format for pgvector '[0.1, 0.2, ...]'
-        vec_list = vector if isinstance(vector, list) else list(vector)
-        query_vector = "[" + ", ".join(str(x) for x in vec_list) + "]"
+        # Convert vector to Python list for asyncpg + pgvector binding
+        # asyncpg natively binds Python lists to PostgreSQL arrays;
+        # the SQL query casts $1::vector, which accepts array input.
+        query_vector = vector if isinstance(vector, list) else list(vector)
 
         # Calculate threshold: pgvector <=> returns cosine distance (lower = better)
         # Convert similarity threshold to distance threshold: 1 - similarity = distance
@@ -580,7 +620,8 @@ class PostgresDatabase(VectorDatabase):
 
         query = """
             SELECT id, text, embedding, source_type, content_hash, metadata,
-                   trust_score, retrieval_count, is_archived, last_accessed_at
+                   trust_score, retrieval_count, is_archived, last_accessed_at,
+                   supersedes_id, structured_fields, change_ratio, created_at_ms
             FROM memories
             WHERE is_archived = FALSE
         """
@@ -668,7 +709,8 @@ class PostgresDatabase(VectorDatabase):
             if source_type:
                 query = """
                     SELECT id, text, embedding, source_type, content_hash, metadata,
-                           trust_score, retrieval_count, is_archived, last_accessed_at
+                           trust_score, retrieval_count, is_archived, last_accessed_at,
+                           supersedes_id, structured_fields, change_ratio, created_at_ms
                     FROM memories
                     WHERE source_path = $1 AND source_type = $2 AND is_archived = FALSE
                 """
@@ -676,7 +718,8 @@ class PostgresDatabase(VectorDatabase):
             else:
                 query = """
                     SELECT id, text, embedding, source_type, content_hash, metadata,
-                           trust_score, retrieval_count, is_archived, last_accessed_at
+                           trust_score, retrieval_count, is_archived, last_accessed_at,
+                           supersedes_id, structured_fields, change_ratio, created_at_ms
                     FROM memories
                     WHERE source_path = $1 AND is_archived = FALSE
                 """
@@ -704,7 +747,8 @@ class PostgresDatabase(VectorDatabase):
         async with pool.acquire() as conn:
             query = """
                 SELECT id, text, embedding, source_type, content_hash, metadata,
-                       trust_score, retrieval_count, is_archived, last_accessed_at
+                       trust_score, retrieval_count, is_archived, last_accessed_at,
+                       supersedes_id, structured_fields, change_ratio, created_at_ms
                 FROM memories
                 WHERE is_archived = FALSE
                 ORDER BY created_at DESC

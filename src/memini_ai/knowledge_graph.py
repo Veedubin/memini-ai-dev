@@ -10,7 +10,7 @@ import asyncio
 import json
 from collections import deque
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from memini_ai.config import MeminiConfig, get_config
@@ -20,7 +20,7 @@ from memini_ai.postgres.database import PostgresDatabase
 from memini_ai.utils.logger import logger
 
 
-class EntityType(str, Enum):
+class EntityType(StrEnum):
     """Types of entities in the knowledge graph."""
 
     PERSON = "PERSON"  # Human names

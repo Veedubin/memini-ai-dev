@@ -17,7 +17,7 @@ import contextlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ SHARING_MEMORY_TAG = "memory_sharing"
 DEFAULT_PEER_TRUST_LEVEL = 0.5
 
 
-class PeerRole(str, Enum):
+class PeerRole(StrEnum):
     """Role of a peer in the system."""
 
     OWNER = "owner"  # Primary user (project owner)
@@ -45,7 +45,7 @@ class PeerRole(str, Enum):
     GUEST = "guest"  # Limited access, can only see explicitly shared
 
 
-class MemoryPermission(str, Enum):
+class MemoryPermission(StrEnum):
     """Permission level for shared memories."""
 
     PRIVATE = "private"  # Only owner can see

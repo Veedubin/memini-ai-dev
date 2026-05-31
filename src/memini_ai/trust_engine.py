@@ -21,6 +21,7 @@ from memini_ai.memory.schema import (
 )
 
 if TYPE_CHECKING:
+    from memini_ai.audit.logger import AuditLogger
     from memini_ai.memory.system import MemorySystem
 
 
@@ -44,13 +45,19 @@ class TrustEngine:
     All features are opt-in via TRUST_ENGINE env var (default false).
     """
 
-    def __init__(self, memory_system: MemorySystem | None = None) -> None:
+    def __init__(
+        self,
+        memory_system: MemorySystem | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
         """Initialize TrustEngine.
 
         Args:
             memory_system: Optional MemorySystem instance for DB operations.
+            audit_logger: Optional AuditLogger for logging trust adjustments.
         """
         self._memory_system = memory_system
+        self._audit_logger = audit_logger
         self._enabled: bool | None = None
 
     @property
@@ -140,6 +147,23 @@ class TrustEngine:
         await asyncio.to_thread(
             self._update_memory_trust, memory_id, new_score, memory.is_archived
         )
+
+        # Phase 2.3: Audit log for trust adjustment
+        if self._audit_logger is not None:
+            self._audit_logger.log(
+                "trust_adjustment",
+                severity="warning" if action == "archived" else "info",
+                memory_id=memory_id,
+                description=f"Trust {signal.value}: {old_score:.3f} -> {new_score:.3f} ({action})",
+                details={
+                    "signal": signal.value,
+                    "old_score": old_score,
+                    "new_score": new_score,
+                    "action": action,
+                },
+                state_before={"trust_score": old_score},
+                state_after={"trust_score": new_score},
+            )
 
         return TrustAdjustment(
             memory_id=memory_id,

@@ -18,7 +18,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -141,7 +141,7 @@ Return valid JSON only, no markdown or explanation.
 """
 
 
-class DialecticSide(str, Enum):
+class DialecticSide(StrEnum):
     """Side of a dialectic argument."""
 
     PRO_A = "pro_a"

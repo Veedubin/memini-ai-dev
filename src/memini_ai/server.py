@@ -6,10 +6,12 @@ import asyncio
 import signal
 import sys
 import uuid
+from datetime import UTC
 from typing import Any, Literal
 
 from fastmcp import FastMCP
 
+from memini_ai.audit.logger import AuditLogger
 from memini_ai.config import get_config
 from memini_ai.decay import ConsolidationEngine, DecayEngine, adjust_decay_rate
 from memini_ai.dialectic import DialecticEngine, get_dialectic_engine
@@ -83,6 +85,7 @@ class MCPServer:
         self._multi_peer_manager: MultiPeerManager | None = None
         self._dialectic_engine: DialecticEngine | None = None
         self._thought_chains: ThoughtChains | None = None
+        self._audit_logger: AuditLogger | None = None
         self._init_error: str | None = None
         self._background_jobs: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._shutdown_in_progress: bool = False
@@ -150,6 +153,10 @@ class MCPServer:
         self._mcp.add_tool(self.pause_thought_chain)
         self._mcp.add_tool(self.resume_thought_chain)
         self._mcp.add_tool(self.abandon_thought_chain)
+        # Phase 2.3: Audit logging tools
+        self._mcp.add_tool(self.log_audit_event)
+        self._mcp.add_tool(self.get_audit_log)
+        self._mcp.add_tool(self.get_security_summary)
 
     def _setup_signal_handlers(self) -> None:
         """Set up SIGINT/SIGTERM handlers."""
@@ -226,6 +233,11 @@ class MCPServer:
                         memory_system=system,
                         trust_engine=self._trust_engine,
                     )
+                # Phase 2.3: Initialize audit logger
+                if hasattr(system._db, "_pool") and system._db._pool is not None:
+                    self._audit_logger = AuditLogger(db_pool=system._db._pool)
+                    await self._audit_logger.start()
+                    logger.info("audit_logger_initialized")
                 return system
             except Exception as e:
                 last_error = e
@@ -427,6 +439,21 @@ class MCPServer:
             memory_id = await asyncio.wait_for(
                 self._memory_system.add_memory(entry), timeout=OPERATION_TIMEOUT
             )
+
+            # Phase 2.3: Audit log for memory mutation
+            if self._audit_logger is not None:
+                self._audit_logger.log(
+                    "memory_mutation",
+                    severity="info",
+                    tool_name="add_memory",
+                    memory_id=memory_id,
+                    description=f"Memory added: {content[:100]}",
+                    details={
+                        "source_type": sourceType,
+                        "content_length": len(content),
+                        "supersedes_id": supersedesId,
+                    },
+                )
 
             return {
                 "success": True,
@@ -895,6 +922,24 @@ class MCPServer:
                     "action": None,
                     "error": "Trust engine disabled or memory not found",
                 }
+
+            # Phase 2.3: Audit log for trust adjustment
+            if self._audit_logger is not None:
+                self._audit_logger.log(
+                    "trust_adjustment",
+                    severity="info",
+                    tool_name="adjust_trust",
+                    memory_id=memory_id,
+                    description=f"Trust {signal}: {result.old_score:.3f} -> {result.new_score:.3f}",
+                    details={
+                        "signal": signal,
+                        "old_score": result.old_score,
+                        "new_score": result.new_score,
+                        "action": result.action,
+                    },
+                    state_before={"trust_score": result.old_score},
+                    state_after={"trust_score": result.new_score},
+                )
 
             return {
                 "success": True,
@@ -1637,6 +1682,12 @@ class MCPServer:
         if self._thought_chains is not None:
             self._thought_chains = None
             logger.info("thought_chains_cleared")
+
+        # Stop audit logger
+        if self._audit_logger is not None:
+            await self._audit_logger.stop()
+            self._audit_logger = None
+            logger.info("audit_logger_stopped")
 
         logger.info("server_shutdown_complete")
 
@@ -2895,6 +2946,191 @@ class MCPServer:
         except Exception as e:
             logger.error("abandon_thought_chain_error", error=str(e), chain_id=chain_id)
             return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # TOOL: log_audit_event (Phase 2.3 - Audit Logging)
+    # =========================================================================
+    async def log_audit_event(
+        self,
+        event_type: str,
+        severity: str = "info",
+        session_id: str | None = None,
+        peer_id: str | None = None,
+        agent_name: str | None = None,
+        tool_name: str | None = None,
+        memory_id: str | None = None,
+        description: str | None = None,
+        details: dict[str, Any] | None = None,
+        state_before: dict[str, Any] | None = None,
+        state_after: dict[str, Any] | None = None,
+        ip_address: str | None = None,
+    ) -> dict[str, Any]:
+        """Log a single audit event manually.
+
+        Args:
+            event_type: Type of event - one of: auth_failure, permission_change,
+                config_modification, agent_execution, memory_mutation,
+                tool_invocation, trust_adjustment.
+            severity: Severity level - "info", "warning", or "critical" (default "info").
+            session_id: Optional session ID.
+            peer_id: Optional peer ID.
+            agent_name: Optional agent name.
+            tool_name: Optional tool name.
+            memory_id: Optional memory ID.
+            description: Optional description text.
+            details: Optional details dictionary.
+            state_before: Optional state before the event.
+            state_after: Optional state after the event.
+            ip_address: Optional IP address.
+
+        Returns:
+            Dictionary with success status and message.
+        """
+        try:
+            if self._audit_logger is None and self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            if self._audit_logger is None:
+                return {
+                    "success": False,
+                    "error": "Audit logger not available (database pool required)",
+                }
+
+            self._audit_logger.log(
+                event_type=event_type,
+                severity=severity,
+                session_id=session_id,
+                peer_id=peer_id,
+                agent_name=agent_name,
+                tool_name=tool_name,
+                memory_id=memory_id,
+                description=description,
+                details=details,
+                state_before=state_before,
+                state_after=state_after,
+                ip_address=ip_address,
+            )
+
+            return {
+                "success": True,
+                "message": f"Audit event '{event_type}' logged successfully",
+            }
+        except Exception as e:
+            logger.error("log_audit_event_error", error=str(e), event_type=event_type)
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # TOOL: get_audit_log (Phase 2.3 - Audit Logging)
+    # =========================================================================
+    async def get_audit_log(
+        self,
+        event_type: str | None = None,
+        severity: str | None = None,
+        agent_name: str | None = None,
+        session_id: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Query audit log with filters.
+
+        Args:
+            event_type: Filter by event type.
+            severity: Filter by severity level.
+            agent_name: Filter by agent name.
+            session_id: Filter by session ID.
+            start_time: Filter events after this ISO timestamp.
+            end_time: Filter events before this ISO timestamp.
+            limit: Maximum number of results (default 100).
+
+        Returns:
+            Dictionary with count and list of matching audit events.
+        """
+        try:
+            if self._audit_logger is None and self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            if self._audit_logger is None:
+                return {
+                    "count": 0,
+                    "events": [],
+                    "error": "Audit logger not available (database pool required)",
+                }
+
+            from datetime import datetime
+
+            filters: dict[str, Any] = {}
+            if event_type:
+                filters["event_type"] = event_type
+            if severity:
+                filters["severity"] = severity
+            if agent_name:
+                filters["agent_name"] = agent_name
+            if session_id:
+                filters["session_id"] = session_id
+            if start_time:
+                filters["start_time"] = datetime.fromisoformat(start_time).replace(
+                    tzinfo=UTC
+                )
+            if end_time:
+                filters["end_time"] = datetime.fromisoformat(end_time).replace(
+                    tzinfo=UTC
+                )
+
+            events = await self._audit_logger.get_events(filters, limit)
+
+            return {"count": len(events), "events": events}
+        except Exception as e:
+            logger.error("get_audit_log_error", error=str(e))
+            return {"count": 0, "events": [], "error": str(e)}
+
+    # =========================================================================
+    # TOOL: get_security_summary (Phase 2.3 - Audit Logging)
+    # =========================================================================
+    async def get_security_summary(self, hours: int = 24) -> dict[str, Any]:
+        """Get aggregated security metrics for last N hours.
+
+        Args:
+            hours: Number of hours to look back (default 24).
+
+        Returns:
+            Dictionary with total_events, critical_count, events_per_agent,
+            events_per_type, and severity_counts.
+        """
+        try:
+            if self._audit_logger is None and self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            if self._audit_logger is None:
+                return {
+                    "total_events": 0,
+                    "critical_count": 0,
+                    "events_per_agent": {},
+                    "events_per_type": {},
+                    "severity_counts": {},
+                    "error": "Audit logger not available (database pool required)",
+                }
+
+            summary = await self._audit_logger.get_summary(hours)
+
+            return {"success": True, **summary}
+        except Exception as e:
+            logger.error("get_security_summary_error", error=str(e))
+            return {
+                "success": False,
+                "total_events": 0,
+                "critical_count": 0,
+                "events_per_agent": {},
+                "events_per_type": {},
+                "severity_counts": {},
+                "error": str(e),
+            }
 
     async def _watch_stdio_eof(self) -> None:
         """Watch stdin for EOF and trigger graceful shutdown.

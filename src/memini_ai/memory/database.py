@@ -291,7 +291,17 @@ def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
 
     from memini_ai.postgres import PostgresDatabase
 
-    db_url = os.environ.get("MEMINI_DB_URL", "")
+    # Use config.db_url first (resolved by pydantic-settings from MEMINI_DB_URL env var),
+    # then fall back to direct os.environ check. This ensures the URL is properly resolved
+    # even when OpenCode injects environment vars through its config system rather than
+    # the OS environment of the subprocess.
+    db_url = config.db_url or os.environ.get("MEMINI_DB_URL", "")
+    if not db_url:
+        raise ValueError(
+            "MEMINI_DB_URL environment variable is not set. "
+            "Please set it to your PostgreSQL connection string, e.g., "
+            "postgresql://user:password@host:port/database"
+        )
     return PostgresDatabase(
         db_url=db_url,
         project_id=config.project_id,

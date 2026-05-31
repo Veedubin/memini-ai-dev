@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from memini_ai.utils.hash import hash_content
 
 
-class MemorySourceType(str, Enum):
+class MemorySourceType(StrEnum):
     """Source type for memory entries."""
 
     session = "session"
@@ -24,7 +24,7 @@ class MemorySourceType(str, Enum):
     thought = "thought"
 
 
-class TrustLevel(str, Enum):
+class TrustLevel(StrEnum):
     """Trust level classification for memory entries."""
 
     ARCHIVED = "archived"  # < 0.2
@@ -34,7 +34,7 @@ class TrustLevel(str, Enum):
     PROMOTED = "promoted"  # > 0.8
 
 
-class TrustSignal(str, Enum):
+class TrustSignal(StrEnum):
     """Feedback signals for trust adjustment."""
 
     AGENT_USED = "agent_used"  # Agent successfully used this memory
@@ -43,7 +43,7 @@ class TrustSignal(str, Enum):
     USER_CONFIRMED = "user_confirmed"  # User confirmed this memory
 
 
-class RelationshipType(str, Enum):
+class RelationshipType(StrEnum):
     """Types of relationships between memories."""
 
     SUPERSEDES = "SUPERSEDES"
@@ -163,7 +163,7 @@ TIER0_DEFAULT_CACHE_TTL = 3600  # 1 hour in seconds
 TIER1_DEFAULT_CACHE_TTL = 7200  # 2 hours in seconds
 
 
-class SummaryTier(str, Enum):
+class SummaryTier(StrEnum):
     """Summary tier levels for tiered loading.
 
     L0: Project summary (~100 tokens) - session start auto-inject
@@ -305,7 +305,7 @@ class SearchFilter(BaseModel):
     project_id: str | None = Field(default=None, alias="projectId")
 
 
-class SearchStrategy(str, Enum):
+class SearchStrategy(StrEnum):
     """Search strategy for memory retrieval."""
 
     TIERED = "TIERED"

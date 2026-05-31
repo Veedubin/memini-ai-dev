@@ -16,7 +16,7 @@ Query Categories:
 
 SEARCH_MEMORIES_VECTOR = """
 SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
-       embedding, supersedes_id, structured_fields, change_ratio,
+       embedding, supersedes_id, structured_fields, change_ratio, created_at_ms,
        embedding <=> $1::vector as distance
 FROM memories
 WHERE embedding <=> $1::vector < $2
@@ -58,7 +58,7 @@ GET_MEMORY_BY_ID = """
 SELECT id, text, embedding, source_type, content_hash, metadata,
        trust_score, retrieval_count, is_archived, last_accessed_at,
        created_at, updated_at,
-       supersedes_id, structured_fields, change_ratio
+       supersedes_id, structured_fields, change_ratio, created_at_ms
 FROM memories
 WHERE id = $1 AND ($2::boolean OR is_archived = FALSE)
 """
@@ -68,7 +68,7 @@ GET_MEMORY_BY_ID_INCLUDE_ARCHIVED = """
 SELECT id, text, embedding, source_type, content_hash, metadata,
        trust_score, retrieval_count, is_archived, last_accessed_at,
        created_at, updated_at,
-       supersedes_id, structured_fields, change_ratio
+       supersedes_id, structured_fields, change_ratio, created_at_ms
 FROM memories
 WHERE id = $1
 """

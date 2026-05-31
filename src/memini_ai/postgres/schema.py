@@ -5,10 +5,10 @@ pgvector for vector storage and pgvectorscale's StreamingDiskANN index for
 high-performance similarity search.
 
 Schema Design Decisions:
-- Use vector(1024) for BGE-Large embeddings (384 for MiniLM fallback)
-- Use StreamingDiskANN (diskann) index for vector similarity - better for large datasets
+- Use vector(384) for MiniLM-L6-v2 embeddings (default), configurable for BGE-Large (1024)
+- Use StreamingDiskANN (diskann) index when vectorscale is available, fall back to HNSW
 - Use vector_cosine_ops for cosine distance similarity
-- Enable both pgvector and vectorscale extensions
+- Enable pgvector (required) and vectorscale (optional) extensions
 """
 
 # Table name constants
@@ -22,14 +22,22 @@ TABLE_USER_PROFILES = "user_profiles"
 TABLE_TRUST_ADJUSTMENTS = "trust_adjustments"
 TABLE_THOUGHT_CHAINS = "thought_chains"
 TABLE_THOUGHTS = "thoughts"
+TABLE_AUDIT_LOG = "audit_log"
 
 # SQL for creating all extensions
+# pgvector is required; vectorscale is optional (fall back to HNSW if unavailable)
 SQL_CREATE_EXTENSIONS = """
--- Enable pgvector extension for vector data type
+-- Enable pgvector extension for vector data type (required)
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Enable vectorscale extension for StreamingDiskANN index
-CREATE EXTENSION IF NOT EXISTS vectorscale;
+-- Enable vectorscale extension for StreamingDiskANN index (optional)
+-- Fail gracefully if unavailable — we'll use HNSW index instead.
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS vectorscale;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'vectorscale extension unavailable, will use HNSW indexes';
+END $$;
 """
 
 # SQL for memories table
@@ -62,14 +70,26 @@ CREATE TABLE IF NOT EXISTS memories (
     source_path TEXT,
 
     -- Flexible metadata
-    metadata JSONB DEFAULT '{}'::jsonb
+    metadata JSONB DEFAULT '{}'::jsonb,
+
+    -- Delta model fields (v0.4.0)
+    created_at_ms BIGINT DEFAULT 0,
+    supersedes_id UUID REFERENCES memories(id) ON DELETE SET NULL,
+    structured_fields JSONB DEFAULT NULL,
+    change_ratio FLOAT DEFAULT 1.0 CHECK (change_ratio >= 0 AND change_ratio <= 1)
 );
 """
 
-# SQL for memories vector index (StreamingDiskANN)
-SQL_CREATE_MEMORIES_EMBEDDING_INDEX = """
+# SQL for memories vector index (StreamingDiskANN preferred, HNSW fallback)
+SQL_CREATE_MEMORIES_EMBEDDING_INDEX_DISKANN = """
 CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories
 USING diskann (embedding vector_cosine_ops);
+"""
+
+SQL_CREATE_MEMORIES_EMBEDDING_INDEX_HNSW = """
+CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
 """
 
 # SQL for memories secondary indexes
@@ -135,10 +155,16 @@ CREATE TABLE IF NOT EXISTS entities (
 );
 """
 
-# SQL for entities vector index (StreamingDiskANN)
-SQL_CREATE_ENTITIES_EMBEDDING_INDEX = """
+# SQL for entities vector index (StreamingDiskANN preferred, HNSW fallback)
+SQL_CREATE_ENTITIES_EMBEDDING_INDEX_DISKANN = """
 CREATE INDEX IF NOT EXISTS idx_entities_embedding ON entities
 USING diskann (embedding vector_cosine_ops);
+"""
+
+SQL_CREATE_ENTITIES_EMBEDDING_INDEX_HNSW = """
+CREATE INDEX IF NOT EXISTS idx_entities_embedding ON entities
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
 """
 
 # SQL for entities indexes
@@ -315,10 +341,55 @@ CREATE TABLE IF NOT EXISTS thoughts (
 # SQL for thoughts indexes
 SQL_CREATE_THOUGHTS_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_thoughts_chain ON thoughts(chain_id);
-CREATE INDEX IF NOT EXISTS idx_thoughts_embedding ON thoughts USING diskann (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_thoughts_branch ON thoughts(branch_id) WHERE branch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_thoughts_revises ON thoughts(revises_thought_id) WHERE revises_thought_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_thoughts_memory ON thoughts(memory_id) WHERE memory_id IS NOT NULL;
+"""
+
+SQL_CREATE_THOUGHTS_EMBEDDING_INDEX_DISKANN = """
+CREATE INDEX IF NOT EXISTS idx_thoughts_embedding ON thoughts USING diskann (embedding vector_cosine_ops);
+"""
+
+SQL_CREATE_THOUGHTS_EMBEDDING_INDEX_HNSW = """
+CREATE INDEX IF NOT EXISTS idx_thoughts_embedding ON thoughts USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+"""
+
+# =============================================================================
+# Audit Log table (Phase 2.3: Security Audit Logging)
+# =============================================================================
+
+# SQL for audit_log table
+SQL_CREATE_AUDIT_LOG_TABLE = """
+CREATE TABLE IF NOT EXISTS audit_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_type VARCHAR(50) NOT NULL CHECK (event_type IN (
+        'auth_failure', 'permission_change', 'config_modification',
+        'agent_execution', 'memory_mutation', 'tool_invocation', 'trust_adjustment'
+    )),
+    severity VARCHAR(20) NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
+    session_id UUID,
+    peer_id VARCHAR(100),
+    agent_name VARCHAR(100),
+    tool_name VARCHAR(100),
+    memory_id UUID,
+    description TEXT,
+    details JSONB,
+    state_before JSONB,
+    state_after JSONB,
+    ip_address INET,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    occurred_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+"""
+
+# SQL for audit_log indexes
+SQL_CREATE_AUDIT_LOG_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at ON audit_log(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_event_type ON audit_log(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_log_severity ON audit_log(severity);
+CREATE INDEX IF NOT EXISTS idx_audit_log_session_id ON audit_log(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created_at_brin ON audit_log USING BRIN(created_at);
 """
 
 # SQL to update memories source_type CHECK constraint to include 'thought'
@@ -329,24 +400,45 @@ ALTER TABLE memories ADD CONSTRAINT memories_source_type_check
 """
 
 
-def get_schema_sql() -> str:
+def get_schema_sql(use_vectorscale: bool = True) -> str:
     """Return all SQL schema definitions as a single concatenated string.
+
+    Args:
+        use_vectorscale: If True, use StreamingDiskANN indexes (requires vectorscale).
+            If False, use HNSW indexes (requires only pgvector). Default True
+            for backward compatibility; auto-detected at runtime by database.py.
 
     Returns:
         Complete SQL script for creating all tables, indexes, and extensions
         for the pgvector/pgvectorscale backend.
     """
+    memories_embedding_index = (
+        SQL_CREATE_MEMORIES_EMBEDDING_INDEX_DISKANN
+        if use_vectorscale
+        else SQL_CREATE_MEMORIES_EMBEDDING_INDEX_HNSW
+    )
+    entities_embedding_index = (
+        SQL_CREATE_ENTITIES_EMBEDDING_INDEX_DISKANN
+        if use_vectorscale
+        else SQL_CREATE_ENTITIES_EMBEDDING_INDEX_HNSW
+    )
+    thoughts_embedding_index = (
+        SQL_CREATE_THOUGHTS_EMBEDDING_INDEX_DISKANN
+        if use_vectorscale
+        else SQL_CREATE_THOUGHTS_EMBEDDING_INDEX_HNSW
+    )
+
     return "\n".join(
         [
             SQL_CREATE_EXTENSIONS,
             SQL_CREATE_PEERS_TABLE,  # Must be first - other tables reference it
             SQL_CREATE_MEMORIES_TABLE,
-            SQL_CREATE_MEMORIES_EMBEDDING_INDEX,
+            memories_embedding_index,
             SQL_CREATE_MEMORIES_INDEXES,
             SQL_CREATE_MEMORY_RELATIONSHIPS_TABLE,
             SQL_CREATE_MEMORY_RELATIONSHIPS_INDEXES,
             SQL_CREATE_ENTITIES_TABLE,  # References peers
-            SQL_CREATE_ENTITIES_EMBEDDING_INDEX,
+            entities_embedding_index,
             SQL_CREATE_ENTITIES_INDEXES,
             SQL_CREATE_ENTITY_RELATIONSHIPS_TABLE,
             SQL_CREATE_ENTITY_RELATIONSHIPS_INDEXES,
@@ -360,7 +452,11 @@ def get_schema_sql() -> str:
             SQL_CREATE_THOUGHT_CHAINS_TABLE,
             SQL_CREATE_THOUGHT_CHAINS_INDEXES,
             SQL_CREATE_THOUGHTS_TABLE,
+            thoughts_embedding_index,
             SQL_CREATE_THOUGHTS_INDEXES,
+            # Phase 2.3: Audit Log
+            SQL_CREATE_AUDIT_LOG_TABLE,
+            SQL_CREATE_AUDIT_LOG_INDEXES,
             # Update memories source_type CHECK constraint
             SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK,
         ]
