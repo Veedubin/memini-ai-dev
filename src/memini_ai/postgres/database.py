@@ -105,6 +105,7 @@ class PostgresDatabase(VectorDatabase):
         config = get_config()
         self._sslmode = sslmode or config.db_sslmode
         self._sslrootcert = sslrootcert or config.db_sslrootcert
+        self._dimension = config.embedding_dim
 
     async def initialize(self) -> None:
         """Initialize the database connection and create schema if needed.
@@ -765,11 +766,11 @@ class PostgresDatabase(VectorDatabase):
             collection_name: Collection to check (unused in pgvector impl).
 
         Returns:
-            Vector dimension (always 1024 for BGE-Large) or None if not supported.
+            Vector dimension from config (384 for MiniLM, 1024 for BGE-Large)
+            or None if not supported.
         """
-        # PostgreSQL pgvector always uses fixed dimension
-        # Return 1024 for BGE-Large embeddings
-        return 1024
+        # PostgreSQL pgvector always uses fixed dimension from config
+        return self._dimension
 
     async def close(self) -> None:
         """Close the database connection."""
