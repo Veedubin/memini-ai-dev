@@ -91,8 +91,13 @@ class MeminiConfig(BaseSettings):
     # Auto-Extract settings
     auto_extract_enabled: bool = Field(default=False, alias="AUTO_EXTRACT")
     auto_extract_turns: int = Field(default=5, alias="AUTO_EXTRACT_TURNS")
+
+    # LLM settings
     llm_url: str = Field(default="http://localhost:11434/api/generate", alias="LLM_URL")
     llm_model: str = Field(default="llama3.2", alias="LLM_MODEL")
+    llm_provider: str = Field(default="ollama", alias="LLM_PROVIDER")
+    llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
+    llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
 
     # Pre-Compression Extraction settings
     precompress_enabled: bool = Field(default=False, alias="PRECOMPRESS")

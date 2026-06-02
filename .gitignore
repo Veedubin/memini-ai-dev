@@ -20,3 +20,6 @@ HANDOFF.md
 
 # TLS certificates (never commit secrets)
 certs/
+
+# memini indexer SQLite database
+.memini/

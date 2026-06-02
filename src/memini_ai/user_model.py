@@ -7,12 +7,13 @@ import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 if TYPE_CHECKING:
     from memini_ai.memory.system import MemorySystem
 
-import httpx
-
 from memini_ai.config import get_config
+from memini_ai.llm.factory import get_llm_client
 from memini_ai.memory.schema import MemorySourceType, UserProfile
 from memini_ai.utils.logger import logger
 
@@ -124,8 +125,14 @@ class UserModel:
         self._memory_system = memory_system
         self._config = get_config()
         self._enabled: bool | None = None
-        self._http_client: httpx.AsyncClient | None = None
         self._profile_cache: UserProfile | None = None
+        self._http_client = None
+
+    async def close(self) -> None:
+        """Cleanup resources."""
+        if self._http_client is not None and hasattr(self._http_client, "aclose"):
+            await self._http_client.aclose()
+        self._http_client = None
 
     @property
     def is_enabled(self) -> bool:
@@ -206,7 +213,7 @@ class UserModel:
             return None
 
         try:
-            client = await self._get_http_client()
+            client = get_llm_client(self._config)
             profile_json = json.dumps(
                 {
                     "style": profile.communication_style,
@@ -215,18 +222,12 @@ class UserModel:
                 }
             )
 
-            response = await client.post(
-                self._config.llm_url,
-                json={
-                    "model": self._config.llm_model,
-                    "prompt": GET_PROFILE_PROMPT.format(profile=profile_json),
-                    "stream": False,
-                },
+            text = await client.generate(
+                prompt=GET_PROFILE_PROMPT.format(profile=profile_json),
             )
 
-            if response.status_code == 200:
-                result = response.json()
-                return str(result.get("response", "")).strip()
+            if text:
+                return text.strip()
         except Exception:
             logger.warning("user_model_profile_summary_failed", error=str(Exception))
 
@@ -297,7 +298,7 @@ class UserModel:
             Reasoning text from LLM, or None on failure.
         """
         try:
-            client = await self._get_http_client()
+            client = get_llm_client(self._config)
 
             # Build profile summary for prompt
             profile_summary = json.dumps(
@@ -316,22 +317,14 @@ class UserModel:
             else:
                 prompt_template = DIALECTIC_UPDATE_PROMPT
 
-            response = await client.post(
-                self._config.llm_url,
-                json={
-                    "model": self._config.llm_model,
-                    "prompt": prompt_template.format(
-                        profile_summary=profile_summary,
-                        conversation=conversation,
-                    ),
-                    "stream": False,
-                },
+            reasoning = await client.generate(
+                prompt=prompt_template.format(
+                    profile_summary=profile_summary,
+                    conversation=conversation,
+                ),
             )
 
-            if response.status_code == 200:
-                result = response.json()
-                reasoning = str(result.get("response", ""))
-
+            if reasoning:
                 # Parse and apply updates
                 await self._apply_profile_update(profile, reasoning)
 
@@ -512,16 +505,10 @@ class UserModel:
         return None
 
     async def _get_http_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client for LLM calls."""
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=60.0)
-        return self._http_client
-
-    async def close(self) -> None:
-        """Close HTTP client."""
-        if self._http_client is not None:
-            await self._http_client.aclose()
-            self._http_client = None
+        """Get or create HTTP client for LLM calls (legacy stub)."""
+        raise NotImplementedError(
+            "HTTP client creation moved to LLM factory. This is a dead method stub."
+        )
 
 
 # Module-level singleton

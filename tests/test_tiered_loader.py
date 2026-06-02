@@ -90,7 +90,15 @@ def mock_config_enabled() -> MagicMock:
     config.tier1_max_tokens = 2000
     config.llm_url = "http://localhost:11434/api/generate"
     config.llm_model = "llama3.2"
+    config.llm_provider = "ollama"
     return config
+
+
+def make_mock_llm_client(return_text: str = "") -> AsyncMock:
+    """Create a mock LLM client for factory-based tests."""
+    client = AsyncMock()
+    client.generate = AsyncMock(return_value=return_text)
+    return client
 
 
 @pytest.fixture
@@ -151,19 +159,6 @@ def mock_memories_promoted() -> list[MagicMock]:
             is_archived=False,
         ),
     ]
-
-
-@pytest.fixture
-def mock_http_response() -> MagicMock:
-    """Create a mock HTTP response from LLM."""
-    response = MagicMock()
-    response.status_code = 200
-    response.json = MagicMock(
-        return_value={
-            "response": "This project is a Python-based MCP memory server using async/await patterns and type hints throughout."
-        }
-    )
-    return response
 
 
 class TestIsEnabled:
@@ -294,7 +289,6 @@ class TestTier0Generation:
         mock_config_enabled: MagicMock,
         mock_memory_system: MagicMock,
         mock_memories_high_trust: list[MagicMock],
-        mock_http_response: MagicMock,
     ) -> None:
         """get_tier0 generates summary from high-trust memories."""
         mock_memory_system.list_memories = AsyncMock(
@@ -306,11 +300,12 @@ class TestTier0Generation:
         ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_http_response)
-            loader._http_client = mock_client
-
-            result = await loader.get_tier0()
+            mock_llm_text = "This project is a Python-based MCP memory server using async/await patterns and type hints throughout."
+            with patch(
+                "memini_ai.tiered_loader.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ):
+                result = await loader.get_tier0()
 
             assert result["tier"] == "L0"
             assert result["content"] is not None
@@ -389,7 +384,6 @@ class TestTier1Generation:
         mock_config_enabled: MagicMock,
         mock_memory_system: MagicMock,
         mock_memories_promoted: list[MagicMock],
-        mock_http_response: MagicMock,
     ) -> None:
         """get_tier1 generates summary from promoted memories."""
         mock_memory_system.list_memories = AsyncMock(
@@ -401,11 +395,12 @@ class TestTier1Generation:
         ):
             loader = TieredLoader(memory_system=mock_memory_system)
 
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_http_response)
-            loader._http_client = mock_client
-
-            result = await loader.get_tier1()
+            mock_llm_text = "Promoted memories summary."
+            with patch(
+                "memini_ai.tiered_loader.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ):
+                result = await loader.get_tier1()
 
             assert result["tier"] == "L1"
             assert result["content"] is not None
@@ -490,7 +485,6 @@ class TestCacheHit:
         self,
         mock_config_enabled: MagicMock,
         mock_memory_system: MagicMock,
-        mock_http_response: MagicMock,
     ) -> None:
         """get_tier0 returns cached L0 without regeneration."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
@@ -534,7 +528,6 @@ class TestCacheHit:
         self,
         mock_config_enabled: MagicMock,
         mock_memory_system: MagicMock,
-        mock_http_response: MagicMock,
     ) -> None:
         """get_tier1 returns cached L1 without regeneration."""
         mock_memory_system.list_memories = AsyncMock(return_value=[])
@@ -582,7 +575,6 @@ class TestForceRefresh:
         mock_config_enabled: MagicMock,
         mock_memory_system: MagicMock,
         mock_memories_high_trust: list[MagicMock],
-        mock_http_response: MagicMock,
     ) -> None:
         """force_refresh=True bypasses cache and regenerates."""
         mock_memory_system.list_memories = AsyncMock(

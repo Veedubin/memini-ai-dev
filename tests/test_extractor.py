@@ -116,14 +116,24 @@ def mock_config() -> MagicMock:
     config.auto_extract_turns = 3
     config.llm_url = "http://localhost:11434/api/generate"
     config.llm_model = "llama3.2"
+    config.llm_provider = "ollama"
     return config
+
+
+def make_mock_llm_client(return_text: str = "") -> AsyncMock:
+    """Create a mock LLM client for factory-based tests."""
+    client = AsyncMock()
+    client.generate = AsyncMock(return_value=return_text)
+    return client
 
 
 class TestMemoryExtractorEnabled:
     """Tests for MemoryExtractor when enabled."""
 
     @pytest.mark.asyncio
-    async def test_is_enabled_true(self, mock_memory_system: MagicMock, mock_config: MagicMock) -> None:
+    async def test_is_enabled_true(
+        self, mock_memory_system: MagicMock, mock_config: MagicMock
+    ) -> None:
         """is_enabled returns True when config enabled."""
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
@@ -148,7 +158,11 @@ class TestMemoryExtractorEnabled:
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
 
-            with patch.object(extractor, "_extract_and_store", new=AsyncMock(return_value=["mem-1", "mem-2"])) as mock_extract:
+            with patch.object(
+                extractor,
+                "_extract_and_store",
+                new=AsyncMock(return_value=["mem-1", "mem-2"]),
+            ) as mock_extract:
                 # Simulate the extraction trigger condition
                 extractor._turn_tracker._turn_count = 3  # At threshold
                 extractor._turn_tracker._turns_before_extract = 3
@@ -166,16 +180,14 @@ class TestMemoryExtractorEnabled:
         self, mock_memory_system: MagicMock, mock_config: MagicMock
     ) -> None:
         """Extraction calls add_memory for each extracted memory."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "response": '{"facts": [{"text": "Python is great", "confidence": 0.9}], "decisions": [], "patterns": [], "preferences": []}'
-        }
-
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
 
-            with patch.object(extractor, "_get_http_client", new=AsyncMock(return_value=MagicMock(post=AsyncMock(return_value=mock_response)))):
+            mock_llm_text = '{"facts": [{"text": "Python is great", "confidence": 0.9}], "decisions": [], "patterns": [], "preferences": []}'
+            with patch(
+                "memini_ai.extractor.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ):
                 result = await extractor.trigger_extraction("user: Test conversation")
 
         assert len(result) == 1
@@ -191,16 +203,14 @@ class TestMemoryExtractorEnabled:
         """Duplicate extraction raises ValueError which is caught."""
         mock_memory_system.add_memory = AsyncMock(side_effect=ValueError("Duplicate"))
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "response": '{"facts": [{"text": "Duplicate fact", "confidence": 0.8}], "decisions": [], "patterns": [], "preferences": []}'
-        }
-
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
 
-            with patch.object(extractor, "_get_http_client", new=AsyncMock(return_value=MagicMock(post=AsyncMock(return_value=mock_response)))):
+            mock_llm_text = '{"facts": [{"text": "Duplicate fact", "confidence": 0.8}], "decisions": [], "patterns": [], "preferences": []}'
+            with patch(
+                "memini_ai.extractor.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ):
                 result = await extractor.trigger_extraction("user: Test")
 
         assert len(result) == 0  # Skipped duplicates
@@ -221,7 +231,9 @@ class TestMemoryExtractorDisabled:
             assert extractor.is_enabled is False
 
     @pytest.mark.asyncio
-    async def test_record_turn_no_op_when_disabled(self, mock_memory_system: MagicMock) -> None:
+    async def test_record_turn_no_op_when_disabled(
+        self, mock_memory_system: MagicMock
+    ) -> None:
         """record_turn does nothing when disabled."""
         mock_disabled_config = MagicMock()
         mock_disabled_config.auto_extract_enabled = False
@@ -255,39 +267,35 @@ class TestExtractionLLMCalls:
     async def test_calls_llm_api(
         self, mock_memory_system: MagicMock, mock_config: MagicMock
     ) -> None:
-        """Extractor calls LLM endpoint."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "response": '{"facts": [], "decisions": [], "patterns": [], "preferences": []}'
-        }
-
-        mock_client = MagicMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
+        """Extractor calls LLM endpoint via factory."""
+        mock_llm_text = (
+            '{"facts": [], "decisions": [], "patterns": [], "preferences": []}'
+        )
 
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
-            extractor._http_client = mock_client
 
-            await extractor._extract_memories("test conversation")
+            with patch(
+                "memini_ai.extractor.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ) as mock_get_client:
+                await extractor._extract_memories("test conversation")
 
-        mock_client.post.assert_called_once()
-        call_args = mock_client.post.call_args
-        assert "http://localhost:11434/api/generate" in str(call_args)
+        mock_get_client.assert_called_once()
+        assert isinstance(mock_get_client.call_args[0][0], MagicMock)
 
     @pytest.mark.asyncio
     async def test_llm_failure_returns_empty(
         self, mock_memory_system: MagicMock, mock_config: MagicMock
     ) -> None:
         """LLM failure returns empty list."""
-        mock_client = MagicMock()
-        mock_client.post = AsyncMock(side_effect=Exception("Network error"))
-
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
-            extractor._http_client = mock_client
+            mock_client = make_mock_llm_client(return_text="")
+            mock_client.generate = AsyncMock(side_effect=Exception("Network error"))
 
-            result = await extractor._extract_memories("test conversation")
+            with patch("memini_ai.extractor.get_llm_client", return_value=mock_client):
+                result = await extractor._extract_memories("test conversation")
 
         assert result == []
 
@@ -295,18 +303,15 @@ class TestExtractionLLMCalls:
     async def test_non_200_response_returns_empty(
         self, mock_memory_system: MagicMock, mock_config: MagicMock
     ) -> None:
-        """Non-200 LLM response returns empty list."""
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-
-        mock_client = MagicMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-
+        """Empty LLM response returns empty list."""
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
-            extractor._http_client = mock_client
 
-            result = await extractor._extract_memories("test conversation")
+            with patch(
+                "memini_ai.extractor.get_llm_client",
+                return_value=make_mock_llm_client(return_text=""),
+            ):
+                result = await extractor._extract_memories("test conversation")
 
         assert result == []
 
@@ -395,7 +400,31 @@ class TestManualTrigger:
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
 
-            with patch.object(extractor, "_get_http_client", new=AsyncMock(return_value=MagicMock(post=AsyncMock(return_value=mock_response)))):
+            with patch.object(
+                extractor,
+                "_get_http_client",
+                new=AsyncMock(
+                    return_value=MagicMock(post=AsyncMock(return_value=mock_response))
+                ),
+            ):
+                result = await extractor.trigger_extraction("user: Manual conversation")
+
+        assert len(result) == 1
+        mock_memory_system.add_memory.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_manual_trigger_with_conversation(
+        self, mock_memory_system: MagicMock, mock_config: MagicMock
+    ) -> None:
+        """trigger_extraction with conversation text works."""
+        with patch("memini_ai.extractor.get_config", return_value=mock_config):
+            extractor = MemoryExtractor(memory_system=mock_memory_system)
+
+            mock_llm_text = '{"facts": [{"text": "Manual trigger test", "confidence": 0.95}], "decisions": [], "patterns": [], "preferences": []}'
+            with patch(
+                "memini_ai.extractor.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ):
                 result = await extractor.trigger_extraction("user: Manual conversation")
 
         assert len(result) == 1
@@ -406,12 +435,6 @@ class TestManualTrigger:
         self, mock_memory_system: MagicMock, mock_config: MagicMock
     ) -> None:
         """trigger_extraction without conversation uses buffer."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "response": '{"facts": [{"text": "Buffer test", "confidence": 0.8}], "decisions": [], "patterns": [], "preferences": []}'
-        }
-
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
             # Directly set buffer text to avoid buffer bug
@@ -421,7 +444,11 @@ class TestManualTrigger:
             ]
             extractor._turn_tracker._turn_count = 2
 
-            with patch.object(extractor, "_get_http_client", new=AsyncMock(return_value=MagicMock(post=AsyncMock(return_value=mock_response)))):
+            mock_llm_text = '{"facts": [{"text": "Buffer test", "confidence": 0.8}], "decisions": [], "patterns": [], "preferences": []}'
+            with patch(
+                "memini_ai.extractor.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ):
                 result = await extractor.trigger_extraction()
 
         assert len(result) == 1
@@ -481,7 +508,9 @@ class TestClose:
     """Tests for HTTP client cleanup."""
 
     @pytest.mark.asyncio
-    async def test_close_closes_client(self, mock_memory_system: MagicMock, mock_config: MagicMock) -> None:
+    async def test_close_closes_client(
+        self, mock_memory_system: MagicMock, mock_config: MagicMock
+    ) -> None:
         """close() properly closes HTTP client."""
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
@@ -495,7 +524,9 @@ class TestClose:
             assert extractor._http_client is None
 
     @pytest.mark.asyncio
-    async def test_close_no_client(self, mock_memory_system: MagicMock, mock_config: MagicMock) -> None:
+    async def test_close_no_client(
+        self, mock_memory_system: MagicMock, mock_config: MagicMock
+    ) -> None:
         """close() handles None client gracefully."""
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
@@ -519,7 +550,9 @@ class TestNoMemorySystem:
             extractor = MemoryExtractor(memory_system=None)
             # Manually add a turn to trigger extraction logic
             extractor._turn_tracker._turn_count = 1
-            extractor._turn_tracker._conversation_buffer = [{"role": "user", "content": "Hello"}]
+            extractor._turn_tracker._conversation_buffer = [
+                {"role": "user", "content": "Hello"}
+            ]
 
             result = await extractor._extract_and_store()
 

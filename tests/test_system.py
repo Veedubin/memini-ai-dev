@@ -103,7 +103,8 @@ class TestMemorySystemInit:
 
     def test_creates_db_and_search_if_none(self) -> None:
         """Should create database and search if not provided."""
-        system = MemorySystem()
+        with patch("memini_ai.memory.system.create_database", return_value=MagicMock()):
+            system = MemorySystem()
         assert system._db is not None
         assert system._search is not None
 
@@ -117,7 +118,8 @@ class TestMemorySystemInit:
 
     def test_initialized_false_by_default(self) -> None:
         """Should not be initialized by default."""
-        system = MemorySystem()
+        with patch("memini_ai.memory.system.create_database", return_value=MagicMock()):
+            system = MemorySystem()
         assert system._initialized is False
 
 

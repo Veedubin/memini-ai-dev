@@ -14,9 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from memini_ai.config import get_config
+from memini_ai.llm.factory import get_llm_client
 from memini_ai.memory.schema import (
     TRUST_THRESHOLD_PROMOTE,
     SummaryTier,
@@ -116,10 +115,10 @@ class TieredLoader:
         self._memory_system = memory_system
         self._config = get_config()
         self._enabled: bool | None = None
-        self._http_client: httpx.AsyncClient | None = None
         self._l0_cache: TieredSummary | None = None
         self._l1_cache: TieredSummary | None = None
         self._stats = TieredLoadingStats()
+        self._http_client = None
 
     @property
     def is_enabled(self) -> bool:
@@ -133,17 +132,11 @@ class TieredLoader:
         """Get tiered loading statistics."""
         return self._stats
 
-    async def _get_http_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client for LLM calls (lazy initialization)."""
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=60.0)
-        return self._http_client
-
     async def close(self) -> None:
-        """Close HTTP client and cleanup resources."""
-        if self._http_client is not None:
+        """Cleanup resources."""
+        if self._http_client is not None and hasattr(self._http_client, "aclose"):
             await self._http_client.aclose()
-            self._http_client = None
+        self._http_client = None
 
     def _is_cache_stale(self, cache: TieredSummary | None, ttl: int) -> bool:
         """Check if cached summary is stale based on TTL.
@@ -236,25 +229,11 @@ class TieredLoader:
         prompt = prompt_template.format(memories=memories_str)
 
         try:
-            client = await self._get_http_client()
-            llm_url = self._config.llm_url or "http://localhost:11434/api/generate"
-            llm_model = self._config.llm_model or "llama3.2"
+            client = get_llm_client(self._config)
+            content = await client.generate(prompt=prompt, max_tokens=max_tokens * 2)
 
-            response = await client.post(
-                llm_url,
-                json={
-                    "model": llm_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"num_predict": max_tokens * 2},  # Allow some buffer
-                },
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                content = result.get("response", "").strip()
-
-                return content, [mid for mid, _ in memories]
+            if content:
+                return content.strip(), [mid for mid, _ in memories]
         except Exception as e:
             logger.error("tiered_loader_llm_call_failed", error=str(e))
             self._stats.errors += 1

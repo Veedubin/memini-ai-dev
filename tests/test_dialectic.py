@@ -366,7 +366,9 @@ class TestDialecticEngineChallenge:
             assert result is None
 
     @pytest.mark.asyncio
-    async def test_challenge_memory_not_found(self, mock_memory_system: MagicMock) -> None:
+    async def test_challenge_memory_not_found(
+        self, mock_memory_system: MagicMock
+    ) -> None:
         """Should return None when memory not found."""
         mock_memory_system.get_memory = AsyncMock(return_value=None)
         with patch("memini_ai.dialectic.get_config") as mock_config:
@@ -453,9 +455,7 @@ class TestDialecticEngineClose:
         return MagicMock()
 
     @pytest.mark.asyncio
-    async def test_close_http_client(
-        self, mock_memory_system: MagicMock
-    ) -> None:
+    async def test_close_http_client(self, mock_memory_system: MagicMock) -> None:
         """Should close HTTP client."""
         import httpx
 
@@ -466,7 +466,8 @@ class TestDialecticEngineClose:
             mock_config.return_value.llm_url = "http://localhost:11434/api/generate"
 
             engine = DialecticEngine(memory_system=mock_memory_system)
-            engine._http_client = httpx.AsyncClient()
+            mock_client = AsyncMock()
+            engine._http_client = mock_client
 
             await engine.close()
             assert engine._http_client is None

@@ -23,12 +23,14 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from memini_ai.config import get_config
+from memini_ai.llm.factory import get_llm_client
 from memini_ai.memory.schema import RelationshipType, TrustSignal
 from memini_ai.utils.logger import logger
 
 if TYPE_CHECKING:
     from memini_ai.memory.system import MemorySystem
+
+from memini_ai.config import get_config
 
 # LLM prompts for dialectic reasoning
 DIALECTIC_ARGUMENT_PROMPT = """
@@ -293,6 +295,12 @@ class DialecticEngine:
         self._enabled: bool | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._history_cache: dict[str, DialecticHistory] = {}
+
+    async def close(self) -> None:
+        """Cleanup resources."""
+        if self._http_client is not None and hasattr(self._http_client, "aclose"):
+            await self._http_client.aclose()
+        self._http_client = None
 
     @property
     def is_enabled(self) -> bool:
@@ -1036,59 +1044,12 @@ class DialecticEngine:
             LLM response text or None on failure.
         """
         try:
-            client = await self._get_http_client()
-
-            # Build request based on provider
-            if self.llm_provider == "ollama":
-                response = await client.post(
-                    self._config.llm_url,
-                    json={
-                        "model": self.llm_model,
-                        "prompt": prompt,
-                        "stream": False,
-                    },
-                )
-            elif self.llm_provider in ("openai", "anthropic"):
-                # Use compatible format for both
-                response = await client.post(
-                    self._config.llm_url,
-                    json={
-                        "model": self.llm_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False,
-                    },
-                )
-            else:
-                # Default to ollama format
-                response = await client.post(
-                    self._config.llm_url,
-                    json={
-                        "model": self.llm_model,
-                        "prompt": prompt,
-                        "stream": False,
-                    },
-                )
-
-            if response.status_code == 200:
-                result = response.json()
-                return str(result.get("response", ""))
-
+            client = get_llm_client(self._config)
+            return await client.generate(prompt=prompt)
         except Exception:
             logger.warning("dialectic_llm_call_failed", error=str(Exception))
 
         return None
-
-    async def _get_http_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client for LLM calls."""
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=120.0)
-        return self._http_client
-
-    async def close(self) -> None:
-        """Close HTTP client."""
-        if self._http_client is not None:
-            await self._http_client.aclose()
-            self._http_client = None
 
 
 # Module-level singleton

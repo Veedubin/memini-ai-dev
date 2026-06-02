@@ -21,7 +21,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
-from pgvector.asyncpg import register_vector
+from pgvector.asyncpg import register_vector  # type: ignore[import-untyped]
 
 from memini_ai.config import get_config
 from memini_ai.memory.database import VectorDatabase

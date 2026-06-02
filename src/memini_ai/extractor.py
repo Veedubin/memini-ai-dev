@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
 from memini_ai.config import get_config
+from memini_ai.llm.factory import get_llm_client
 from memini_ai.memory.schema import MemoryEntry, MemorySourceType
 from memini_ai.utils.logger import logger
 
@@ -92,30 +91,19 @@ class MemoryExtractor:
     def __init__(
         self,
         memory_system: MemorySystem | None = None,
-        llm_url: str | None = None,
     ) -> None:
         self._memory_system = memory_system
         self._config = get_config()
-        self._llm_url = (
-            llm_url or self._config.llm_url or "http://localhost:11434/api/generate"
-        )
-        self._llm_model = self._config.llm_model or "llama3.2"
         self._turn_tracker = ConversationTurnTracker(
             turns_before_extract=self._config.auto_extract_turns
         )
-        self._http_client: httpx.AsyncClient | None = None
-
-    async def _get_http_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client for LLM calls."""
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
-        return self._http_client
+        self._http_client = None
 
     async def close(self) -> None:
-        """Close HTTP client."""
-        if self._http_client is not None:
+        """Cleanup resources."""
+        if self._http_client is not None and hasattr(self._http_client, "aclose"):
             await self._http_client.aclose()
-            self._http_client = None
+        self._http_client = None
 
     @property
     def is_enabled(self) -> bool:
@@ -184,20 +172,12 @@ class MemoryExtractor:
             List of ExtractedMemory objects.
         """
         try:
-            client = await self._get_http_client()
-
-            response = await client.post(
-                self._llm_url,
-                json={
-                    "model": self._llm_model,
-                    "prompt": EXTRACTION_PROMPT.format(conversation=conversation),
-                    "stream": False,
-                },
+            client = get_llm_client(self._config)
+            text = await client.generate(
+                prompt=EXTRACTION_PROMPT.format(conversation=conversation),
             )
 
-            if response.status_code == 200:
-                result = response.json()
-                text = result.get("response", "")
+            if text:
                 return self._parse_extraction(text)
         except Exception:
             logger.warning("extraction_llm_call_failed", error=str(Exception))

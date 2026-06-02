@@ -48,6 +48,7 @@ def mock_config_enabled() -> MagicMock:
     config.user_model_min_sessions = 50
     config.llm_url = "http://localhost:11434/api/generate"
     config.llm_model = "llama3.2"
+    config.llm_provider = "ollama"
     config.effective_project_id = "test-project-123"
     return config
 
@@ -93,6 +94,13 @@ def mock_profile_entry() -> MagicMock:
     entry.text = '{"user_id": "test-project-123", "communication_style": "neutral", "expertise_domains": [], "preferences": {}, "confidence": 0.0, "last_updated": "2026-01-01T00:00:00", "session_count": 0, "dialectic_notes": []}'
     entry.metadata_json = '{"profile_tag": "user_profile", "user_id": "test-project-123", "updated_at": "2026-01-01T00:00:00"}'
     return entry
+
+
+def make_mock_llm_client(return_text: str = "") -> AsyncMock:
+    """Create a mock LLM client for factory-based tests."""
+    client = AsyncMock()
+    client.generate = AsyncMock(return_value=return_text)
+    return client
 
 
 # =============================================================================
@@ -509,7 +517,6 @@ class TestGetProfileSummary:
         self,
         mock_config_enabled: MagicMock,
         mock_memory_system: MagicMock,
-        mock_http_response: MagicMock,
     ) -> None:
         """Returns summary when warmed up and LLM call succeeds."""
         with patch("memini_ai.user_model.get_config", return_value=mock_config_enabled):
@@ -522,11 +529,14 @@ class TestGetProfileSummary:
                 session_count=60,
             )
 
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_http_response)
-            user_model._http_client = mock_client
-
-            result = await user_model.get_profile_summary()
+            mock_llm_text = (
+                "User prefers concise, technical responses with markdown formatting."
+            )
+            with patch(
+                "memini_ai.user_model.get_llm_client",
+                return_value=make_mock_llm_client(return_text=mock_llm_text),
+            ):
+                result = await user_model.get_profile_summary()
 
             assert result is not None
             assert isinstance(result, str)
