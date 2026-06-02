@@ -21,7 +21,11 @@ class TestMeminiConfigDefaults:
         assert config.precision == "fp16"
         assert config.device == "auto"
         assert config.use_gpu is False
-        assert config.embedding_dim == 1024
+        # v0.7.0: embedding_dim default is 384 (was 1024 in v0.6.x).
+        # The default now matches the schema, which is vector(384).
+        # The dual-model RRF path uses 1024-dim via the memories_1024
+        # sidecar table.
+        assert config.embedding_dim == 384
         assert config.batch_size == 32
         assert config.eager_load is False
 

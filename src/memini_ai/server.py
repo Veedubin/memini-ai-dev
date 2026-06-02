@@ -157,6 +157,8 @@ class MCPServer:
         self._mcp.add_tool(self.log_audit_event)
         self._mcp.add_tool(self.get_audit_log)
         self._mcp.add_tool(self.get_security_summary)
+        # v0.7.0: Dual-model RRF
+        self._mcp.add_tool(self.elevate_memory_to_1024)
 
     def _setup_signal_handlers(self) -> None:
         """Set up SIGINT/SIGTERM handlers."""
@@ -1640,6 +1642,100 @@ class MCPServer:
             return {"success": False, "error": "Operation timed out"}
         except Exception as e:
             logger.error("adjust_decay_rate_error", memory_id=memory_id, error=str(e))
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # v0.7.0: Dual-Model RRF — TOOL: elevate_memory_to_1024
+    # =========================================================================
+    async def elevate_memory_to_1024(
+        self,
+        memory_id: str,
+        vector_1024: list[float] | None = None,
+        trust_boost: float = 0.10,
+    ) -> dict[str, Any]:
+        """Promote a memory from 384-dim-only to also exist in 1024-dim space.
+
+        Auto-mode only. Calling this tool in ``cpu`` or ``gpu`` mode raises
+        a helpful error — elevation is meaningful only in the dual-model
+        auto pipeline.
+
+        Args:
+            memory_id: UUID of the 384-dim memory to elevate.
+            vector_1024: Optional pre-computed 1024-dim embedding. If None,
+                the underlying DB helper derives one from the 384-dim
+                vector via zero-pad + L2-normalize (placeholder expansion).
+            trust_boost: Amount to add to the trust score on elevate
+                (default 0.10, clamped to [0, 1]).
+
+        Returns:
+            Dictionary with keys:
+                - memory_id (str)
+                - elevated (bool) — True if newly inserted, False if already elevated
+                - trust_score (float) — new boosted trust score
+                - vector_dim (int) — always 1024 in v0.7.0
+                - mode (str) — the embedding_mode that was active when called
+        """
+        try:
+            # Auto-mode gate (per HANDOFF). The dispatch is intentionally
+            # in ``add_memory`` and ``query_memories``; this tool is the
+            # one explicit user-initiated path that mutates the 1024
+            # sidecar, so it must opt-in to the same model.
+            config = get_config()
+            if config.embedding_mode != "auto":
+                return {
+                    "success": False,
+                    "error": (
+                        f"elevate_memory_to_1024 requires embedding_mode='auto' "
+                        f"(current: {config.embedding_mode!r}). Set "
+                        f"EMBEDDING_MODE=auto in the environment to enable."
+                    ),
+                    "current_mode": config.embedding_mode,
+                }
+            if not config.elevate_enabled:
+                return {
+                    "success": False,
+                    "error": (
+                        "elevate_memory_to_1024 is disabled "
+                        "(ELEVATE_ENABLED=false). Set ELEVATE_ENABLED=true "
+                        "to enable."
+                    ),
+                    "current_mode": config.embedding_mode,
+                }
+
+            if self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            # Clamp trust_boost to a safe range — same range as the DB helper.
+            trust_boost = max(0.0, min(1.0, trust_boost))
+
+            db = self._memory_system._db
+            if not hasattr(db, "elevate_memory_to_1024"):
+                return {
+                    "success": False,
+                    "error": "Underlying database does not support 1024-dim elevation",
+                    "current_mode": config.embedding_mode,
+                }
+
+            result: dict[str, Any] = await asyncio.wait_for(
+                db.elevate_memory_to_1024(
+                    memory_id,
+                    vector_1024=vector_1024,
+                    trust_boost=trust_boost,
+                ),
+                timeout=OPERATION_TIMEOUT,
+            )
+            result["mode"] = config.embedding_mode
+            result["success"] = True
+            return result
+        except TimeoutError:
+            logger.error("elevate_memory_to_1024_timeout", memory_id=memory_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error(
+                "elevate_memory_to_1024_error", memory_id=memory_id, error=str(e)
+            )
             return {"success": False, "error": str(e)}
 
     # =========================================================================

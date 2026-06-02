@@ -32,13 +32,16 @@ from memini_ai.memory.schema import (
     SearchOptions,
 )
 from memini_ai.postgres.queries import (
+    COUNT_MEMORIES_1024,
     DELETE_ENTITY,
     DELETE_MEMORY,
+    DELETE_MEMORY_1024_BY_MEMORY_ID,
     GET_ENTITIES,
     GET_ENTITIES_BY_TYPE,
     GET_ENTITIES_WITH_RELATIONSHIPS,
     GET_ENTITY_BY_ID,
     GET_ENTITY_STATS,
+    GET_MEMORY_1024_BY_MEMORY_ID,
     GET_MEMORY_BY_ID,
     GET_MEMORY_BY_ID_INCLUDE_ARCHIVED,
     GET_MEMORY_COUNT,
@@ -47,7 +50,9 @@ from memini_ai.postgres.queries import (
     INCREMENT_RETRIEVAL_COUNT,
     INSERT_ENTITY_RELATIONSHIP,
     INSERT_MEMORY,
+    INSERT_MEMORY_1024,
     INSERT_MEMORY_DELTA,
+    SEARCH_MEMORIES_1024_VECTOR,
     SEARCH_MEMORIES_VECTOR,
     UPDATE_MEMORY_METADATA,
     UPSERT_ENTITY,
@@ -1093,6 +1098,271 @@ class PostgresDatabase(VectorDatabase):
             "DERIVED_FROM": "#27ae60",
         }
         return color_map.get(rel_type, "#95a5a6")
+
+    # =============================================================================
+    # Dual-Model RRF methods (v0.7.0)
+    # =============================================================================
+    #
+    # The methods below operate on the memories_1024 sidecar table, which
+    # holds 1024-dim BGE-Large embeddings for "elevated" memories. The 384-dim
+    # memories table is always the source of truth — these are quality-boost
+    # sidecars used in the AUTO mode of the dual-model RRF system.
+
+    @staticmethod
+    def _expand_384_to_1024(
+        vector_384: list[float] | None,
+        target_dim: int = 1024,
+    ) -> list[float] | None:
+        """Placeholder 384→1024 dimension expander.
+
+        v0.7.0 ships with a deterministic placeholder: zero-pad the 384-dim
+        vector up to 1024 dims and L2-normalize the result. This is NOT a
+        real BGE-Large re-embedding — it's a stable stand-in so the
+        memories_1024 table can be populated, queried, and RRF-fused without
+        pulling in a second embedding model. A future version will swap this
+        for an actual BGE-Large call when the elevate tool is invoked.
+
+        Args:
+            vector_384: 384-dim source vector (Python list or None).
+            target_dim: Target dimension (default 1024).
+
+        Returns:
+            1024-dim vector (zero-padded + L2-normalized), or None if input is None.
+        """
+        if vector_384 is None:
+            return None
+        if len(vector_384) >= target_dim:
+            # Already big enough — truncate (shouldn't happen in practice)
+            return list(vector_384[:target_dim])
+        # Zero-pad to target_dim
+        padded = list(vector_384) + [0.0] * (target_dim - len(vector_384))
+        # L2 normalize so cosine distance behaves like cosine similarity
+        import math
+
+        norm = math.sqrt(sum(x * x for x in padded))
+        if norm == 0.0:
+            return padded
+        return [x / norm for x in padded]
+
+    async def add_memory_1024(
+        self,
+        memory_id: str,
+        vector_1024: list[float],
+        trust_score: float = 0.5,
+        embedding_model: str = "bge-large-placeholder",
+    ) -> str | None:
+        """Insert (or no-op if already present) a 1024-dim sidecar for a memory.
+
+        Idempotent: uses ON CONFLICT (memory_id) DO NOTHING. Re-elevating the
+        same memory is a no-op (the original 1024 vector is preserved).
+
+        Args:
+            memory_id: UUID of the source 384-dim memory (must exist).
+            vector_1024: 1024-dim embedding vector.
+            trust_score: Trust score for the 1024 copy (default 0.5).
+            embedding_model: Model name to record (default placeholder).
+
+        Returns:
+            The 1024-row id if inserted, None if already existed.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row_id = await conn.fetchval(
+                INSERT_MEMORY_1024,
+                memory_id,
+                vector_1024,
+                float(trust_score),
+                embedding_model,
+            )
+        return str(row_id) if row_id else None
+
+    async def query_memories_1024(
+        self,
+        vector_1024: list[float],
+        threshold: float = 0.5,
+        limit: int = 10,
+    ) -> list[MemoryEntry]:
+        """Search the 1024-dim sidecar table by vector similarity.
+
+        Joins back to the 384-dim memories table so the returned MemoryEntry
+        has full text/metadata. Results are ordered by cosine distance ASC.
+
+        Args:
+            vector_1024: 1024-dim query vector.
+            threshold: Max cosine distance (default 0.5 = fairly strict).
+            limit: Max results (default 10).
+
+        Returns:
+            List of MemoryEntry objects with `score` set to cosine distance.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                SEARCH_MEMORIES_1024_VECTOR,
+                vector_1024,
+                float(threshold),
+                int(limit),
+            )
+
+        results: list[MemoryEntry] = []
+        for row in rows:
+            # Reuse _row_to_memory for the joined-in memories row,
+            # then attach the 1024 distance as the score.
+            entry = self._row_to_memory(row, score=float(row["distance"]))
+            results.append(entry)
+        return results
+
+    async def get_memory_1024_by_memory_id(
+        self, memory_id: str
+    ) -> dict[str, Any] | None:
+        """Look up the 1024-dim sidecar for a specific memory.
+
+        Args:
+            memory_id: UUID of the 384-dim memory.
+
+        Returns:
+            Dict with keys (id, memory_id, embedding, elevated_at,
+            elevated_from_dim, embedding_model, trust_score) or None if
+            the memory has not been elevated.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(GET_MEMORY_1024_BY_MEMORY_ID, memory_id)
+
+        if row is None:
+            return None
+        embedding = row["embedding"]
+        if isinstance(embedding, str):
+            embedding = json.loads(embedding)
+        elif embedding is not None:
+            embedding = list(embedding)
+        return {
+            "id": str(row["id"]),
+            "memory_id": str(row["memory_id"]),
+            "embedding": embedding,
+            "elevated_at": row["elevated_at"],
+            "elevated_from_dim": row["elevated_from_dim"],
+            "embedding_model": row["embedding_model"],
+            "trust_score": float(row["trust_score"]),
+        }
+
+    async def elevate_memory_to_1024(
+        self,
+        memory_id: str,
+        vector_1024: list[float] | None = None,
+        trust_boost: float = 0.10,
+    ) -> dict[str, Any]:
+        """Promote a memory from 384-dim-only to also exist in 1024-dim space.
+
+        Behavior:
+            1. Verify the source 384-dim memory exists.
+            2. If no 1024 vector provided, derive one from the 384-dim
+               vector using `_expand_384_to_1024` (placeholder expansion).
+            3. Insert into memories_1024 (idempotent).
+            4. Boost trust_score on the 384-dim row by `trust_boost` (clamped
+               to [0, 1]). The 1024-dim row stores the boosted value too.
+
+        Args:
+            memory_id: UUID of the 384-dim memory to elevate.
+            vector_1024: Optional pre-computed 1024-dim embedding. If None,
+                derived from the 384-dim vector via placeholder expansion.
+            trust_boost: Amount to add to trust_score on elevate (default +0.10).
+
+        Returns:
+            Dict with keys:
+                - memory_id: str
+                - elevated: bool (False if already elevated)
+                - trust_score: float (new boosted score)
+                - vector_dim: int (always 1024 in v0.7.0)
+
+        Raises:
+            ValueError: If the source memory does not exist.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        # Fetch the source 384-dim memory
+        source = await self.get_memory(memory_id, include_archived=True)
+        if source is None:
+            raise ValueError(f"Memory {memory_id} not found")
+
+        # Derive 1024 vector if not provided
+        if vector_1024 is None:
+            if source.vector is None:
+                raise ValueError(
+                    f"Memory {memory_id} has no 384-dim vector; cannot elevate"
+                )
+            vector_1024 = self._expand_384_to_1024(list(source.vector), 1024)
+            if vector_1024 is None:
+                raise ValueError(f"Memory {memory_id} vector expansion returned None")
+
+        # Compute the new (boosted) trust score, clamped to [0, 1]
+        new_trust = max(0.0, min(1.0, source.trust_score + trust_boost))
+
+        async with pool.acquire() as conn, conn.transaction():
+            # Idempotent insert into memories_1024
+            inserted_id = await conn.fetchval(
+                INSERT_MEMORY_1024,
+                memory_id,
+                vector_1024,
+                new_trust,
+                "bge-large-placeholder",
+            )
+            elevated = inserted_id is not None
+
+            # Always bump trust on the 384-dim record (even if already elevated,
+            # so re-elevation reaffirms importance). Capped at 1.0.
+            await conn.execute(
+                "UPDATE memories SET trust_score = $1, "
+                "last_accessed_at = NOW() WHERE id = $2",
+                new_trust,
+                memory_id,
+            )
+
+        return {
+            "memory_id": memory_id,
+            "elevated": elevated,
+            "trust_score": new_trust,
+            "vector_dim": 1024,
+        }
+
+    async def count_memories_1024(self) -> int:
+        """Count rows in the 1024-dim sidecar table.
+
+        Returns:
+            Number of memories that have been elevated to 1024-dim.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(COUNT_MEMORIES_1024)
+        return int(row["count"]) if row else 0
+
+    async def delete_memory_1024(self, memory_id: str) -> str | None:
+        """Remove the 1024-dim sidecar for a memory (demote).
+
+        Does NOT touch the 384-dim record. Idempotent — no error if the memory
+        was never elevated.
+
+        Args:
+            memory_id: UUID of the 384-dim memory.
+
+        Returns:
+            The memory_id that was demoted, or None if there was no 1024 copy.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchval(DELETE_MEMORY_1024_BY_MEMORY_ID, memory_id)
+        return str(row) if row else None
 
 
 def create_postgres_database(

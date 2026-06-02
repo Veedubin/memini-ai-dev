@@ -506,3 +506,82 @@ UPDATE thoughts
 SET memory_id = $2
 WHERE id = $1
 """
+
+# =============================================================================
+# Dual-Model RRF Queries (v0.7.0)
+# =============================================================================
+#
+# The memories_1024 table holds 1024-dim BGE-Large embeddings for "elevated"
+# memories. All operations are FK-linked to memories.id. The 384-dim memories
+# table remains the source of truth — these are just query helpers for the
+# high-dimensional sidecar.
+
+# Insert a 1024-dim embedding for an existing 384-dim memory. Idempotent via
+# ON CONFLICT (memory_id) DO NOTHING — re-elevating the same memory is a no-op.
+INSERT_MEMORY_1024 = """
+INSERT INTO memories_1024 (memory_id, embedding, trust_score, elevated_at,
+                            elevated_from_dim, embedding_model)
+VALUES ($1, $2, $3, NOW(), 384, $4)
+ON CONFLICT (memory_id) DO NOTHING
+RETURNING id
+"""
+
+# Vector search on the 1024-dim table. Returns matching rows ordered by cosine
+# distance, with the source 384-dim memory text joined in for context.
+SEARCH_MEMORIES_1024_VECTOR = """
+SELECT
+    m.id AS memory_id,
+    m.text,
+    m.source_type,
+    m.trust_score,
+    m.retrieval_count,
+    m.is_archived,
+    m.metadata,
+    m1024.embedding <=> $1::vector AS distance
+FROM memories_1024 m1024
+JOIN memories m ON m.id = m1024.memory_id
+WHERE m1024.embedding <=> $1::vector < $2
+  AND m.is_archived = FALSE
+ORDER BY m1024.embedding <=> $1::vector
+LIMIT $3
+"""
+
+# Look up the 1024-dim embedding for a specific memory (returns the row or NULL).
+# Used by elevate_memory_to_1024 to check if a memory is already elevated.
+GET_MEMORY_1024_BY_MEMORY_ID = """
+SELECT id, memory_id, embedding, elevated_at, elevated_from_dim,
+       embedding_model, trust_score
+FROM memories_1024
+WHERE memory_id = $1
+"""
+
+# Get all 1024-dim embeddings, joined with the 384-dim text/metadata. Used for
+# full-table RRF fusion when we want both sides of the dual-model.
+SEARCH_MEMORIES_1024_JOINED = """
+SELECT
+    m.id AS memory_id,
+    m.text,
+    m.source_type,
+    m.trust_score,
+    m.retrieval_count,
+    m.is_archived,
+    m.metadata,
+    m1024.embedding
+FROM memories_1024 m1024
+JOIN memories m ON m.id = m1024.memory_id
+WHERE m.is_archived = FALSE
+ORDER BY m1024.embedding <=> $1::vector
+LIMIT $2
+"""
+
+# Count rows in the 1024-dim table (for stats/monitoring).
+COUNT_MEMORIES_1024 = """
+SELECT COUNT(*) AS count FROM memories_1024
+"""
+# Delete the 1024-dim sidecar for a specific memory. Idempotent — no error if
+# the memory was never elevated. Returns the memory_id that was deleted (or NULL).
+DELETE_MEMORY_1024_BY_MEMORY_ID = """
+DELETE FROM memories_1024
+WHERE memory_id = $1
+RETURNING memory_id
+"""

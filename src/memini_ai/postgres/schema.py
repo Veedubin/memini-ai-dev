@@ -13,6 +13,7 @@ Schema Design Decisions:
 
 # Table name constants
 TABLE_MEMORIES = "memories"
+TABLE_MEMORIES_1024 = "memories_1024"
 TABLE_MEMORY_RELATIONSHIPS = "memory_relationships"
 TABLE_ENTITIES = "entities"
 TABLE_ENTITY_RELATIONSHIPS = "entity_relationships"
@@ -102,6 +103,65 @@ CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_
 
 -- Index for peer queries
 CREATE INDEX IF NOT EXISTS idx_memories_peer ON memories(peer_id) WHERE peer_id IS NOT NULL;
+"""
+
+# =============================================================================
+# memories_1024 table (v0.7.0 Dual-Model RRF)
+# =============================================================================
+#
+# The memories_1024 table holds high-dimensional BGE-Large embeddings (1024-dim)
+# for memories that have been "elevated" from the default 384-dim MiniLM space.
+# Each row is FK-linked to the corresponding row in the memories table, so the
+# 384-dim record is always the source of truth and the 1024-dim record is a
+# quality-boost sidecar. Idempotent migration: existing 384-dim memories are
+# NOT touched. This table is empty until the elevate_memory_to_1024 tool is used.
+
+# SQL for memories_1024 table
+SQL_CREATE_MEMORIES_1024_TABLE = """
+CREATE TABLE IF NOT EXISTS memories_1024 (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Foreign key to the canonical 384-dim record (source of truth).
+    -- ON DELETE CASCADE: if the source memory is hard-deleted, the 1024 copy goes with it.
+    -- The 384-dim record itself is soft-deleted (is_archived=TRUE) in normal use.
+    memory_id UUID NOT NULL UNIQUE REFERENCES memories(id) ON DELETE CASCADE,
+
+    -- 1024-dim BGE-Large embedding vector
+    embedding vector(1024) NOT NULL,
+
+    -- Elevation metadata
+    elevated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    elevated_from_dim INT DEFAULT 384,
+    embedding_model VARCHAR(100) DEFAULT 'bge-large',
+
+    -- Mirrored trust boost: this 1024 copy inherits and may extend the trust score.
+    -- The 384-dim record is the canonical trust source; this is a denormalized cache.
+    trust_score FLOAT DEFAULT 0.5 CHECK (trust_score >= 0 AND trust_score <= 1)
+);
+"""
+
+# SQL for memories_1024 vector index (StreamingDiskANN preferred, HNSW fallback)
+SQL_CREATE_MEMORIES_1024_EMBEDDING_INDEX_DISKANN = """
+CREATE INDEX IF NOT EXISTS idx_memories_1024_embedding ON memories_1024
+USING diskann (embedding vector_cosine_ops);
+"""
+
+SQL_CREATE_MEMORIES_1024_EMBEDDING_INDEX_HNSW = """
+CREATE INDEX IF NOT EXISTS idx_memories_1024_embedding ON memories_1024
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+"""
+
+# SQL for memories_1024 secondary indexes
+SQL_CREATE_MEMORIES_1024_INDEXES = """
+-- Index for joining back to memories (most queries will join on memory_id)
+CREATE INDEX IF NOT EXISTS idx_memories_1024_memory_id ON memories_1024(memory_id);
+
+-- Index for trust-based filtering
+CREATE INDEX IF NOT EXISTS idx_memories_1024_trust ON memories_1024(trust_score);
+
+-- Index for elevation timestamp (for "recently elevated" queries)
+CREATE INDEX IF NOT EXISTS idx_memories_1024_elevated_at ON memories_1024(elevated_at DESC);
 """
 
 # SQL for memory_relationships table
@@ -427,6 +487,11 @@ def get_schema_sql(use_vectorscale: bool = True) -> str:
         if use_vectorscale
         else SQL_CREATE_THOUGHTS_EMBEDDING_INDEX_HNSW
     )
+    memories_1024_embedding_index = (
+        SQL_CREATE_MEMORIES_1024_EMBEDDING_INDEX_DISKANN
+        if use_vectorscale
+        else SQL_CREATE_MEMORIES_1024_EMBEDDING_INDEX_HNSW
+    )
 
     return "\n".join(
         [
@@ -435,6 +500,10 @@ def get_schema_sql(use_vectorscale: bool = True) -> str:
             SQL_CREATE_MEMORIES_TABLE,
             memories_embedding_index,
             SQL_CREATE_MEMORIES_INDEXES,
+            # v0.7.0: Dual-model RRF — must come AFTER memories (FK target)
+            SQL_CREATE_MEMORIES_1024_TABLE,
+            memories_1024_embedding_index,
+            SQL_CREATE_MEMORIES_1024_INDEXES,
             SQL_CREATE_MEMORY_RELATIONSHIPS_TABLE,
             SQL_CREATE_MEMORY_RELATIONSHIPS_INDEXES,
             SQL_CREATE_ENTITIES_TABLE,  # References peers

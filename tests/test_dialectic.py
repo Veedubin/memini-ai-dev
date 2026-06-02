@@ -457,8 +457,6 @@ class TestDialecticEngineClose:
     @pytest.mark.asyncio
     async def test_close_http_client(self, mock_memory_system: MagicMock) -> None:
         """Should close HTTP client."""
-        import httpx
-
         with patch("memini_ai.dialectic.get_config") as mock_config:
             mock_config.return_value.dialectic_enabled = True
             mock_config.return_value.dialectic_llm_provider = "ollama"

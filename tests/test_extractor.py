@@ -391,32 +391,6 @@ class TestManualTrigger:
         self, mock_memory_system: MagicMock, mock_config: MagicMock
     ) -> None:
         """trigger_extraction with conversation text works."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "response": '{"facts": [{"text": "Manual trigger test", "confidence": 0.95}], "decisions": [], "patterns": [], "preferences": []}'
-        }
-
-        with patch("memini_ai.extractor.get_config", return_value=mock_config):
-            extractor = MemoryExtractor(memory_system=mock_memory_system)
-
-            with patch.object(
-                extractor,
-                "_get_http_client",
-                new=AsyncMock(
-                    return_value=MagicMock(post=AsyncMock(return_value=mock_response))
-                ),
-            ):
-                result = await extractor.trigger_extraction("user: Manual conversation")
-
-        assert len(result) == 1
-        mock_memory_system.add_memory.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_manual_trigger_with_conversation(
-        self, mock_memory_system: MagicMock, mock_config: MagicMock
-    ) -> None:
-        """trigger_extraction with conversation text works."""
         with patch("memini_ai.extractor.get_config", return_value=mock_config):
             extractor = MemoryExtractor(memory_system=mock_memory_system)
 

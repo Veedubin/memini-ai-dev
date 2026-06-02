@@ -8,7 +8,9 @@ from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any
 
+from memini_ai.config import get_config
 from memini_ai.memory.database import VectorDatabase, create_database
+from memini_ai.memory.rrf import rrf_with_limit
 from memini_ai.memory.schema import (
     MemoryEntry,
     MemorySourceType,
@@ -23,12 +25,22 @@ from memini_ai.utils.hash import hash_content
 
 @dataclass
 class MemorySystemConfig:
-    """Configuration for MemorySystem."""
+    """Configuration for MemorySystem.
+
+    The dual-model RRF fields (``embedding_mode``, ``rrf_k``) default to ``None``,
+    which causes :class:`MemorySystem` to fall back to the global
+    :class:`MeminiConfig` values. This keeps :class:`MemorySystem` testable in
+    isolation while honoring the env-driven default at runtime.
+    """
 
     project_id: str | None = None
     query_collections: list[str] | None = None
     enable_cascade: bool = True
     enable_deduplication: bool = True
+
+    # Dual-model RRF (v0.7.0+). None → fall back to global MeminiConfig.
+    embedding_mode: str | None = None
+    rrf_k: int | None = None
 
 
 class MemorySystem:
@@ -82,6 +94,20 @@ class MemorySystem:
         """Check if system is ready for operations."""
         return self._initialized and self._db._initialized
 
+    @property
+    def _resolved_embedding_mode(self) -> str:
+        """Resolve effective embedding_mode (config override > global MeminiConfig)."""
+        if self._config.embedding_mode is not None:
+            return self._config.embedding_mode
+        return get_config().embedding_mode
+
+    @property
+    def _resolved_rrf_k(self) -> int:
+        """Resolve effective RRF k (config override > global MeminiConfig)."""
+        if self._config.rrf_k is not None:
+            return self._config.rrf_k
+        return get_config().rrf_k
+
     async def close(self) -> None:
         """Close the memory system and release resources.
 
@@ -98,25 +124,53 @@ class MemorySystem:
     ) -> str:
         """Add a memory entry.
 
+        Dispatches on ``embedding_mode`` (v0.7.0+):
+            * ``"cpu"`` (default fallback): 384-dim write only — full
+              backward compatibility, no 1024 sidecar.
+            * ``"auto"``: 384-dim write (always), plus 1024-dim write if
+              the active dimension is 1024 OR if the 384-dim row has
+              already been elevated via :meth:`elevate_memory_to_1024`.
+              In v0.7.0 the auto-mode path writes the 384 record first
+              and defers 1024 sidecar creation to explicit elevation —
+              the search path then fuses both stores via RRF.
+            * ``"gpu"``: 1024-dim-only — caller is expected to have
+              supplied a 1024-dim ``input.vector`` (or the configured
+              embedder produces 1024). The 384-dim write is skipped.
+
         Args:
             input: MemoryEntry to add.
 
         Returns:
-            The ID of the added memory entry.
+            The ID of the added memory entry (the 384-dim row's id in
+            cpu/auto modes; the 1024-dim row's id in gpu mode if the
+            underlying db does not have a 384 row — otherwise still the
+            384 row id and a sidecar is written).
 
         Raises:
-            ValueError: If content already exists and deduplication is enabled.
+            ValueError: If content already exists and deduplication is enabled,
+                or if the configured mode is invalid.
+            RuntimeError: If ``embedding_mode == "gpu"`` but the underlying
+                database does not expose 1024-dim methods (e.g. an in-memory
+                mock).
         """
         if not self._initialized:
             await self.initialize()
 
-        # Check for duplicate content
+        mode = self._resolved_embedding_mode
+        if mode not in {"cpu", "auto", "gpu"}:
+            raise ValueError(
+                f"Invalid embedding_mode '{mode}'. Must be one of: cpu, auto, gpu"
+            )
+
+        # Check for duplicate content (only on the 384-dim store; the 1024
+        # sidecar shares the 384-dim content_hash implicitly).
         if self._config.enable_deduplication:
             content_hash = hash_content(input.text)
             if await self._db.content_exists(content_hash):
                 raise ValueError("Memory with this content already exists")
 
-        # Generate vector if not present
+        # Generate 384-dim vector if not present. The MiniLM embedder is the
+        # current model — same path used in v0.6.x.
         if input.vector is None:
             embedding = await generate_embedding(input.text)
             input.vector = embedding.embedding
@@ -125,7 +179,63 @@ class MemorySystem:
         if not input.content_hash:
             input.content_hash = hash_content(input.text)
 
-        return await self._db.add_memory(input)
+        if mode == "cpu":
+            # Legacy single-store path: only the 384-dim write.
+            return await self._db.add_memory(input)
+
+        if mode == "gpu":
+            # 1024-dim-only path. The caller is expected to have set
+            # input.vector to a 1024-dim vector (or run a 1024 embedder).
+            # The 384-dim write would clobber the schema, so we skip it.
+            # Use iscoroutinefunction to detect real 1024 support —
+            # bare hasattr returns True for any MagicMock.
+            add_1024 = getattr(self._db, "add_memory_1024", None)
+            if add_1024 is None or not asyncio.iscoroutinefunction(add_1024):
+                raise RuntimeError(
+                    "embedding_mode='gpu' requires PostgresDatabase with "
+                    "add_memory_1024 support; current db does not expose it."
+                )
+            # Write 384-dim row (the source-of-truth record) and then
+            # mirror to the 1024 sidecar. gpu mode is "1024-only" at
+            # search time, but the 384 row is still required because
+            # every other component (trust, retrieval_count, etc.)
+            # writes to the 384-dim ``memories`` table.
+            memory_id = await self._db.add_memory(input)
+            expand = getattr(self._db, "_expand_384_to_1024", None)
+            vector_1024: list[float] | None = None
+            if expand is not None and input.vector is not None:
+                vector_1024 = expand(list(input.vector), 1024)
+            await add_1024(memory_id, vector_1024)
+            return memory_id
+
+        # mode == "auto": write 384-dim first (source of truth), then
+        # mirror to 1024-dim if the underlying db supports it. In v0.7.0
+        # we only mirror if the row has been explicitly elevated (see
+        # elevate_memory_to_1024) — the auto-mode write is otherwise a
+        # pure 384 write that participates in the RRF query fusion.
+        memory_id = await self._db.add_memory(input)
+        # Use ``asyncio.iscoroutinefunction`` to detect real 1024 support
+        # — bare ``hasattr`` returns True for any MagicMock'd db, which
+        # would crash the test suite (and is wrong for any non-1024 db
+        # implementation).
+        get_1024 = getattr(self._db, "get_memory_1024_by_memory_id", None)
+        add_1024 = getattr(self._db, "add_memory_1024", None)
+        if (
+            get_1024 is not None
+            and add_1024 is not None
+            and asyncio.iscoroutinefunction(get_1024)
+            and asyncio.iscoroutinefunction(add_1024)
+        ):
+            existing_1024 = await get_1024(memory_id)
+            if existing_1024 is not None:
+                # Already elevated: re-mirror with the current 384 vector
+                # expanded to 1024. The DB helper expands the vector.
+                expand = getattr(self._db, "_expand_384_to_1024", None)
+                elevated_1024: list[float] | None = None
+                if expand is not None and input.vector is not None:
+                    elevated_1024 = expand(list(input.vector), 1024)
+                await add_1024(memory_id, elevated_1024)
+        return memory_id
 
     async def add_memory_by_text(
         self,
@@ -240,6 +350,16 @@ class MemorySystem:
     ) -> list[MemoryEntry]:
         """Query memories with semantic search.
 
+        Dispatches on ``embedding_mode`` (v0.7.0+):
+            * ``"cpu"``: legacy 384-dim search only (with the existing
+              collection cascade).
+            * ``"auto"``: dual-model RRF — issue a 384-dim search AND a
+              1024-dim search in parallel, then fuse with the RRF
+              algorithm. ``query_collections`` overrides the dual-mode
+              path (caller is in control of which collections to query).
+            * ``"gpu"``: 1024-dim-only search (the 384-dim store is
+              ignored).
+
         Args:
             question: Query string.
             options: Optional search options.
@@ -251,35 +371,159 @@ class MemorySystem:
             await self.initialize()
 
         options = options or SearchOptions()
+        mode = self._resolved_embedding_mode
+        if mode not in {"cpu", "auto", "gpu"}:
+            raise ValueError(
+                f"Invalid embedding_mode '{mode}'. Must be one of: cpu, auto, gpu"
+            )
 
         # Get query collections
         collections = self._config.query_collections
 
+        # Explicit collection control overrides mode dispatch — the caller
+        # knows what they want, and that intent wins.
         if collections and len(collections) > 1:
-            # Multi-collection RRF
             return await self._multi_collection_search(question, collections, options)
-        elif collections and len(collections) == 1:
+        if collections and len(collections) == 1:
             # Single collection with potential cascade
             results = await self._search.query(question, options)
             if not results and self._config.enable_cascade:
-                # Try fallback collection
                 fallback = self._get_fallback_collection(collections[0])
                 if fallback:
                     results = await self._search.query_with_fallback_collection(
                         question, fallback, options
                     )
             return results
-        else:
-            # Default behavior with cascade
-            results = await self._search.query(question, options)
-            if not results and self._config.enable_cascade:
-                # Try opposite dimension collection
-                fallback = self._get_fallback_for_dimension()
-                if fallback:
-                    results = await self._search.query_with_fallback_collection(
-                        question, fallback, options
-                    )
-            return results
+
+        # No explicit collections — dispatch on mode.
+        if mode == "auto":
+            return await self._query_dual_model_rrf(question, options)
+        if mode == "gpu":
+            return await self._query_gpu_1024(question, options)
+
+        # mode == "cpu" (default): legacy 384-dim-only. The pre-v0.7
+        # cascade-by-collection path is removed (PostgresDatabase has a
+        # single ``memories`` table; cross-dim cascade is handled by
+        # ``mode == "auto"``).
+        return await self._search.query(question, options)
+
+    async def _query_dual_model_rrf(
+        self,
+        question: str,
+        options: SearchOptions,
+    ) -> list[MemoryEntry]:
+        """Dual-model RRF query (auto mode): 384 + 1024 fused via RRF.
+
+        Issues a 384-dim vector search and a 1024-dim vector search in
+        parallel, then fuses the ranked lists using
+        :func:`memini_ai.memory.rrf.reciprocal_rank_fusion`. Items that
+        appear in both lists are boosted (their fused score is the sum
+        of both contributions).
+
+        Args:
+            question: Query string.
+            options: Search options.
+
+        Returns:
+            Top-K MemoryEntry objects ordered by fused RRF score.
+        """
+        query_1024 = getattr(self._db, "query_memories_1024", None)
+        if query_1024 is None or not asyncio.iscoroutinefunction(query_1024):
+            # Fall back to 384-only if the underlying db has no 1024 support.
+            return await self._search.query(question, options)
+
+        # Generate the 384-dim query vector and expand to 1024 in one shot,
+        # so the two searches use the same source text.
+        query_embedding = await generate_embedding(question)
+        vector_384 = list(query_embedding.embedding)
+        expand = getattr(self._db, "_expand_384_to_1024", None)
+        vector_1024: list[float] | None = None
+        if expand is not None:
+            vector_1024 = expand(vector_384, 1024)
+        if vector_1024 is None:
+            # 1024 expansion is required for the 1024-side search; if the
+            # db can't do it, fall back to 384-only.
+            return await self._search.query(question, options)
+
+        # Over-fetch so RRF has enough material to work with (otherwise
+        # the two single-source top-Ks may be too small to benefit from
+        # the fusion).
+        fetch_k = max(options.top_k * 2, options.top_k + 5)
+
+        # 384-dim search: reuse the existing search stack.
+        # SearchOptions uses ``topK`` as its Python constructor arg
+        # (pydantic Field ``alias="topK"``) — pass it positionally-by-keyword.
+        search_options_384 = SearchOptions(
+            topK=fetch_k,
+            strategy=SearchStrategy.VECTOR_ONLY,
+            filter=options.filter,
+        )
+        results_384 = await self._search.vector_only_search(
+            question, search_options_384
+        )
+
+        # 1024-dim search: direct on the 1024 sidecar table.
+        results_1024: list[MemoryEntry] = await query_1024(
+            vector_1024,
+            threshold=0.9,  # permissive — RRF will re-rank anyway
+            limit=fetch_k,
+        )
+
+        # RRF fusion over memory IDs.
+        ranked_ids: list[list[str]] = [
+            [e.id for e in results_384],
+            [e.id for e in results_1024],
+        ]
+        fused_ids = rrf_with_limit(
+            ranked_ids, k=self._resolved_rrf_k, limit=options.top_k
+        )
+
+        # Re-hydrate MemoryEntry objects. Prefer the 384 copy (it has
+        # the canonical text) and fall back to 1024 if the 384 row is
+        # somehow missing.
+        entries_by_id: dict[str, MemoryEntry] = {}
+        for entry in results_384:
+            entries_by_id[entry.id] = entry
+        for entry in results_1024:
+            entries_by_id.setdefault(entry.id, entry)
+        return [entries_by_id[mid] for mid in fused_ids if mid in entries_by_id]
+
+    async def _query_gpu_1024(
+        self,
+        question: str,
+        options: SearchOptions,
+    ) -> list[MemoryEntry]:
+        """1024-dim-only query (gpu mode).
+
+        Generates a 1024-dim query vector via the placeholder expansion
+        of the 384-dim embedder (v0.7.0 has no real 1024 embedder
+        wired in — a future version will swap in BGE-Large). Returns
+        ``[]`` if the underlying db has no 1024 support.
+
+        Args:
+            question: Query string.
+            options: Search options.
+
+        Returns:
+            Top-K MemoryEntry objects from the 1024 sidecar.
+        """
+        query_1024 = getattr(self._db, "query_memories_1024", None)
+        if query_1024 is None or not asyncio.iscoroutinefunction(query_1024):
+            return []
+        query_embedding = await generate_embedding(question)
+        vector_384 = list(query_embedding.embedding)
+        expand = getattr(self._db, "_expand_384_to_1024", None)
+        vector_1024: list[float] | None = None
+        if expand is not None:
+            vector_1024 = expand(vector_384, 1024)
+        if vector_1024 is None:
+            return []
+        results: list[MemoryEntry] = await query_1024(
+            vector_1024,
+            threshold=0.9,
+            limit=options.top_k,
+        )
+        return results
 
     async def _multi_collection_search(
         self,
@@ -345,19 +589,6 @@ class MemorySystem:
             return collection_name.replace("1024", "384")
         elif "384" in collection_name:
             return collection_name.replace("384", "1024")
-        return None
-
-    def _get_fallback_for_dimension(self) -> str | None:
-        """Get fallback collection based on current dimension.
-
-        Returns:
-            Fallback collection name or None.
-        """
-        dimension = self._db._dimension or 1024
-        if dimension == 1024:
-            return "memories_384"
-        elif dimension == 384:
-            return "memories_1024"
         return None
 
     async def search_with_vector(

@@ -1,9 +1,9 @@
 # Memini-ai Context Document
 
-> **Project**: Memini-ai v3.0 (formerly Super-Memory-TS)
+> **Project**: Memini-ai v0.7.0 (formerly Super-Memory-TS)
 > **Meaning**: "I remember" in Latin (pronounced "meh-mee-nee")
 > **Goal**: Local-first semantic memory server, MCP-compatible, Python-based
-> **Last Updated**: 2026-05-19
+> **Last Updated**: 2026-06-02 (v0.7.0 dual-model RRF: 5/15 steps done)
 
 ---
 
@@ -236,9 +236,118 @@ For Memini-ai, we may add:
 
 | Version | Language | Notes |
 |---------|----------|-------|
+| **v0.7.0 (PLANNED)** | **Python** | **Dual-model RRF (384+1024), MEMINI_MODE routing, elevate_memory_to_1024 tool, RRF k=60, background chat-log extractor. Config step 1/14 done.** |
+| v0.6.0 | Python | Modular cloud LLM (factory/provider pattern), 740/740 tests, tag `v0.6.0` pushed |
 | v1.0 | Python | Original implementation (user prefers this) |
 | v2.0 | TypeScript | Super-Memory-TS (current npm package) |
 | v3.0 | Python | Memini-ai (rewriting v2.0 in Python) |
+
+---
+
+## Session 2026-06-02 (Session 4) — v0.7.0 Implementation 5/15 Done
+
+### Pre-Implementation State Verified
+- **83 memories** in `memories` table (was 80 in Session 3, +3 from this session's testing) — all 384-dim, all active
+- **`memories_1024` table EXISTS but is EMPTY** (FK to memories.id, vector(1024), 4 indexes)
+- Schema: `vector(384)` on `memories.embedding`, intact
+- Working tree dirty on: `config.py` (validators), `schema.py` (table), `queries.py` (6 new constants), `database.py` (6 new methods + helper), NEW `memory/rrf.py`
+
+### Steps Complete (5/15)
+| # | Step | File | Status |
+|---|------|------|--------|
+| 1 | `config.py` 3 validators | `src/memini_ai/config.py` | DONE |
+| 2 | `memories_1024` table + indexes | `src/memini_ai/postgres/schema.py` | DONE (applied to live DB) |
+| 3 | 6 new 1024 query constants | `src/memini_ai/postgres/queries.py` | DONE |
+| 4 | `memory/rrf.py` NEW | `src/memini_ai/memory/rrf.py` | DONE (created) |
+| 5 | 6 new DB methods + `_expand_384_to_1024` | `src/memini_ai/postgres/database.py` | DONE |
+
+### Steps Pending (10/15)
+6. `memory/system.py` MEMINI_MODE dispatch (cpu/auto/gpu) + delete dead `_get_fallback_for_dimension()`
+7. `server.py` `elevate_memory_to_1024` MCP tool (AUTO-mode gated)
+8. 3 new test files (14 tests: test_rrf.py, test_dual_model.py, test_schema_migration.py)
+9. `.env.example` 5 new env vars
+10. `.opencode/opencode.json` add `EMBEDDING_MODE=auto` to memini-ai-dev MCP env (use alias, no `MEMINI_` prefix)
+11. Quality gates: ruff, mypy, pytest (target 754 passing)
+12. Zero-data-loss verification: `SELECT COUNT(*) FROM memories` must = **83** before and after steps 6-7
+13. `pyproject.toml` 0.6.0 → 0.7.0
+14. Commit + tag v0.7.0 + push
+15. Update root + memini-ai-dev docs
+
+### CRITICAL: Agent-Blocker Fix Applied (Restart Required)
+
+**The HANDOFF's "tag-sweep complete" claim was inaccurate.** Session 3 reported 246 active agent files clean, but missed the **project-level `node_modules/@veedubin/boomerang-v3` install** (15 stale files), which is what OpenCode was actually loading. Also missed 3 files in `boomerang-v3/.opencode/agents/` and several in `neuralgentics`, `Super-Memory`, `boomerang`, and the npm cache.
+
+**Session 4 fixed 47+ files across 6 locations**, including the project npm install that was the actual culprit. All model names verified against Ollama Cloud API (10/10 valid).
+
+**⚠️ OpenCode restart STILL REQUIRED.** The running TUI (PID 307190) has old config cached in process memory. The user must exit and restart OpenCode for the fix to take effect. PID 307190 cannot be killed from inside this session (it owns this very session).
+
+**Saved to memini-ai memory:** `b8b42742-e4e1-4a2a-a1a1-afd85e597f59`
+
+### Process State (Awareness for Next Session)
+- **PID 307190** — OpenCode TUI (this session's parent). Will need to be killed+restarted by user.
+- **PID 250631** — Different OpenCode TUI in `/home/jcharles/Projects/reverse_engineering` (irrelevant to this project).
+- **PostgreSQL on port 5434** — running, healthy, 83 memories at 384-dim, `memories_1024` table exists and is empty.
+- **Ollama Cloud** — API key verified working, 40 models available.
+
+### Resume Commands
+```bash
+cd /home/jcharles/Projects/MCP-Servers/memini-ai-dev
+# Verify state
+git status -s
+PGPASSWORD=password psql -h localhost -p 5434 -U postgres -d postgres -c "SELECT COUNT(*) FROM memories"  # expect 83
+# Run quality gates
+uv run ruff check src/ tests/
+uv run mypy src/
+uv run pytest tests/ -v
+# Final commit + tag (after steps 6-15 done)
+git add -A && git commit -m "Release v0.7.0: Dual-model RRF"
+git tag v0.7.0 -m "v0.7.0"
+git push origin main && git push origin v0.7.0
+```
+
+---
+
+### Pre-Implementation State Verified
+- **80 memories** in `memories` table (all 384-dim, all active) — **NOT 76 as previous handoff said** (4 new since then)
+- Schema: `vector(384)` on `memories.embedding`, intact
+- Current `embedding_dim: int = 1024` default is WRONG (config bug) — needs 384
+- Working tree: `config.py` partially modified (fields added, validators missing)
+
+### Ollama Cloud API Key (USER-PROVIDED, BURN-OK)
+```
+LLM_PROVIDER=ollama-cloud
+LLM_API_KEY=YOUR_OLLAMA_CLOUD_API_KEY
+LLM_BASE_URL=https://ollama.com/v1
+LLM_MODEL=ministral-3:8b   (small model for tests)
+```
+Verified working: `/api/tags` lists 40+ models, `/v1/chat/completions` responds. **User explicitly said: "if we need to burn it, we can."**
+
+### v0.7.0 Design (Complete, see `docs/design/dual-model-rrf-architecture.md`)
+
+**Two-table schema (additive, zero data loss):**
+```
+memories          (existing, 384-dim, 80 rows — UNTOUCHED)
+memories_1024     (new, 1024-dim, FK memory_id → memories.id)
+```
+
+**Three operating modes via `EMBEDDING_MODE` env:**
+| Mode | Write | Query | Use case |
+|------|-------|-------|----------|
+| `cpu` | 384 only | 384 only | Low-memory/legacy |
+| `auto` (default) | 384 (and optional 1024 via elevate) | 384 + 1024, RRF fused | Production |
+| `gpu` | 1024 only | 1024 only | High-fidelity |
+
+**RRF k=60** fuses 384 and 1024 ranked lists. Same memory appearing in both naturally boosts.
+
+**`elevate_memory_to_1024` MCP tool** (AUTO mode only): promotes 384-dim memory to 1024-dim, re-embeds with BGE-Large (placeholder expansion in v0.7.0), trust +0.10, idempotent (no-op if exists).
+
+### Tag-Sweep Achievement
+Across the **entire `/home/jcharles`** (not just MCP-Servers):
+- 246 active agent `.md` files: 0 dirty
+- 24 active `opencode.json`/`.jsonc`: 0 dirty  
+- 139 files fixed in 2 sed passes (139 first, then 3 with multi-colon model names like `devstral-2:123b-cloud`)
+- `qwen3.5` mapped to `qwen3.5:397b` (only `qwen3.5*` model in current API)
+- Intentionally untouched: anti-pattern docs, upstream `opencode-base`, runtime state cache, session diffs, `dot-config-old`
 
 ---
 
@@ -250,3 +359,5 @@ For Memini-ai, we may add:
 4. Reality Check: `memini-ai-dev/docs/reality_check.md`
 5. This file: `memini-ai-dev/CONTEXT.md`
 6. Tasks: `memini-ai-dev/TASKS.md`
+7. **Dual-Model RRF Design**: `memini-ai-dev/docs/design/dual-model-rrf-architecture.md`
+8. **Previous handoff**: `memini-ai-dev/HANDOFF.md`

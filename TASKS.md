@@ -1,10 +1,10 @@
 # Memini-ai Development Tasks
 
-> **Project**: Memini-ai v3.0 (formerly Super-Memory-TS)
+> **Project**: Memini-ai v0.7.0 (formerly Super-Memory-TS)
 > **Meaning**: "I remember" in Latin
 > **Language**: Python (porting from TypeScript)
 > **Framework**: FastMCP
-> **Last Updated**: 2026-05-19 (v0.3.1: Documentation refreshed, stale version references updated, pyproject.toml bumped)
+> **Last Updated**: 2026-06-02 (Session 4 — v0.7.0 dual-model RRF: **5/15 steps done**; see bottom of file or HANDOFF.md for Session 4 details)
 
 ---
 
@@ -402,3 +402,91 @@ Each phase requires:
 - Memory Report: `memini-ai-dev/docs/memory_report.agent.final.md`
 - Reality Check: `memini-ai-dev/docs/reality_check.md`
 - **pgvector Migration**: `memini-ai-dev/docs/pgvector_migration.md`
+- **Dual-Model RRF Design**: `memini-ai-dev/docs/design/dual-model-rrf-architecture.md`
+
+---
+
+## v0.7.0 Implementation Status (Session 2026-06-02, updated from Session 2026-06-01)
+
+**Goal:** Ship dual-model RRF (384 + 1024 tables) with `MEMINI_MODE` routing and `elevate_memory_to_1024` tool. Target release: v0.7.0.
+
+**Pre-implementation state:** 83 memories at 384-dim (was 80 in Session 3, +3 from this session's testing), schema intact, `embedding_dim: int = 384` config fixed. Working tree dirty on `config.py`, `schema.py`, `queries.py`, `database.py` + new file `memory/rrf.py`.
+
+### Implementation Steps (14 total)
+
+| # | Step | Status | File(s) | Notes |
+|---|------|--------|---------|-------|
+| 1 | `config.py`: `embedding_dim=384` + 5 new fields + 3 field validators | **DONE** | `src/memini_ai/config.py` | All 3 validators added (`_validate_embedding_mode`, `_clamp_rrf_k`, `_clamp_auto_extract_interval`). `ruff + mypy` clean. |
+| 2 | `postgres/schema.py`: add `memories_1024` table + indexes + wire into `get_schema_sql()` | **DONE** | `src/memini_ai/postgres/schema.py` | `CREATE TABLE IF NOT EXISTS`, FK to `memories.id` ON DELETE CASCADE, vector(1024), 3 indexes (memory_id, trust_score, elevated_at DESC), wired into `get_schema_sql()` between memories and memory_relationships. **Migration applied to live DB; verified 0 data loss (count 82→82 before, 82→83 after this session's testing)**. |
+| 3 | `postgres/queries.py`: 6 new 1024 query constants | **DONE** | `src/memini_ai/postgres/queries.py` | All 6 added: `INSERT_MEMORY_1024` (idempotent ON CONFLICT), `SEARCH_MEMORIES_1024_VECTOR` (joined), `GET_MEMORY_1024_BY_MEMORY_ID`, `SEARCH_MEMORIES_1024_JOINED` (full table scan with RRF), `COUNT_MEMORIES_1024`, `DELETE_MEMORY_1024_BY_MEMORY_ID`. `ruff + mypy` clean. |
+| 4 | `memory/rrf.py`: NEW FILE with `reciprocal_rank_fusion()` | **DONE** | `src/memini_ai/memory/rrf.py` (created) | `reciprocal_rank_fusion(ranked_lists, k=60)` + `rrf_with_limit(...)` helper. Dedup within lists (first occurrence counts), stable sort by first-seen order for tied scores, validates k≥1. Smoke-tested all edge cases. |
+| 5 | `postgres/database.py`: 5 new 1024 methods + `_expand_384_to_1024()` helper | **DONE** | `src/memini_ai/postgres/database.py` | `_expand_384_to_1024` (zero-pad + L2-normalize placeholder), `add_memory_1024`, `query_memories_1024` (joined with memories table, returns MemoryEntry list), `get_memory_1024_by_memory_id`, `elevate_memory_to_1024` (+0.10 trust boost in BOTH 384 + 1024 records, idempotent, also bumps last_accessed_at), `count_memories_1024`, `delete_memory_1024`. `ruff + mypy` clean (fixed unused `SEARCH_MEMORIES_1024_JOINED` import). |
+| 6 | `memory/system.py`: MEMINI_MODE dispatch in `add_memory` + `query_memories`, delete dead `_get_fallback_for_dimension()` | PENDING | `src/memini_ai/memory/system.py` | cpu: 384 only. auto: 384 write + 384/1024 RRF query. gpu: 1024 only. The dispatch logic should call the new `db.elevate_memory_to_1024` for elevate scenarios. Delete dead `_get_fallback_for_dimension()` (lines 350-361) per HANDOFF. |
+| 7 | `server.py`: `elevate_memory_to_1024` MCP tool, AUTO-mode gated | PENDING | `src/memini_ai/server.py` | Gate at tool-call time: raise helpful error if `config.embedding_mode != "auto"`. Call `db.elevate_memory_to_1024(memory_id, vector_1024=None, trust_boost=0.10)`. Return dict. |
+| 8 | Tests: 3 new test files (14 tests total) | PENDING | `tests/test_rrf.py`, `tests/test_dual_model.py`, `tests/test_schema_migration.py` (create) | `test_rrf.py` (no-DB): basic fusion, empty input, single list, dedup, k validation, limit wrapper (5+ tests). `test_dual_model.py` (mocked): config routing, mode validation, trust boost logic. `test_schema_migration.py` (real DB): table exists, FK constraint, idempotency. |
+| 9 | `.env.example`: document 5 new env vars | PENDING | `.env.example` | `EMBEDDING_MODE` (default `auto`), `ELEVATE_ENABLED` (default `true`), `RRF_K` (default `60`), `AUTO_EXTRACT_LOG_DIR` (default `~/.memini-ai/chat_logs`), `AUTO_EXTRACT_INTERVAL_SECONDS` (default `5`). |
+| 10 | Update `.opencode/opencode.json` env | PENDING | `.opencode/opencode.json` | Add `EMBEDDING_MODE=auto` to memini-ai-dev MCP environment. **Use the alias name directly (no `MEMINI_` prefix) per `Field(alias="EMBEDDING_MODE")`.** |
+| 11 | Quality gates: `ruff`, `mypy`, `pytest` (target 740+14=754 passing) | PENDING | — | `uv run ruff check src/ tests/` → 0 errors. `uv run mypy src/` → 0 errors. `uv run pytest tests/ -v` → all pass, no regression vs v0.6.0 baseline (740). |
+| 12 | Zero-data-loss verification: `SELECT COUNT(*) FROM memories` must = **83** | PENDING | — | Run BEFORE and AFTER steps 6-7 (the dispatch logic + tool). Pre-step-2 count was 82; this session added 1 memory so baseline for step-12 is 83. |
+| 13 | `pyproject.toml`: 0.6.0 → 0.7.0 | PENDING | `pyproject.toml` | Simple version bump |
+| 14 | Commit + tag `v0.7.0` + push to GitHub | PENDING | — | `git add -A && git commit -m "Release v0.7.0: Dual-model RRF" && git tag v0.7.0 -m "v0.7.0" && git push origin main && git push origin v0.7.0` |
+| 15 | Update docs (root + memini-ai-dev): AGENTS.md, CONTEXT.md, TASKS.md, HANDOFF.md, README, CHANGELOG | PENDING | — | Add v0.7.0 release note when complete. (TASKS.md and HANDOFF.md already updated to reflect 5/15 done as of 2026-06-02.) |
+
+### Critical Constraints (DO NOT VIOLATE)
+1. **DO NOT drop or recreate the `memories` table.** 80 existing memories are precious. Only ADD new tables/columns.
+2. **DO NOT change the existing `vector(384)` column type.** Add new 1024 table separately.
+3. **DO NOT change the default `embedding_dim` to anything other than 384.** Schema is 384; config must match.
+4. **USE `CREATE TABLE IF NOT EXISTS` for the new `memories_1024` table.** Idempotent migrations only.
+5. **USE `Field(alias=...)` for new config fields** (no `MEMINI_` prefix). The alias IS the env var name.
+6. **TEST with the existing 80 memories.** Verify they're still retrievable after every change.
+
+### Pre-Written Code (paste-ready for step 1 validators)
+```python
+# Add to src/memini_ai/config.py after the new field definitions
+
+from pydantic import field_validator
+
+@field_validator("embedding_mode", mode="before")
+@classmethod
+def _validate_embedding_mode(cls, v: str) -> str:
+    val = str(v).lower().strip()
+    if val not in {"cpu", "auto", "gpu"}:
+        raise ValueError(f"Invalid embedding_mode '{val}'. Must be one of: cpu, auto, gpu")
+    return val
+
+@field_validator("rrf_k", mode="before")
+@classmethod
+def _clamp_rrf_k(cls, v: int | str) -> int:
+    val = int(v) if isinstance(v, str) else v
+    return max(1, min(1000, val))
+
+@field_validator("auto_extract_interval_seconds", mode="before")
+@classmethod
+def _clamp_auto_extract_interval(cls, v: int | str) -> int:
+    val = int(v) if isinstance(v, str) else v
+    return max(1, min(3600, val))
+```
+
+### Quick Resume Commands
+```bash
+cd /home/jcharles/Projects/MCP-Servers/memini-ai-dev
+
+# Verify state
+git status -s
+PGPASSWORD=password psql -h localhost -p 5434 -U postgres -d postgres -c "SELECT COUNT(*) FROM memories"
+# Expected: 80
+
+# Quality gates as you go
+uv run ruff check src/ tests/
+uv run mypy src/
+uv run pytest tests/ -v
+
+# Final commit + tag
+git add -A && git commit -m "Release v0.7.0: Dual-model RRF"
+git tag v0.7.0 -m "v0.7.0"
+git push origin main && git push origin v0.7.0
+```
+
+---
+
+*Last Updated: 2026-06-02 (Session 4 — **5/15 steps done**: config validators, schema.py memories_1024 migration, queries.py 6 new constants, memory/rrf.py created, database.py 6 new methods. 83 memories at 384-dim verified intact. Working tree dirty on config.py, schema.py, queries.py, database.py + new file memory/rrf.py. Agent-blocker fix applied to 47+ files; OpenCode restart still required.)*

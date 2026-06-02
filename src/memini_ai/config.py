@@ -29,9 +29,20 @@ class MeminiConfig(BaseSettings):
     precision: str = "fp16"
     device: str = "auto"
     use_gpu: bool = False
-    embedding_dim: int = 1024
+    embedding_dim: int = 384
     batch_size: int = 32
     eager_load: bool = False
+
+    # Dual-model RRF (v0.7.0+)
+    embedding_mode: str = Field(default="auto", alias="EMBEDDING_MODE")
+    elevate_enabled: bool = Field(default=True, alias="ELEVATE_ENABLED")
+    rrf_k: int = Field(default=60, alias="RRF_K")
+    auto_extract_log_dir: str = Field(
+        default="~/.memini-ai/chat_logs", alias="AUTO_EXTRACT_LOG_DIR"
+    )
+    auto_extract_interval_seconds: int = Field(
+        default=5, alias="AUTO_EXTRACT_INTERVAL_SECONDS"
+    )
 
     # Database settings
     table_name: str = "memories"
@@ -378,6 +389,35 @@ class MeminiConfig(BaseSettings):
         if val > 10000:
             return 10000
         return val
+
+    # =============================================================================
+    # Dual-model RRF validators (v0.7.0)
+    # =============================================================================
+
+    @field_validator("embedding_mode", mode="before")
+    @classmethod
+    def _validate_embedding_mode(cls, v: str) -> str:
+        """Validate embedding_mode is one of: cpu, auto, gpu."""
+        val = str(v).lower().strip()
+        if val not in {"cpu", "auto", "gpu"}:
+            raise ValueError(
+                f"Invalid embedding_mode '{val}'. Must be one of: cpu, auto, gpu"
+            )
+        return val
+
+    @field_validator("rrf_k", mode="before")
+    @classmethod
+    def _clamp_rrf_k(cls, v: int | str) -> int:
+        """Clamp RRF k constant to valid range [1, 1000]."""
+        val = int(v) if isinstance(v, str) else v
+        return max(1, min(1000, val))
+
+    @field_validator("auto_extract_interval_seconds", mode="before")
+    @classmethod
+    def _clamp_auto_extract_interval(cls, v: int | str) -> int:
+        """Clamp auto-extract interval to valid range [1, 3600] seconds."""
+        val = int(v) if isinstance(v, str) else v
+        return max(1, min(3600, val))
 
     def model_post_init(self, _context: object) -> None:
         """Apply JSON config loading after initialization."""
