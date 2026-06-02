@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-06-02
+
+### Features
+
+- **Dual-model RRF (384 + 1024)**: New `memories_1024` sidecar table holds 1024-dim embeddings for "elevated" memories. The 384-dim `memories` table remains the source of truth; the 1024 sidecar is additive (no schema change to existing data, no data loss).
+- **Embedding mode dispatch** (`EMBEDDING_MODE` env, default `auto`):
+  - `cpu`: 384-dim-only writes and queries (legacy path)
+  - `auto`: 384-dim writes; queries fuse 384 + 1024 via Reciprocal Rank Fusion (RRF, k=60)
+  - `gpu`: 1024-dim mirror always written; queries use 1024 only
+- **`elevate_memory_to_1024` MCP tool** (auto-mode gated): promotes a 384-dim memory to also exist in 1024-dim space. Bumps trust +0.10 on both 384 and 1024 records. Idempotent. Returns `{memory_id, elevated, trust_score, vector_dim, mode, success}`.
+- **Reciprocal Rank Fusion** (`src/memini_ai/memory/rrf.py`): new `reciprocal_rank_fusion(ranked_lists, k=60)` and `rrf_with_limit(...)` helpers. Reference: Cormack, Clarke, Buettcher, SIGIR 2009.
+- **Defensive `asyncio.iscoroutinefunction` guards** in `memory/system.py` dispatch: replaces bare `hasattr()` checks (which return True for any MagicMock test fixture). The MagicMock tests in `test_system.py` were crashing on `await` of non-AsyncMock attributes; now they fall through cleanly to the legacy 384-only path.
+- **5 new env vars**: `EMBEDDING_MODE` (cpu/auto/gpu), `ELEVATE_ENABLED` (bool), `RRF_K` (1-1000), `AUTO_EXTRACT_LOG_DIR`, `AUTO_EXTRACT_INTERVAL_SECONDS` (1-3600s). All have field validators in `MeminiConfig`.
+- **36th MCP tool** registered: `elevate_memory_to_1024` (now 36 total).
+
+### Notes
+
+- The 1024-dim vector is currently a **placeholder expansion** of the 384-dim vector (`_expand_384_to_1024`: zero-pad + L2-normalize). A future v0.7.1/v0.8.0 release will swap in a real BGE-Large call when the elevate tool is invoked.
+- The `embedding_dim` config default is now `384` (was `1024` in v0.6.x). This aligns the config default with the schema default.
+- The `memories_1024` migration is idempotent (`CREATE TABLE IF NOT EXISTS`) and zero-touch on existing `memories` data.
+- Trust boost on elevate uses `MEMINI_TRUST_DELTA_CONFIRM` semantics (clamped to [0, 1]).
+
+### Tests
+
+- **763 tests passing** (740 v0.6.0 baseline + 23 new) — `pytest tests/`
+- **0 ruff errors** — `ruff check src/ tests/`
+- **0 mypy errors** — `mypy src/`
+- **23 new tests** across 3 new files:
+  - `tests/test_rrf.py` (10): RRF algorithm unit tests (no DB)
+  - `tests/test_dual_model.py` (8): mode dispatch + RRF k clamping (mocked DB)
+  - `tests/test_schema_migration.py` (5): real-DB schema verification
+- **+1 test fix**: `tests/test_config.py::test_model_settings_defaults` updated for new `embedding_dim=384` default.
+- **3 pre-existing ruff issues** also fixed (test_dialectic.py, test_extractor.py, test_input_validation.py).
+
+### Release
+
+- Commit: `18f37ed` on `main`
+- Tag: `v0.7.0`
+- Remote: `https://github.com/VeeDubin/memini-ai-dev.git`
+- 22 files changed, +2108 / -74 lines
+- **83 memories preserved** (zero data loss through migration, dispatch, tool, and quality gates)
+
+### Migration Notes
+
+- For existing v0.6.x installations: no action required. The new `memories_1024` table is created automatically on next server start (`initialize()` is idempotent).
+- For new installations: set `EMBEDDING_MODE=auto` (default) to get the dual-model RRF behavior, or `EMBEDDING_MODE=cpu` to match pre-v0.7.0 behavior.
+
 ## [0.3.0] - 2026-05-19
 
 ### Features

@@ -3,7 +3,7 @@
 > **Project**: Memini-ai v0.7.0 (formerly Super-Memory-TS)
 > **Meaning**: "I remember" in Latin (pronounced "meh-mee-nee")
 > **Goal**: Local-first semantic memory server, MCP-compatible, Python-based
-> **Last Updated**: 2026-06-02 (v0.7.0 dual-model RRF: 5/15 steps done)
+> **Last Updated**: 2026-06-02 (v0.7.0 DUAL-MODEL RRF RELEASED ✅ — commit `18f37ed`, tag `v0.7.0` pushed. 15/15 steps done, 763 tests passing, 83 memories intact.)
 
 ---
 
@@ -236,7 +236,7 @@ For Memini-ai, we may add:
 
 | Version | Language | Notes |
 |---------|----------|-------|
-| **v0.7.0 (PLANNED)** | **Python** | **Dual-model RRF (384+1024), MEMINI_MODE routing, elevate_memory_to_1024 tool, RRF k=60, background chat-log extractor. Config step 1/14 done.** |
+| **v0.7.0** | **Python** | **Dual-model RRF RELEASED (2026-06-02). 384+1024 tables, MEMINI_MODE routing (cpu/auto/gpu), RRF k=60, `elevate_memory_to_1024` MCP tool (auto-mode gated). Commit `18f37ed`, tag `v0.7.0` pushed. 763 tests passing, 83 memories preserved. 36 MCP tools total.** |
 | v0.6.0 | Python | Modular cloud LLM (factory/provider pattern), 740/740 tests, tag `v0.6.0` pushed |
 | v1.0 | Python | Original implementation (user prefers this) |
 | v2.0 | TypeScript | Super-Memory-TS (current npm package) |
@@ -252,7 +252,10 @@ For Memini-ai, we may add:
 - Schema: `vector(384)` on `memories.embedding`, intact
 - Working tree dirty on: `config.py` (validators), `schema.py` (table), `queries.py` (6 new constants), `database.py` (6 new methods + helper), NEW `memory/rrf.py`
 
-### Steps Complete (5/15)
+### v0.7.0 Implementation (RELEASED 2026-06-02, commit `18f37ed`)
+
+**All 15 implementation steps done in 2 sessions (4 + 5).**
+
 | # | Step | File | Status |
 |---|------|------|--------|
 | 1 | `config.py` 3 validators | `src/memini_ai/config.py` | DONE |
@@ -260,18 +263,16 @@ For Memini-ai, we may add:
 | 3 | 6 new 1024 query constants | `src/memini_ai/postgres/queries.py` | DONE |
 | 4 | `memory/rrf.py` NEW | `src/memini_ai/memory/rrf.py` | DONE (created) |
 | 5 | 6 new DB methods + `_expand_384_to_1024` | `src/memini_ai/postgres/database.py` | DONE |
-
-### Steps Pending (10/15)
-6. `memory/system.py` MEMINI_MODE dispatch (cpu/auto/gpu) + delete dead `_get_fallback_for_dimension()`
-7. `server.py` `elevate_memory_to_1024` MCP tool (AUTO-mode gated)
-8. 3 new test files (14 tests: test_rrf.py, test_dual_model.py, test_schema_migration.py)
-9. `.env.example` 5 new env vars
-10. `.opencode/opencode.json` add `EMBEDDING_MODE=auto` to memini-ai-dev MCP env (use alias, no `MEMINI_` prefix)
-11. Quality gates: ruff, mypy, pytest (target 754 passing)
-12. Zero-data-loss verification: `SELECT COUNT(*) FROM memories` must = **83** before and after steps 6-7
-13. `pyproject.toml` 0.6.0 → 0.7.0
-14. Commit + tag v0.7.0 + push
-15. Update root + memini-ai-dev docs
+| 6 | `memory/system.py` cpu/auto/gpu dispatch + delete dead `_get_fallback_for_dimension()` | `src/memini_ai/memory/system.py` | DONE |
+| 7 | `server.py` `elevate_memory_to_1024` MCP tool (auto-mode gated) | `src/memini_ai/server.py` | DONE |
+| 8 | 3 new test files (23 tests) + 1 test_config fix | `tests/test_rrf.py`, `tests/test_dual_model.py`, `tests/test_schema_migration.py`, `tests/test_config.py` | DONE |
+| 9 | `.env.example` 5 new env vars | `.env.example` | DONE |
+| 10 | `.opencode/opencode.json` `EMBEDDING_MODE=auto` | `.opencode/opencode.json` (root) | DONE |
+| 11 | Quality gates: ruff, mypy, pytest (763 passing) | — | DONE |
+| 12 | Zero-data-loss verification: `SELECT COUNT(*) FROM memories = 83` before/after | — | DONE |
+| 13 | `pyproject.toml` 0.6.0 → 0.7.0 | `pyproject.toml` | DONE |
+| 14 | Commit + tag `v0.7.0` + push to GitHub | — | DONE |
+| 15 | Update docs: AGENTS.md, CONTEXT.md, TASKS.md, HANDOFF.md, CHANGELOG.md, README.md | — | DONE (this file) |
 
 ### CRITICAL: Agent-Blocker Fix Applied (Restart Required)
 

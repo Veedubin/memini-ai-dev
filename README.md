@@ -23,6 +23,7 @@ Local-first semantic memory server with vector search, trust scoring, and persis
 - **Vector Search**: Default 384-dim MiniLM embeddings for speed, with BGE-Large (1024-dim) support
 - **Memory Decay**: Temporal trust decay to ensure memory relevance over time
 - **Project Isolation**: Strict memory separation by project ID
+- **Dual-Model RRF (v0.7.0+)**: Optional 1024-dim sidecar with Reciprocal Rank Fusion across both stores. `EMBEDDING_MODE` env switches between `cpu` (384-only), `auto` (384+1024 RRF), and `gpu` (1024-only). The `elevate_memory_to_1024` MCP tool promotes important memories to 1024-dim with a trust boost. See [CHANGELOG.md](CHANGELOG.md) for the v0.7.0 release notes.
 
 ## Installation
 
