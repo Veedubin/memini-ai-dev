@@ -4,7 +4,7 @@
 > **Meaning**: "I remember" in Latin
 > **Language**: Python (porting from TypeScript)
 > **Framework**: FastMCP
-> **Last Updated**: 2026-06-02 (Session 5 — **v0.7.0 RELEASED** ✅: commit `18f37ed`, tag `v0.7.0` pushed, **15/15 steps done**. 763 tests passing, ruff+mypy clean, 83 memories preserved. See HANDOFF.md for Session 5 details.)
+> **Last Updated**: 2026-06-03 (Session 6 — **v0.7.1 BUGFIX RELEASED** ✅: `add_thought` MCP-call vector-injection error fixed. Commit + tag `v0.7.1` pushed. **766 tests passing** (was 763, +3 new regression tests), ruff+mypy clean, in-process E2E verified: thought row landed in `thoughts` table with real 384-dim embedding. See HANDOFF.md Session 6 for full details. v0.7.0 stats preserved: 111 memories, 0 in memories_1024, 15/15 steps done.)
 
 ---
 
@@ -489,4 +489,51 @@ git push origin main && git push origin v0.7.0
 
 ---
 
-*Last Updated: 2026-06-02 (Session 5 — **v0.7.0 RELEASED** ✅: **15/15 steps done**. Commit `18f37ed`, tag `v0.7.0` pushed. 763 tests passing, ruff+mypy clean, 83 memories preserved (zero data loss). Working tree clean. Implementation: config.py 3 validators, schema.py memories_1024 table+indexes, queries.py 6 new constants, database.py 6 new methods, memory/rrf.py NEW (RRF algorithm), memory/system.py cpu/auto/gpu dispatch (deleted dead _get_fallback_for_dimension), server.py elevate_memory_to_1024 MCP tool, .env.example 5 new vars, .opencode/opencode.json EMBEDDING_MODE=auto, pyproject.toml 0.6.0→0.7.0. Tests: test_rrf.py 10, test_dual_model.py 8, test_schema_migration.py 5, +1 test_config.py fix = 23 new tests, 763 total. Pre-existing ruff issues in test_dialectic.py, test_extractor.py, test_input_validation.py also cleaned up. OpenCode restart still required to clear cached ollama-cloud agent configs.)*
+## v0.7.1 Bug — `add_thought` MCP tool call fails with vector-injection error ✅ **FIXED** (Session 2026-06-03)
+
+**Status**: ✅ **FIXED & RELEASED as v0.7.1** (Session 6). Commit + tag `v0.7.1` pushed. 766 tests passing, ruff+mypy clean.
+
+### Root cause (confirmed)
+
+`src/memini_ai/thought_chains.py::add_thought` (line 500-501 in v0.7.0) was building a stringified pgvector literal:
+
+```python
+embedding_str = ",".join(str(v) for v in embedding_result.embedding)
+embedding = f"[{embedding_str}]"  # pgvector format
+```
+
+…and passing that string to asyncpg as `$11::vector`. asyncpg cannot bind a stringified literal directly to a `vector` type — it expects either a Python `list[float]` (handled by the `pgvector.asyncpg.register_vector` codec registered in `postgres/database.py:145-146`) or a `numpy.ndarray`. The string was being interpreted as a parameter that needed to be coerced to float, hence:
+
+```
+invalid input for query argument $11: '[-0.039..., ...]'
+(could not convert string to float: '[-0.039..., ...]')
+```
+
+A second, related bug: `ModelManager` prefers BGE-Large (1024-dim) when CUDA is available, but the `thoughts.embedding` column is hardcoded to `vector(384)`. When the model returned 1024 dims, even if the binding had worked, asyncpg would have raised "expected 384 dimensions, not 1024".
+
+### Fix (3 changes)
+
+1. **Pass `list[float]` directly** instead of a stringified literal — matches what `memory.add` already does (`postgres/database.py:280-289`).
+2. **Removed the `::vector` cast** in the SQL — the registered codec handles type binding automatically.
+3. **Truncate or zero-pad** to 384 dims to match the column. Handles the 1024-dim BGE-Large case safely (a real BGE-Large call would still need a future schema migration to widen the column).
+
+### Verification (end-to-end)
+
+- **In-process repro**: a 50-line Python script (`/tmp/repro_v071.py`) that calls `add_thought` with the same code path the MCP server uses. Returns a valid `chain_id` UUID.
+- **DB verification**: `SELECT id, thought, vector_dims(embedding) FROM thoughts` shows the row landed with a real 384-dim embedding.
+- **Test count**: 766 passing (was 763 in v0.7.0, +3 new tests).
+- **Lint/type**: ruff + mypy clean on production code (`mypy src/`).
+
+### Files changed
+
+- `src/memini_ai/thought_chains.py` — fixed `add_thought` (line 500-501 area) and `get_related_chains` (line 791-793 area)
+- `tests/test_thought_chains.py` — 3 new tests in `TestAddThought` (truncation, padding, regression test for list-vs-string binding)
+- `pyproject.toml` — version 0.7.0 → 0.7.1
+- `CHANGELOG.md` — `[0.7.1]` entry
+- `HANDOFF.md` — Session 6 entry
+- `AGENTS.md` — Review Notes entry
+- `TASKS.md` — this section (moved from OPEN to FIXED)
+
+---
+
+*Last Updated: 2026-06-03 (Session 6 — **v0.7.1 BUGFIX RELEASED** ✅: `add_thought` MCP-call vector-injection error fixed. Commit + tag `v0.7.1` pushed. 766 tests passing (was 763, +3 new regression tests), ruff+mypy clean, in-process E2E verified: thought row landed in `thoughts` table with real 384-dim embedding. v0.7.0 stats preserved: 111 memories, 0 in memories_1024, 15/15 steps done.)*

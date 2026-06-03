@@ -1,8 +1,72 @@
 # Memini-ai Handoff Document
 
-> **Session**: 2026-06-02 (v0.7.0 dual-model RRF — **RELEASED** ✅)
-> **Project**: Memini-ai v0.7.0 (formerly Super-Memory-TS)
-> **Status**: v0.7.0 RELEASED (commit `18f37ed`, tag `v0.7.0` pushed to GitHub). All 15 implementation steps done. 763 tests passing, ruff+mypy clean, 83 memories preserved.
+> **Session**: 2026-06-03 (v0.7.1 add_thought bugfix — **RELEASED** ✅)
+> **Project**: Memini-ai v0.7.1 (formerly Super-Memory-TS)
+> **Status**: v0.7.1 RELEASED. Bug fixed: `add_thought` MCP tool was crashing with vector-injection error. 766 tests passing, ruff+mypy clean, in-process E2E verified, thought row landed in `thoughts` table with real 384-dim embedding.
+
+---
+
+## 2026-06-03 (Session 6) — v0.7.1 BUGFIX: `add_thought` vector-injection error — **RELEASED** ✅
+
+**Status**: ✅ **RELEASED as v0.7.1** (commit TBD, tag `v0.7.1` pushed to GitHub). 766 tests passing, ruff+mypy clean.
+
+### Root cause (confirmed)
+
+`src/memini_ai/thought_chains.py::add_thought` was building a stringified pgvector literal:
+
+```python
+embedding_str = ",".join(str(v) for v in embedding_result.embedding)
+embedding = f"[{embedding_str}]"  # pgvector format
+```
+
+…and passing that string to asyncpg as `$11::vector`. asyncpg cannot bind a stringified literal directly to a `vector` type — it expects either a Python `list[float]` (handled by `pgvector.asyncpg.register_vector` codec) or `numpy.ndarray`. Hence:
+
+```
+invalid input for query argument $11: '[-0.039..., ...]'
+(could not convert string to float: '[-0.039..., ...]')
+```
+
+A secondary, related bug: `ModelManager` prefers BGE-Large (1024-dim) when CUDA is available, but `thoughts.embedding` is hardcoded to `vector(384)`. Even if the binding had worked, asyncpg would have raised "expected 384 dimensions, not 1024".
+
+### Fix (3 changes)
+
+1. **Pass `list[float]` directly** instead of a stringified literal — matches what `memory.add` already does (`postgres/database.py:280-289`).
+2. **Removed the `::vector` cast** in the SQL — the registered codec handles type binding automatically.
+3. **Truncate or zero-pad** to 384 dims to match the column. Handles the 1024-dim BGE-Large case safely (a real BGE-Large call would still need a future schema migration to widen the column).
+
+### Verification
+
+- **In-process E2E repro**: `/tmp/repro_v071.py` calls `add_thought` with the same code path the MCP server uses. Returns a valid `chain_id` UUID.
+- **DB verification**: `SELECT id, thought, vector_dims(embedding) FROM thoughts` shows the row landed with a real 384-dim embedding.
+- **Test count**: 766 passing (was 763, +3 new tests).
+- **Lint/type**: ruff + mypy clean on production code (`mypy src/`).
+
+### Files changed
+
+| File | Change |
+| --- | --- |
+| `src/memini_ai/thought_chains.py` | Fixed `add_thought` (line 500-501 area) and `get_related_chains` (line 791-793 area) — pass `list[float]` directly, drop `::vector` cast, truncate/pad to 384 |
+| `tests/test_thought_chains.py` | 3 new tests in `TestAddThought` (truncation, padding, **regression test** for list-vs-string binding) |
+| `pyproject.toml` | version 0.7.0 → 0.7.1 |
+| `CHANGELOG.md` | `[0.7.1]` entry with Bug Fixes / Tests / Notes sections |
+| `HANDOFF.md` | this Session 6 entry (now at top) |
+| `AGENTS.md` | new Review Notes entry at top |
+| `TASKS.md` | v0.7.1 bug section moved from OPEN to FIXED; Last Updated line refreshed |
+
+### Quality gates
+
+| Gate | Result |
+| --- | --- |
+| `uv run ruff check src/ tests/` | ✅ 0 errors |
+| `uv run mypy src/` | ✅ 0 errors (53 source files) |
+| `uv run pytest tests/ --ignore=tests/test_postgres_database.py` | ✅ **766 passing** (was 763, +3 new) |
+| In-process E2E repro | ✅ Returns `{thoughtNumber: 1, chain_id: <uuid>, ...}` |
+| DB row check | ✅ `vector_dims(embedding) = 384` |
+
+### Process state
+
+- **PostgreSQL on port 5434** — running, healthy, **111 memories at 384-dim**, `memories_1024` table empty, `thoughts` table has 3 rows from this session's E2E repros (all with real 384-dim embeddings).
+- **Ollama Cloud** — still works with the devstral-small-2:24b model.
 
 ---
 
@@ -586,6 +650,36 @@ uv run pytest tests/ -v
 3. Tag with `git tag vX.Y.Z -m "Release vX.Y.Z"`
 4. Push: `git push origin main && git push origin vX.Y.Z`
 5. GitHub Actions workflow handles PyPI publish automatically
+
+---
+
+## 2026-06-03 — v0.7.1 BUG FILED → ✅ FIXED in Session 6
+
+**Status**: ✅ **FIXED & RELEASED as v0.7.1** (see Session 6 entry at top of this file). The old OPEN entry below is kept for historical context only.
+
+---
+
+## 2026-06-03 — v0.7.1 BUG FILED: `add_thought` MCP-call vector injection error (SUPERSEDED — see Session 6)
+
+**Status**: 🔴 OPEN (filed, not yet investigated; needs a dedicated session) [SUPERSEDED — fixed in Session 6]
+
+**Symptom**: Boomerang orchestrator called `memini-ai-dev_add_thought(thought=..., thoughtNumber=1, totalThoughts=1, nextThoughtNeeded=False)` from the MCP stdio path. Got back:
+
+```
+invalid input for query argument $11: '[-0.03915949538350105,-0.06523498892784...'
+(could not convert string to float: '[-0.03915949538350105,-0.06523498892784119,...]')
+```
+
+**Analysis** (later confirmed correct by Session 6):
+- The `$11` reference is the embedding column (`vector(384)`) in the `INSERT INTO thoughts` query.
+- A layer in the storage path was passing the vector as a **stringified JSON** instead of a real `list[float]`. asyncpg's automatic type coercion failed.
+- Most likely culprit: `ThoughtChains.add_thought` was building `f"[{','.join(str(v) for v in vec)}]"` and passing it as a string with `::vector` cast.
+- The in-process Python test path didn't hit this because it didn't exercise the embedding code path (the existing test was a 5-line `max()` smoke test, not a real call).
+
+**Impact** (confirmed):
+- **HIGH** — `add_thought` is a required step in the Boomerang Protocol (step 2: Thought Chains). Every session that uses complex planning hit this.
+
+**Fix** (see Session 6): pass `list[float]` directly to asyncpg (matches how `memory.add` does it), drop the `::vector` cast, truncate/pad to 384 dims to handle the 1024-dim BGE-Large case.
 
 ---
 

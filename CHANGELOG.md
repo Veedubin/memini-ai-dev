@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-06-03
+
+### Bug Fixes
+
+- **`add_thought` MCP tool was crashing with vector-injection error** at runtime. Symptom: `invalid input for query argument $11: '[0.1,0.2,...]' (could not convert string to float: ...)`. Root cause: `src/memini_ai/thought_chains.py::add_thought` was building a stringified pgvector literal (`f"[{','.join(str(v) for v in embedding)}]"`) and passing it to asyncpg as `$11::vector`. asyncpg cannot bind a stringified literal directly to a `vector` type — it expects either a `list[float]` or `numpy.ndarray` (registered via `pgvector.asyncpg.register_vector`). Fix: pass the raw `list[float]` directly, matching how `memory.add` already does it. Also removed the unnecessary `$11::vector` cast in the SQL (`asyncpg + register_vector` handles the type binding automatically).
+- **Dimension-mismatch safety**: when the embedding model returns a vector whose dim doesn't match the `thoughts.embedding vector(384)` column, the new code truncates (>384) or zero-pads (<384) to 384 before binding. This handles the case where `ModelManager` prefers BGE-Large (1024-dim) on GPU and falls back to MiniLM (384-dim) on CPU — previously the 1024-dim path would crash with "expected 384 dimensions, not 1024".
+
+### Tests
+
+- **3 new tests** in `tests/test_thought_chains.py::TestAddThought`:
+  - `test_embedding_truncates_to_384_when_model_returns_1024`: regression test for the GPU/1024-dim path.
+  - `test_embedding_pads_to_384_when_model_returns_smaller`: edge case for sub-384-dim models.
+  - `test_add_thought_binds_embedding_as_list_not_string`: **the key regression test** — mocks `generate_embedding`, captures the actual argument passed to `conn.fetchrow`, and asserts it's a Python `list[float]`, not a string. Catches any future re-introduction of the stringification bug.
+- Total: **766 passing tests** (was 763 in v0.7.0). ruff + mypy clean.
+
+### Notes
+
+- This was a HIGH-priority fix: `add_thought` is a required step in the Boomerang Protocol (step 2: Thought Chains). Without this fix, every orchestrator session that tried to plan complex work hit the bug.
+- The Boomerang Protocol step 2 (Thought Chains) is now fully functional over MCP stdio.
+
 ## [0.7.0] - 2026-06-02
 
 ### Features

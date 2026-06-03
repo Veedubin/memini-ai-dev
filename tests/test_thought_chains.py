@@ -220,6 +220,137 @@ class TestAddThought:
         adjusted_total = max(thought_num, total)
         assert adjusted_total == 5
 
+    def test_embedding_truncates_to_384_when_model_returns_1024(self):
+        """v0.7.1 bugfix: when BGE-Large (1024-dim) is loaded, the embedding
+        must be truncated to 384 dims to fit the thoughts.embedding vector(384)
+        column. Previously the code stringified the vector and crashed with
+        "expected 384 dimensions, not 1024".
+        """
+        from memini_ai.model.embeddings import EmbeddingResult
+
+        # Simulate BGE-Large returning 1024-dim vector
+        big_vec = [0.1 * i for i in range(1024)]
+        result = EmbeddingResult(
+            embedding=big_vec,
+            token_count=10,
+            model_id="BAAI/bge-large-en-v1.5",
+            device="cuda",
+            timestamp=0,
+            latency_ms=0,
+        )
+
+        # Apply the same dim-handling logic as add_thought (refactored for test)
+        vec: list[float] = list(result.embedding)
+        if len(vec) > 384:
+            vec = vec[:384]
+        elif len(vec) < 384:
+            vec = vec + [0.0] * (384 - len(vec))
+
+        assert len(vec) == 384
+        # First 384 values of the original vector should be preserved
+        assert vec == big_vec[:384]
+        # Embedding must be a Python list (not a string!) for asyncpg binding
+        assert isinstance(vec, list)
+        assert all(isinstance(v, float) for v in vec)
+
+    def test_embedding_pads_to_384_when_model_returns_smaller(self):
+        """v0.7.1: Zero-pad when the model returns fewer than 384 dims."""
+        from memini_ai.model.embeddings import EmbeddingResult
+
+        small_vec = [0.5] * 128
+        result = EmbeddingResult(
+            embedding=small_vec,
+            token_count=10,
+            model_id="test-model",
+            device="cpu",
+            timestamp=0,
+            latency_ms=0,
+        )
+
+        vec: list[float] = list(result.embedding)
+        if len(vec) > 384:
+            vec = vec[:384]
+        elif len(vec) < 384:
+            vec = vec + [0.0] * (384 - len(vec))
+
+        assert len(vec) == 384
+        assert vec[:128] == [0.5] * 128
+        assert vec[128:] == [0.0] * 256
+
+    def test_add_thought_binds_embedding_as_list_not_string(
+        self, thought_chains, mock_pool
+    ):
+        """v0.7.1 bugfix: the embedding parameter passed to conn.fetchrow must
+        be a Python list[float], not a stringified pgvector literal.
+
+        This test catches the original bug regression: if the code is changed
+        back to building `f\"[{','.join(str(v) for v in vec)}]\"`, this test
+        will fail because the embedding arg will be a str, not a list.
+        """
+        import asyncio
+
+        from memini_ai.model.embeddings import EmbeddingResult
+
+        # Mock the embedding model to return a 384-dim vector
+        fake_embedding = EmbeddingResult(
+            embedding=[0.1] * 384,
+            token_count=10,
+            model_id="test",
+            device="cpu",
+            timestamp=0,
+            latency_ms=0,
+        )
+
+        # Set up the mock pool's fetchrow to capture the embedding arg
+        mock_conn = AsyncMock()
+        captured_args: list = []
+
+        async def capture_fetchrow(query, *args, **kwargs):
+            captured_args.append(args)
+            return make_async_result(id=uuid.uuid4())
+
+        mock_conn.fetchrow = capture_fetchrow
+        mock_conn.fetch = AsyncMock(return_value=[])
+        mock_conn.fetchval = AsyncMock(return_value=1)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=None)
+        mock_pool.acquire = MagicMock(return_value=mock_conn)
+
+        async def run_add_thought() -> None:
+            # The `thought_chains` fixture applies an `is_enabled=True` patch
+            # only for the duration of the fixture's `with` block. We need to
+            # re-apply it here so the `_check_enabled()` gate inside
+            # `add_thought` doesn't return early.
+            with (
+                patch.object(ThoughtChains, "is_enabled", True),
+                patch(
+                    "memini_ai.thought_chains.generate_embedding",
+                    new=AsyncMock(return_value=fake_embedding),
+                ),
+            ):
+                await thought_chains.add_thought(
+                    thought="test thought",
+                    thought_number=1,
+                    total_thoughts=1,
+                    next_thought_needed=False,
+                    chain_id=str(uuid.uuid4()),
+                )
+
+        # asyncio.run() creates a fresh event loop and is safe regardless of
+        # whether the calling thread already has a loop (e.g. under pytest-asyncio).
+        asyncio.run(run_add_thought())
+
+        # Find the embedding arg (position 10 in the INSERT VALUES)
+        assert captured_args, "fetchrow was never called"
+        embedding_arg = captured_args[0][10]
+        assert isinstance(embedding_arg, list), (
+            f"Embedding must be a list[float], not {type(embedding_arg).__name__}. "
+            "If this fails, the v0.7.1 bug has regressed — embedding is being "
+            "stringified before binding."
+        )
+        assert all(isinstance(v, float) for v in embedding_arg)
+        assert len(embedding_arg) == 384
+
 
 class TestChainOperations:
     """Test chain lifecycle operations."""

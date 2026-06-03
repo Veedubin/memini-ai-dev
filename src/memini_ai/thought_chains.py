@@ -493,12 +493,34 @@ class ThoughtChains:
                 return chain_result
             chain_id = chain_result["chain_id"]
 
-        # Generate embedding for the thought text
-        embedding = None
+        # Generate embedding for the thought text.
+        # IMPORTANT (v0.7.1 bugfix): Pass a Python list[float] directly to asyncpg.
+        # Earlier versions stringified the vector to a pgvector literal (e.g.
+        # `"[0.1,0.2,...]"`) and passed it to `$N::vector`, which asyncpg could
+        # not bind correctly — it threw
+        # "expected 384 dimensions, not 1024" / "could not convert string to
+        # float" errors at runtime. Passing the raw list lets the registered
+        # pgvector codec (see `register_vector` in `postgres/database.py`) do
+        # the binding, matching how `memory.add` already does it.
+        #
+        # Also handle the dimension-mismatch case: the thoughts table column is
+        # hardcoded to `vector(384)` (see `postgres/schema.py`), but the
+        # embedding model may return 1024-dim BGE-Large vectors if a GPU is
+        # available (ModelManager prefers BGE-Large on CUDA). In that case we
+        # truncate to the first 384 dims to avoid a `expected 384 dimensions,
+        # not 1024` Postgres error. (An ideal long-term fix is to widen the
+        # column to `vector` and store whatever dim the model emits, but that
+        # requires a migration and an HNSW re-index.)
+        embedding: list[float] | None = None
         try:
             embedding_result = await generate_embedding(thought)
-            embedding_str = ",".join(str(v) for v in embedding_result.embedding)
-            embedding = f"[{embedding_str}]"  # pgvector format
+            vec: list[float] = list(embedding_result.embedding)
+            # Truncate or zero-pad to 384 dims to match the column.
+            if len(vec) > 384:
+                vec = vec[:384]
+            elif len(vec) < 384:
+                vec = vec + [0.0] * (384 - len(vec))
+            embedding = vec
         except Exception as e:
             logger.warning("thought_embedding_failed", error=str(e))
 
@@ -571,7 +593,7 @@ class ThoughtChains:
                 "next_thought_needed, is_revision, revises_thought_id, "
                 "branch_from_thought_id, branch_id, embedding, content_hash, memory_id) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, "
-                "$11::vector, $12, $13) "
+                "$11, $12, $13) "  # $11 binds list[float] via pgvector codec (v0.7.1 fix)
                 "RETURNING id",
                 uuid.UUID(thought_id),
                 uuid.UUID(chain_id),
@@ -583,7 +605,7 @@ class ThoughtChains:
                 revises_thought_id,
                 branch_from_thought_id,
                 branch_id,
-                embedding,  # Pass as string for pgvector
+                embedding,
                 content_hash,
                 uuid.UUID(memory_id) if memory_id else None,
             )
@@ -786,11 +808,18 @@ class ThoughtChains:
         if table_error:
             return table_error
 
-        # Generate embedding for the query
+        # Generate embedding for the query.
+        # (v0.7.1 fix: was building a stringified pgvector literal, which
+        # asyncpg could not bind correctly. Pass list[float] directly so the
+        # registered pgvector codec handles the binding.)
         try:
             embedding_result = await generate_embedding(query)
-            embedding_str = ",".join(str(v) for v in embedding_result.embedding)
-            embedding_pg = f"[{embedding_str}]"
+            query_vec: list[float] = list(embedding_result.embedding)
+            if len(query_vec) > 384:
+                query_vec = query_vec[:384]
+            elif len(query_vec) < 384:
+                query_vec = query_vec + [0.0] * (384 - len(query_vec))
+            embedding_pg = query_vec
         except Exception as e:
             logger.error("thought_search_embedding_failed", error=str(e))
             return {
