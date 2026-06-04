@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-06-04
+
+### Notes
+
+- **Patch release with no code changes.** The v0.7.1 source is unchanged. This release exists to (a) record the Session 10 health-check verification for downstream PyPI consumers, and (b) provide a versioned checkpoint paired with the `@veedubin/boomerang-v3@0.5.3` release that ships the corresponding `opencode.json` config fix.
+- **Verified state (Session 10, 2026-06-04)**:
+  - 206 memories at 384-dim in `memories` table, schema intact, zero data loss since v0.7.0
+  - 71 thoughts at 384-dim, `thought_chains` + `thoughts` tables healthy
+  - `memories_1024` table exists (per v0.7.0 migration), empty (0 elevated memories)
+  - `get_status` MCP tool reports `memoryReady: true` after first lazy-init tool call
+  - In-process E2E: `MCPServer` construction + `query_memories` + `get_status` all green
+  - `pip install -e .` install flow is unchanged
+- **Corrected a stale Session 9 diagnosis.** Session 9's HANDOFF note "memory server is currently broken (vector dim 1024 vs 384 mismatch from v0.7.0 dual-model)" was incorrect. The memory server works fine. `get_status` reports `memoryReady: false` only because it does not trigger lazy init — every other MCP tool (`query_memories`, `add_memory`, etc.) lazy-inits `_memory_system` on first call via `await self._init_memory_system()`. After one tool call, `memoryReady` flips to `true`. The dual-model RRF code handles both `cpu` and `auto` modes correctly via the `EMBEDDING_MODE` env.
+- **Companion release**: `@veedubin/boomerang-v3@0.5.3` ships the same `minimax-m3` model-registration fix in the published npm `opencode.json` (see the Boomerang-v3 CHANGELOG for that release). Both fixes address the same root cause: a missing model key in the project config triggered `ProviderModelNotFoundError` on every `boomerang` (primary orchestrator) task dispatch.
+
+### Quality Gates
+
+- `uv run ruff check src/ tests/` → 0 errors
+- `uv run mypy src/` → 0 errors
+- `uv run pytest tests/ --ignore=tests/test_postgres_database.py` → 766 passing (unchanged from v0.7.1)
+- In-process E2E (MCPServer init + query_memories + get_status) → green
+
 ## [0.7.1] - 2026-06-03
 
 ### Bug Fixes
