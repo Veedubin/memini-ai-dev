@@ -37,6 +37,14 @@ class ModelManager:
 
     Reference counting tracks model lifecycle. Model loads on first acquire().
     Falls back from BGE-Large on CUDA to MiniLM on CPU if GPU unavailable.
+
+    Model selection is constrained by config.embedding_dim to prevent
+    dimension mismatches with the database vector column:
+      - embedding_dim=384  → MiniLM (384-dim) only
+      - embedding_dim=1024 → BGE-Large (1024-dim) only
+      - other values       → RuntimeError at model load time
+
+    This ensures MEMINI_EMBEDDING_DIM is authoritative, not decorative.
     """
 
     _instance: ModelManager | None = None
@@ -49,6 +57,10 @@ class ModelManager:
         self._device = _config.device
         self._precision = _config.precision
         self._use_gpu = _config.use_gpu
+        # Bug 1 fix: ModelManager now reads config.embedding_dim to constrain
+        # model selection. Without this, MEMINI_EMBEDDING_DIM was a no-op and
+        # the 1024-dim BGE-Large model could be selected for a 384-dim DB.
+        self._embedding_dim: int = _config.embedding_dim
         self._ref_count = 0
         self._dimensions: int | None = None
 
@@ -87,53 +99,79 @@ class ModelManager:
             self.unload()
 
     async def _load_model(self) -> None:
-        """Load the appropriate model based on GPU availability.
+        """Load the appropriate model based on config.embedding_dim and GPU.
 
-        Tries BGE-Large on CUDA first, falls back to MiniLM on CPU.
+        Model selection is constrained by config.embedding_dim (Approach A):
+          - embedding_dim=384  → MiniLM only (GPU or CPU)
+          - embedding_dim=1024 → BGE-Large only (GPU or CPU)
+          - other values       → RuntimeError
+
+        This prevents the 1024-dim BGE-Large model from being loaded when
+        the database schema expects vector(384), which caused INSERT errors.
         """
         # Import here to avoid heavy import at module load time
         from sentence_transformers import SentenceTransformer
 
-        # Check GPU availability
-        if self._should_use_gpu():
-            gpu_available = self._check_cuda_available()
+        # Bug 1 fix: Constrain model selection by embedding_dim.
+        # MEMINI_EMBEDDING_DIM is now authoritative, not decorative.
+        if self._embedding_dim == MINILM_DIM:
+            # 384-dim: always use MiniLM, regardless of GPU availability
+            model_id = MINILM_MODEL_ID
+            model_dim = MINILM_DIM
+            device = (
+                "cuda"
+                if (self._should_use_gpu() and self._check_cuda_available())
+                else "cpu"
+            )
+        elif self._embedding_dim == BGE_LARGE_DIM:
+            # 1024-dim: always use BGE-Large, regardless of GPU availability
+            model_id = BGE_LARGE_MODEL_ID
+            model_dim = BGE_LARGE_DIM
+            # Prefer GPU if available, but BGE-Large on CPU is valid
+            device = (
+                "cuda"
+                if (self._should_use_gpu() and self._check_cuda_available())
+                else "cpu"
+            )
         else:
-            gpu_available = False
+            raise RuntimeError(
+                f"Unsupported embedding_dim={self._embedding_dim}. "
+                f"Must be {MINILM_DIM} (MiniLM) or {BGE_LARGE_DIM} (BGE-Large). "
+                f"Set MEMINI_EMBEDDING_DIM accordingly."
+            )
 
-        if gpu_available:
-            # Try BGE-Large on GPU
-            try:
-                self._model = await asyncio.to_thread(
-                    SentenceTransformer,
-                    BGE_LARGE_MODEL_ID,
-                    device="cuda",
-                    cache_folder=self._get_cache_folder(),
-                )
-                self._model_id = BGE_LARGE_MODEL_ID
-                self._dimensions = BGE_LARGE_DIM
-                return
-            except Exception:
-                # Fall through to MiniLM fallback
-                pass
-
-        # Fallback to MiniLM on CPU
         try:
             self._model = await asyncio.to_thread(
                 SentenceTransformer,
-                MINILM_MODEL_ID,
-                device="cpu",
+                model_id,
+                device=device,
                 cache_folder=self._get_cache_folder(),
             )
-            self._model_id = MINILM_MODEL_ID
-            self._dimensions = MINILM_DIM
-            return
+            self._model_id = model_id
+            self._dimensions = model_dim
         except Exception as e:
             raise RuntimeError(
-                "Failed to load embedding model. "
-                "Please check your internet connection and try again. "
-                "To download models manually, visit: "
-                "https://www.sbert.net/examples/applications/model-download/"
+                f"Failed to load embedding model '{model_id}' on {device}. "
+                f"Please check your internet connection and try again. "
+                f"To download models manually, visit: "
+                f"https://www.sbert.net/examples/applications/model-download/"
             ) from e
+
+        # Bug 3 fix: Defense-in-depth assertion that the loaded model's
+        # actual output dimension matches config.embedding_dim. This catches
+        # mismatches even if the selection logic above is bypassed somehow.
+        assert self._model is not None  # Guaranteed by try block above
+        actual_dim = self._model.get_sentence_embedding_dimension()
+        if actual_dim != self._embedding_dim:
+            self._model = None
+            self._model_id = None
+            self._dimensions = None
+            raise RuntimeError(
+                f"Model dimension mismatch: model '{model_id}' produces "
+                f"{actual_dim}-dim vectors but config.embedding_dim={self._embedding_dim}. "
+                f"This is a configuration error — set MEMINI_EMBEDDING_DIM={actual_dim} "
+                f"or choose a model that produces {self._embedding_dim}-dim vectors."
+            )
 
     def _should_use_gpu(self) -> bool:
         """Determine if GPU should be used based on config."""
@@ -143,11 +181,16 @@ class ModelManager:
         return device not in ("cpu", "false", "no", "0")
 
     def _check_cuda_available(self) -> bool:
-        """Check if CUDA is available via torch."""
-        try:
-            import torch  # noqa: F401
+        """Check if CUDA is actually available via torch.
 
-            return True
+        Bug 2 fix: Previous implementation just checked `import torch` which
+        returned True even on CPU-only machines. Now checks both
+        torch.cuda.is_available() AND torch.cuda.device_count() > 0.
+        """
+        try:
+            import torch
+
+            return bool(torch.cuda.is_available() and torch.cuda.device_count() > 0)
         except Exception:
             return False
 
