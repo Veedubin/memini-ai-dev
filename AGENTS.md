@@ -1,5 +1,24 @@
 # Memini-ai Agent Context
 
+## Provider Configuration (Ollama Cloud & Alternatives)
+
+All projects in this workspace ship with **Ollama Cloud** as the default
+LLM provider. To switch to a different provider — local Ollama, Docker
+Model Runner, OpenAI, Anthropic, Google, OpenRouter, or any
+OpenAI-compatible endpoint — see:
+
+> **`~/Projects/MCP-Servers/docs/providers.md`** — the canonical
+> provider-switching guide. Covers 5 recipes (local Ollama, Docker
+> Model Runner, the Big Three, OpenRouter, custom endpoints), a
+> quick-reference for just changing which Ollama Cloud model each
+> agent uses, a 6-step migration checklist, and a troubleshooting
+> table for the common `ProviderModelNotFoundError`,
+> `Provider not found`, and `401 Unauthorized` errors.
+
+If you only want to swap which model each agent uses (and the model
+already exists in `provider.ollama.models`), the guide shows a `sed`
+one-liner that does it in seconds.
+
 ## ⚡ CRITICAL: memini-ai Memory Protocol (MUST FOLLOW)
 
 All agents **MUST** interact with memini-ai at every step:
@@ -8,7 +27,6 @@ All agents **MUST** interact with memini-ai at every step:
 3. **Preserve CONTEXT** — Save important context; query it back when continuing work
 
 Failure to use memini-ai causes context loss, duplicate work, and wasted tokens.
-
 
 ## Project-Specific Context
 This is memini-ai-dev — a Python-based semantic memory server with PostgreSQL/pgvector backend. Key facts:
