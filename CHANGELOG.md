@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-07-06
+
+### Bug Fixes
+
+- **`query_memories` returned 0 results for all natural-language queries in the 0.4-0.7 cosine-similarity range.** Symptom (reported 2026-07-06 by the boomerang orchestrator after a diagnostic writeup): every `query_memories` call returned `{"count": 0, "memories": []}` even right after a successful `add_memory`. The write path was healthy (data was persisting correctly — verified via direct SQL), but the read path silently filtered out legitimate matches.
+  - **Root cause (Bug A)**: `SearchOptions.threshold` default of `0.72` (`src/memini_ai/memory/schema.py:324`) is unrealistically tight for MiniLM-L6-v2 384-dim cosine similarity. Real-world similarity for natural-language queries against semantically related stored memories typically lands in 0.4-0.7 (distance 0.3-0.6). The 0.72 threshold (distance < 0.28) filters out the vast majority of legitimate matches. **Fix**: lowered the default to `0.0` (no SQL-side filtering; ranking is the responsibility of RRF/score-based top-K, not the SQL `<` clause). Docstring updated to explain the cosine-similarity range and the caller's option to pass a higher value.
+  - **Root cause (Bug B)**: `_query_dual_model_rrf` in `src/memini_ai/memory/system.py:456-460` was building the 384-side `SearchOptions` WITHOUT propagating the caller's `threshold` and `exact_search` flags. So even if the caller passed a permissive threshold, auto-mode RRF silently used the (now-fixed) 0.72 default. **Fix**: pass `threshold=options.threshold` and `exact_search=options.exact_search` through to the 384-side `SearchOptions`.
+
+### Added (Observability)
+
+- **`get_status` now reports actual row counts**: `memoryCount` (from `_db.count_memories()`) and `thoughtsCount` (from new `_db.count_thoughts()`) are included in the response, plus a `queryLatencyMs` for the count probe. A `memoryCount: 0` with `memoryReady: true` is a contradiction the agent can now detect from within the protocol — addresses Priority-0 recommendation #2 in the 2026-07-06 diagnostic writeup.
+- **New `count_thoughts()` helpers** added to `postgres/database.py`, `memory/database.py` (abstract), and `memory/system.py` (wrapper). Best-effort — backends that don't implement it return 0.
+- **Post-write read-back in `add_memory`**: after a successful write, the handler calls `get_memory(memory_id)` to confirm the row is retrievable. If the read-back returns `None`, the response is `{"success": false, "error": "post_write_readback_failed", ...}` instead of falsely claiming success. Audit log includes `readback_verified: True`. Addresses Priority-0 recommendation #1 in the 2026-07-06 diagnostic writeup.
+- **New `healthcheck` MCP tool**: writes a known marker memory, immediately reads it back, returns `{"status": "pass"|"fail", "memoryId": ..., "writeLatencyMs": ..., "readLatencyMs": ..., "readbackMatch": bool, "error": str|None}`. Audit-logs critical on failure. Lets the agent (and any future startup probe) verify end-to-end storage + read-path health with a single call. Addresses Priority-1 recommendation #3 in the 2026-07-06 diagnostic writeup.
+
+### Tests
+
+- **5 new regression tests** (total: 777 passing, was 766 → +11 net after adjusting for the threshold-default change that obsoleted one assertion):
+  - `tests/test_dual_model.py::test_rrf_propagates_threshold_to_384_side` — **the key regression test for Bug B** — patches the search layer to capture the inner `SearchOptions`, asserts the caller's `threshold=0.5` and `exact_search=True` reach the 384-side.
+  - `tests/test_dual_model.py::test_default_search_options_threshold_is_zero` — regression test for Bug A.
+  - `tests/test_server.py::test_add_memory_post_write_readback_failure` — mock `get_memory` returns `None`, assert handler returns `success=False, error="post_write_readback_failed"`.
+  - `tests/test_server.py::test_get_status_includes_row_counts` — assert `memoryCount` and `thoughtsCount` are non-negative ints.
+  - `tests/test_server.py::test_get_status_count_failure_does_not_break` — count probe errors must not crash the whole status call.
+  - `tests/test_server.py::TestHealthcheck::test_healthcheck_pass` and `test_healthcheck_fail_on_readback_mismatch` — pass/fail paths for the new healthcheck tool.
+
+### Quality Gates
+
+- `ruff check src/ tests/` → 0 errors
+- `mypy src/` → 0 errors (53 source files)
+- `pytest tests/ --ignore=tests/test_postgres_database.py` → **777 passing** (was 766, +11 net). 4 pre-existing env-var-pollution failures (`MEMINI_PROJECT_ID` and `THOUGHT_CHAINS` set in the active shell) — NOT caused by this change, present on `main` before the fix.
+- In-process E2E: `query_memories("Inversion Audit Program Wave 0 1 COMPLETE", VECTOR_ONLY)` now returns 5 results (was 0 pre-fix). `auto/TIERED` mode also returns 5. Verified against the live `postgres` database (627+ memories at 384-dim, zero data loss).
+
+### Notes
+
+- **The original diagnostic writeup's "writes are silently dropped" conclusion was incorrect at the storage layer.** The exact UUIDs from the report (`5417cb0c-5bf9-4b07-a493-7ee08b6909ba`, `50e696d9-4fc8-4083-baef-79c937c594de`, `da2fab50-...`, `599da157-...`) are present in the live `postgres` database, with valid 384-dim embeddings and the exact reported text. The bug was purely on the read path. The 2026-06-11 review-note claim "memini-ai is offline" is also stale — the `memini-postgres` container has been up and healthy for 13+ hours as of 2026-07-06. The `memini` database (a separate, empty DB) is NOT the active one; the active DB is `postgres` (per `MEMINI_DB_URL=postgresql://postgres:password@localhost:5434/postgres` in `.env` and the `memini-ai-dev` MCP server config).
+- **Why the threshold default was 0.72 historically**: the original spec treated 0.72 as "the cosine similarity floor for relevant results" (a heuristic from a different embedding model). MiniLM-L6-v2's actual similarity distribution is shifted lower, so the heuristic was too strict. v0.7.3 makes the default permissive (0.0) and lets the caller opt into stricter filtering when they need it. The RRF re-ranking handles top-K selection correctly without an SQL-side filter.
+
 ## [0.7.2] - 2026-06-04
 
 ### Notes

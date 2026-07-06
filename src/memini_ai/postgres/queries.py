@@ -578,6 +578,11 @@ LIMIT $2
 COUNT_MEMORIES_1024 = """
 SELECT COUNT(*) AS count FROM memories_1024
 """
+
+# Count total thoughts (for get_status health reporting).
+COUNT_THOUGHTS = """
+SELECT COUNT(*) AS count FROM thoughts
+"""
 # Delete the 1024-dim sidecar for a specific memory. Idempotent — no error if
 # the memory was never elevated. Returns the memory_id that was deleted (or NULL).
 DELETE_MEMORY_1024_BY_MEMORY_ID = """

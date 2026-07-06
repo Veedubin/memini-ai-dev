@@ -14,6 +14,7 @@ Covers:
 - Trust boost in elevate_memory_to_1024 is clamped to [0, 1]
 - elevate tool gate: refuses in non-auto mode
 - elevate tool gate: refuses when ELEVATE_ENABLED=false
+- v0.7.3: RRF propagates caller threshold + exact_search to 384 side
 """
 
 from __future__ import annotations
@@ -23,7 +24,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from memini_ai.config import MeminiConfig
-from memini_ai.memory.schema import MemoryEntry, MemorySourceType
+from memini_ai.memory.schema import (
+    MemoryEntry,
+    MemorySourceType,
+    SearchOptions,
+    SearchStrategy,
+)
 from memini_ai.memory.system import MemorySystem, MemorySystemConfig
 
 
@@ -187,3 +193,68 @@ def test_rrf_k_clamped_by_config_validator(
     monkeypatch.setenv("RRF_K", "60")
     cfg_default = MeminiConfig()
     assert cfg_default.rrf_k == 60
+
+
+def test_rrf_propagates_threshold_to_384_side(
+    memory_system: MemorySystem,
+) -> None:
+    """Regression test for v0.7.3 Bug B: _query_dual_model_rrf must pass
+    the caller's threshold and exact_search through to the 384-side
+    SearchOptions. Previously it built the 384-side options with only
+    topK/strategy/filter, silently using the SearchOptions default
+    threshold (0.72 pre-fix), which filtered out most legitimate matches.
+    """
+    import asyncio
+    from unittest.mock import MagicMock
+
+    # Patch the search layer's vector_only_search to capture the options.
+    captured: dict[str, object] = {}
+
+    async def fake_vector_only(
+        question: str, options: SearchOptions, **kwargs: object
+    ) -> list[MemoryEntry]:
+        captured["threshold"] = options.threshold
+        captured["exact_search"] = options.exact_search
+        return []
+
+    async def fake_query_1024(
+        vector: list[float], threshold: float, limit: int
+    ) -> list[MemoryEntry]:
+        return []
+
+    memory_system._search.vector_only_search = fake_vector_only  # type: ignore[method-assign]
+    memory_system._db.query_memories_1024 = fake_query_1024  # type: ignore[method-assign]
+
+    # The fix: 1024 expansion is also needed for the RRF path to take
+    # the dual-mode branch (not the 384-only fallback).
+    memory_system._db._expand_384_to_1024 = MagicMock(  # type: ignore[method-assign]
+        return_value=[0.0] * 1024
+    )
+
+    caller_options = SearchOptions(
+        topK=5,
+        strategy=SearchStrategy.TIERED,
+        threshold=0.5,
+        exact_search=True,
+    )
+    asyncio.run(memory_system.query_memories("hello world", caller_options))
+
+    assert captured.get("threshold") == 0.5, (
+        f"RRF should propagate caller threshold to 384-side; got "
+        f"{captured.get('threshold')}"
+    )
+    assert captured.get("exact_search") is True, (
+        f"RRF should propagate exact_search flag to 384-side; got "
+        f"{captured.get('exact_search')}"
+    )
+
+
+def test_default_search_options_threshold_is_zero() -> None:
+    """Regression test for v0.7.3 Bug A: SearchOptions.threshold default
+    must be 0.0 (no SQL-side filtering). The previous default of 0.72
+    silently filtered out most legitimate MiniLM-L6-v2 matches because
+    real-world cosine similarity for natural-language queries against
+    stored memories commonly lands in 0.4-0.7.
+    """
+    options = SearchOptions()
+    assert options.threshold == 0.0

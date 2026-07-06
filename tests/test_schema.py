@@ -196,7 +196,12 @@ class TestSearchOptions:
         options = SearchOptions()
         assert options.top_k == 5
         assert options.strategy == SearchStrategy.TIERED
-        assert options.threshold == 0.72
+        # v0.7.3: default threshold lowered from 0.72 to 0.0 — the
+        # SQL-side cosine filter at 0.72 was rejecting most legitimate
+        # semantic matches (MiniLM-L6-v2 similarities land in 0.4-0.7).
+        # Ranking is now handled by RRF / parallel_search, and the
+        # threshold is only an opt-in hard cutoff.
+        assert options.threshold == 0.0
         assert options.filter is not None
         assert options.filter.source_type is None
 

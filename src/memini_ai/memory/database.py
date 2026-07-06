@@ -173,6 +173,15 @@ class VectorDatabase(ABC):
         ...
 
     @abstractmethod
+    async def count_thoughts(self) -> int:
+        """Count total thoughts in the thoughts table.
+
+        Returns:
+            Number of thought rows.
+        """
+        ...
+
+    @abstractmethod
     async def content_exists(self, content_hash: str) -> bool:
         """Check if content with given hash exists.
 

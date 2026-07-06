@@ -108,6 +108,8 @@ class MCPServer:
         self._mcp.add_tool(self.index_project)
         self._mcp.add_tool(self.get_file_contents)
         self._mcp.add_tool(self.get_status)
+        # v0.7.3: end-to-end write+read health probe
+        self._mcp.add_tool(self.healthcheck)
         self._mcp.add_tool(self.get_trust_score)
         self._mcp.add_tool(self.adjust_trust)
         self._mcp.add_tool(self.list_archived)
@@ -442,6 +444,36 @@ class MCPServer:
                 self._memory_system.add_memory(entry), timeout=OPERATION_TIMEOUT
             )
 
+            # Phase 2.3 (v0.7.3): Post-write read-back verification.
+            # Confirms the write is actually retrievable via the read
+            # path. If get_memory returns None, the write was silently
+            # lost (or the read path is broken) — surface it to the
+            # caller instead of claiming success.
+            try:
+                verified = await asyncio.wait_for(
+                    self._memory_system.get_memory(memory_id),
+                    timeout=OPERATION_TIMEOUT,
+                )
+            except Exception as e:
+                logger.error(
+                    "add_memory_post_write_readback_failed",
+                    memory_id=memory_id,
+                    error=str(e),
+                )
+                verified = None
+
+            if verified is None:
+                logger.error(
+                    "add_memory_post_write_readback_failed",
+                    memory_id=memory_id,
+                )
+                return {
+                    "success": False,
+                    "id": memory_id,
+                    "message": "Write succeeded but read-back failed",
+                    "error": "post_write_readback_failed",
+                }
+
             # Phase 2.3: Audit log for memory mutation
             if self._audit_logger is not None:
                 self._audit_logger.log(
@@ -454,6 +486,7 @@ class MCPServer:
                         "source_type": sourceType,
                         "content_length": len(content),
                         "supersedes_id": supersedesId,
+                        "readback_verified": True,
                     },
                 )
 
@@ -759,6 +792,42 @@ class MCPServer:
         if self._memory_system is not None:
             memory_ready = self._memory_system.is_ready
 
+        # Best-effort row counts for observability (v0.7.3).
+        memory_count = 0
+        thoughts_count = 0
+        query_latency_ms: float | None = None
+        if memory_ready and self._memory_system is not None:
+            try:
+                import time
+
+                t0 = time.monotonic()
+                memory_count = await asyncio.wait_for(
+                    self._memory_system._db.count_memories(),
+                    timeout=OPERATION_TIMEOUT,
+                )
+                # count_thoughts is best-effort — may not be implemented
+                # on all backends.
+                count_thoughts_fn = getattr(
+                    self._memory_system._db, "count_thoughts", None
+                )
+                if count_thoughts_fn is not None and asyncio.iscoroutinefunction(
+                    count_thoughts_fn
+                ):
+                    try:
+                        thoughts_count = await asyncio.wait_for(
+                            count_thoughts_fn(), timeout=OPERATION_TIMEOUT
+                        )
+                    except Exception:
+                        thoughts_count = 0
+                query_latency_ms = round((time.monotonic() - t0) * 1000.0, 2)
+            except Exception as e:
+                logger.warning(
+                    "get_status_count_failed",
+                    error=str(e),
+                )
+                memory_count = 0
+                thoughts_count = 0
+
         # Check model (always ready if we got here)
         model_ready = True
         try:
@@ -828,8 +897,97 @@ class MCPServer:
             "multiPeerReady": multi_peer_ready,
             "dialecticReady": dialectic_ready,
             "thoughtChainsReady": thought_chains_ready,
+            "memoryCount": memory_count,
+            "thoughtsCount": thoughts_count,
+            "queryLatencyMs": query_latency_ms,
             "initError": self._init_error,
         }
+
+    # =========================================================================
+    # TOOL: healthcheck  (v0.7.3)
+    # =========================================================================
+    async def healthcheck(self) -> dict[str, Any]:
+        """End-to-end write + read health probe.
+
+        Writes a marker memory, immediately reads it back, and reports
+        whether the round-trip succeeded along with latency metrics.
+        Use this to verify the memory subsystem is wired correctly
+        (storage + read path) without running a real semantic query.
+
+        Returns:
+            Dictionary with ``status`` ("pass" | "fail"), ``memoryId``,
+            ``writeLatencyMs``, ``readLatencyMs``, ``readbackMatch``,
+            and optionally ``error``.
+        """
+        marker = f"healthcheck_marker_{uuid.uuid4().hex[:8]}"
+        result: dict[str, Any] = {
+            "status": "fail",
+            "memoryId": None,
+            "writeLatencyMs": None,
+            "readLatencyMs": None,
+            "readbackMatch": False,
+            "error": None,
+        }
+
+        try:
+            if self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            # 1. Write the marker memory.
+            import time
+
+            t_write = time.monotonic()
+            entry = MemoryEntry(
+                text=marker,
+                sourceType=MemorySourceType.session,
+            )
+            entry.metadata_json = '{"type":"healthcheck_marker"}'
+            memory_id = await asyncio.wait_for(
+                self._memory_system.add_memory(entry),
+                timeout=OPERATION_TIMEOUT,
+            )
+            result["memoryId"] = memory_id
+            result["writeLatencyMs"] = round((time.monotonic() - t_write) * 1000.0, 2)
+
+            # 2. Read it back.
+            t_read = time.monotonic()
+            readback = await asyncio.wait_for(
+                self._memory_system.get_memory(memory_id),
+                timeout=OPERATION_TIMEOUT,
+            )
+            result["readLatencyMs"] = round((time.monotonic() - t_read) * 1000.0, 2)
+
+            # 3. Compare.
+            if readback is not None and getattr(readback, "text", None) == marker:
+                result["readbackMatch"] = True
+                result["status"] = "pass"
+            else:
+                result["error"] = "readback_mismatch"
+                logger.error(
+                    "healthcheck_readback_mismatch",
+                    memory_id=memory_id,
+                    marker=marker,
+                )
+        except TimeoutError:
+            result["error"] = "timeout"
+            logger.error("healthcheck_timeout")
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error("healthcheck_error", error=str(e))
+
+        # 4. Audit-log critical failures.
+        if result["status"] == "fail" and self._audit_logger is not None:
+            self._audit_logger.log(
+                "tool_invocation",
+                severity="critical",
+                tool_name="healthcheck",
+                description=f"healthcheck failed: {result['error']}",
+                details=result,
+            )
+
+        return result
 
     # =========================================================================
     # TOOL: get_trust_score

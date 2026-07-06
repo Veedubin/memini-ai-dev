@@ -315,13 +315,23 @@ class SearchStrategy(StrEnum):
 
 
 class SearchOptions(BaseModel):
-    """Options for memory search operations."""
+    """Options for memory search operations.
+
+    ``threshold`` is a cosine-similarity floor (0.0-1.0). The default is
+    0.0, which disables SQL-side filtering entirely — every row returned
+    by the vector index reaches the caller, and ranking is handled by
+    RRF (auto mode) or the single-source scorer (cpu/parallel mode).
+    Callers that want a hard cutoff can pass a higher value (e.g. 0.5)
+    to be more selective. Note that MiniLM-L6-v2 cosine similarities for
+    legitimate semantic matches commonly land in 0.4-0.7, so thresholds
+    above ~0.3 will silently filter out most real matches.
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
     top_k: int = Field(default=5, alias="topK")
     strategy: SearchStrategy = SearchStrategy.TIERED
-    threshold: float = 0.72
+    threshold: float = 0.0
     filter: SearchFilter = Field(default_factory=SearchFilter)
     exact_search: bool = False
 

@@ -33,6 +33,7 @@ from memini_ai.memory.schema import (
 )
 from memini_ai.postgres.queries import (
     COUNT_MEMORIES_1024,
+    COUNT_THOUGHTS,
     DELETE_ENTITY,
     DELETE_MEMORY,
     DELETE_MEMORY_1024_BY_MEMORY_ID,
@@ -1343,6 +1344,20 @@ class PostgresDatabase(VectorDatabase):
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(COUNT_MEMORIES_1024)
+        return int(row["count"]) if row else 0
+
+    async def count_thoughts(self) -> int:
+        """Count total thoughts in the ``thoughts`` table.
+
+        Returns:
+            Number of thought rows. Returns 0 if the table is empty or
+            the database is uninitialized.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(COUNT_THOUGHTS)
         return int(row["count"]) if row else 0
 
     async def delete_memory_1024(self, memory_id: str) -> str | None:

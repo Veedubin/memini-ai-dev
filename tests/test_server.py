@@ -23,6 +23,12 @@ def mock_memory_system() -> MagicMock:
     mock.is_initialized = True
     mock.query_memories = AsyncMock(return_value=[])
     mock.add_memory = AsyncMock(return_value="test-memory-id-123")
+    # Post-write read-back (v0.7.3): returns a truthy entry by default.
+    mock.get_memory = AsyncMock(return_value=MagicMock(id="test-memory-id-123"))
+    # _db used by get_status row-count probes (v0.7.3).
+    mock._db = MagicMock()
+    mock._db.count_memories = AsyncMock(return_value=42)
+    mock._db.count_thoughts = AsyncMock(return_value=7)
     return mock
 
 
@@ -134,6 +140,29 @@ class TestAddMemory:
         assert result["id"] == ""
         assert "already exists" in result["message"]
 
+    @pytest.mark.asyncio
+    async def test_add_memory_post_write_readback_failure(
+        self, mcp_server: MCPServer, mock_memory_system: MagicMock
+    ) -> None:
+        """Regression test for v0.7.3: when the post-write read-back returns
+        None (write succeeded but read path can't see the row), the handler
+        must surface a non-success response instead of claiming success.
+        """
+        # add_memory returns an id, but get_memory (read-back) returns None.
+        mock_memory_system.add_memory = AsyncMock(return_value="ghost-id-xyz")
+        mock_memory_system.get_memory = AsyncMock(return_value=None)
+        mcp_server._memory_system = mock_memory_system
+
+        result = await mcp_server.add_memory(
+            content="vanishing memory",
+            sourceType="session",
+        )
+
+        assert result["success"] is False
+        assert result["id"] == "ghost-id-xyz"
+        assert result["error"] == "post_write_readback_failed"
+        assert "read-back" in result["message"].lower()
+
 
 class TestSearchProject:
     """Tests for the search_project tool."""
@@ -209,6 +238,115 @@ class TestGetStatus:
         assert "modelReady" in result
         assert "indexerReady" in result
         assert "initError" in result
+
+    @pytest.mark.asyncio
+    async def test_get_status_includes_row_counts(
+        self,
+        mcp_server: MCPServer,
+        mock_memory_system: MagicMock,
+    ) -> None:
+        """Regression test for v0.7.3: get_status must surface actual row
+        counts so the agent can distinguish "table is empty" from
+        "ready but no semantic match" (a 0 count with memoryReady=True
+        is a contradiction the status must surface).
+        """
+        mcp_server._memory_system = mock_memory_system
+
+        result = await mcp_server.get_status()
+
+        assert "memoryCount" in result
+        assert "thoughtsCount" in result
+        assert isinstance(result["memoryCount"], int)
+        assert isinstance(result["thoughtsCount"], int)
+        assert result["memoryCount"] >= 0
+        assert result["thoughtsCount"] >= 0
+        # The mock fixture sets 42 / 7.
+        assert result["memoryCount"] == 42
+        assert result["thoughtsCount"] == 7
+
+    @pytest.mark.asyncio
+    async def test_get_status_count_failure_does_not_break(
+        self,
+        mcp_server: MCPServer,
+        mock_memory_system: MagicMock,
+    ) -> None:
+        """If count_memories raises, get_status must still return a valid
+        dict (with memoryCount=0) — not crash the whole status call.
+        """
+        mock_memory_system._db.count_memories = AsyncMock(
+            side_effect=RuntimeError("count failed")
+        )
+        mcp_server._memory_system = mock_memory_system
+
+        result = await mcp_server.get_status()
+
+        assert result["memoryReady"] is True
+        assert result["memoryCount"] == 0
+
+
+class TestHealthcheck:
+    """Tests for the v0.7.3 healthcheck MCP tool."""
+
+    @pytest.mark.asyncio
+    async def test_healthcheck_pass(
+        self, mcp_server: MCPServer, mock_memory_system: MagicMock
+    ) -> None:
+        """Write a marker, read it back, get a match → status=pass."""
+        # Wire the mock so add_memory returns a known id and get_memory
+        # returns a MagicMock whose .text attribute equals the marker.
+        mcp_server._memory_system = mock_memory_system
+
+        async def fake_add_memory(entry: object) -> str:
+            return "hc-id-pass-001"
+
+        async def fake_get_memory(memory_id: str) -> object:
+            # Return a MagicMock with .text matching the marker the
+            # healthcheck function wrote. We don't know the marker
+            # ahead of time, so patch the add_memory call to record it.
+            return None  # placeholder; overridden in body below
+
+        mock_memory_system.add_memory = AsyncMock(side_effect=fake_add_memory)
+        # Capture the marker passed to add_memory and have get_memory
+        # echo it back.
+        captured: dict[str, str] = {}
+
+        async def capture_add(entry: object) -> str:
+            # entry is a MemoryEntry with .text
+            captured["marker"] = entry.text  # type: ignore[attr-defined]
+            return "hc-id-pass-001"
+
+        async def echo_get(memory_id: str) -> object:
+            m = MagicMock()
+            m.text = captured["marker"]
+            return m
+
+        mock_memory_system.add_memory = AsyncMock(side_effect=capture_add)
+        mock_memory_system.get_memory = AsyncMock(side_effect=echo_get)
+
+        result = await mcp_server.healthcheck()
+
+        assert result["status"] == "pass"
+        assert result["readbackMatch"] is True
+        assert result["error"] is None
+        assert result["memoryId"] == "hc-id-pass-001"
+        assert result["writeLatencyMs"] is not None
+        assert result["readLatencyMs"] is not None
+
+    @pytest.mark.asyncio
+    async def test_healthcheck_fail_on_readback_mismatch(
+        self, mcp_server: MCPServer, mock_memory_system: MagicMock
+    ) -> None:
+        """If read-back returns None, status=fail with readback_mismatch."""
+        mcp_server._memory_system = mock_memory_system
+        mock_memory_system.add_memory = AsyncMock(return_value="hc-id-fail-001")
+        mock_memory_system.get_memory = AsyncMock(return_value=None)
+
+        result = await mcp_server.healthcheck()
+
+        assert result["status"] == "fail"
+        assert result["readbackMatch"] is False
+        assert result["error"] == "readback_mismatch"
+        assert result["memoryId"] == "hc-id-fail-001"
 
 
 class TestGracefulDegradation:

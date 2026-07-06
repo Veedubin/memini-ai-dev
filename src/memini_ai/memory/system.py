@@ -456,6 +456,8 @@ class MemorySystem:
         search_options_384 = SearchOptions(
             topK=fetch_k,
             strategy=SearchStrategy.VECTOR_ONLY,
+            threshold=options.threshold,
+            exact_search=options.exact_search,
             filter=options.filter,
         )
         results_384 = await self._search.vector_only_search(
@@ -661,8 +663,20 @@ class MemorySystem:
         dimension = self._db._dimension or 0
         collections = [f"memories_{dimension}"]
 
+        # Thought count is best-effort — not all backends implement it.
+        thought_count = 0
+        count_thoughts_fn = getattr(self._db, "count_thoughts", None)
+        if count_thoughts_fn is not None and asyncio.iscoroutinefunction(
+            count_thoughts_fn
+        ):
+            try:
+                thought_count = int(await count_thoughts_fn())
+            except Exception:
+                thought_count = 0
+
         return {
             "total_memories": count,
+            "total_thoughts": thought_count,
             "dimension": dimension,
             "collections": collections,
             "initialized": self._initialized,
@@ -683,6 +697,26 @@ class MemorySystem:
 
         content_hash = hash_content(text)
         return await self._db.content_exists(content_hash)
+
+    async def count_thoughts(self) -> int:
+        """Count total thoughts in the underlying store.
+
+        Best-effort: returns 0 if the backend does not expose
+        ``count_thoughts`` or the call raises.
+
+        Returns:
+            Number of thought rows (0 if unsupported).
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        count_thoughts = getattr(self._db, "count_thoughts", None)
+        if count_thoughts is None or not asyncio.iscoroutinefunction(count_thoughts):
+            return 0
+        try:
+            return int(await count_thoughts())
+        except Exception:
+            return 0
 
     # =============================================================================
     # TRUST ENGINE METHODS

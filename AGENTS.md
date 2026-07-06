@@ -19,6 +19,25 @@ If you only want to swap which model each agent uses (and the model
 already exists in `provider.ollama.models`), the guide shows a `sed`
 one-liner that does it in seconds.
 
+## MCP Servers
+
+This project integrates 12 MCP servers for specialized tooling. The configuration was fixed this session to ensure all 12 servers are wired in.
+
+| Server | Purpose |
+|--------|---------|
+| memini-ai-dev | Python semantic memory + knowledge graph + tiered loading (PRIMARY) |
+| markitdown | Convert files (PDF/DOCX/HTML) to Markdown |
+| duckdb | In-memory SQL via DuckDB |
+| redis | Redis key-value access on localhost |
+| playwright | Browser automation / web scraping |
+| calculator | Math evaluation |
+| prefect | Prefect workflow orchestration |
+| mlflow-mcp | MLflow experiment tracking + model registry |
+| doc2png | Document to PNG rendering |
+| github-mcp | GitHub repo/issue/PR operations (needs GH_TOKEN) |
+| videre-mcp | Vision: screenshot, OCR, image description (Florence-2 / PaddleOCR) |
+| searxng | Web search via SearXNG metasearch |
+
 ## ⚡ CRITICAL: memini-ai Memory Protocol (MUST FOLLOW)
 
 All agents **MUST** interact with memini-ai at every step:
@@ -61,8 +80,9 @@ python -m pytest tests/ -v
 | MEMINI_MULTI_PEER_ENABLED | Enable multi-peer | false |
 | MEMINI_DIALECTIC_ENABLED | Enable dialectic reasoning | false |
 | THOUGHT_CHAINS | Enable persistent thought chains | false |
-
 ## Review Notes
+
+- **2026-07-06 (Session 12)**: **v0.7.3 READ-PATH THRESHOLD BUGFIX RELEASED** ✅ — `query_memories` was returning 0 results for all natural-language queries because the default `SearchOptions.threshold = 0.72` (`src/memini_ai/memory/schema.py`) is unrealistically tight for MiniLM-L6-v2 384-dim cosine similarity (real matches land at sim 0.4-0.7, dist 0.3-0.6). Compounded by `_query_dual_model_rrf` (`src/memini_ai/memory/system.py:456-460`) NOT propagating the caller's `threshold` to the 384-side `SearchOptions`. **Fix**: lowered default to `0.0`; RRF now propagates `threshold=options.threshold` and `exact_search=options.exact_search`. **The 2026-07-06 diagnostic writeup's "writes are silently dropped" conclusion was incorrect at the storage layer** — the exact UUIDs from the report are present in the `postgres` database with valid 384-dim embeddings; the bug was purely on the read path. The 2026-06-11 "offline" review note is also stale — the `memini-postgres` container has been up 13+ hours. The active DB is `postgres` (per `MEMINI_DB_URL=postgresql://postgres:password@localhost:5434/postgres`), NOT the separate empty `memini` database. **Observability added**: `get_status` now returns `memoryCount` + `thoughtsCount` + `queryLatencyMs`. `add_memory` does a post-write read-back (returns `error="post_write_readback_failed"` if the row is gone). New `healthcheck` MCP tool (write+read round-trip with PASS/FAIL). 777 tests passing (was 766, +11), ruff+mypy clean, in-process E2E verified: `query_memories("Inversion Audit Program Wave 0 1 COMPLETE")` now returns 5 results (was 0 pre-fix). OpenCode TUI restart required to load the new code (PID of running TUI to be recorded in commit). 4 pre-existing test failures in `test_config.py` / `test_thought_chains.py` are caused by `MEMINI_PROJECT_ID=reverse_engineering` and `THOUGHT_CHAINS=true` being set in the active shell — not regressions, present on `main` before the fix.
 - **2026-06-04 (Session 11)**: **v0.7.2 PATCH METADATA RELEASED** ✅ — No code changes from v0.7.1. CHANGELOG entry documents the Session 10 health-check verification (206 memories at 384-dim, 766 tests passing, MCP server end-to-end working) and **corrects the stale Session 9 "memory server broken" diagnosis**. Companion release to `@veedubin/boomerang-v3@0.5.3` (which ships the same `minimax-m3` model-registration fix in the published npm `opencode.json`). Commit `6fda0ba` on `main`, tag `v0.7.2` (`b98ef3a`) pushed to `VeeDubin/memini-ai-dev`. Quality gates green: ruff 0, mypy 0 (53 source files), 766/766 tests pass, in-process E2E verified. CI will publish to PyPI within 2-5 min via trusted publishing. **OpenCode TUI restart still required** (3 live TUIs at PID 917732, 1160224, 1162490).
 - **2026-06-03 (Session 6)**: **v0.7.1 BUGFIX RELEASED** ✅ — `add_thought` MCP-call vector-injection error fixed. **Root cause**: `src/memini_ai/thought_chains.py::add_thought` was building a stringified pgvector literal (`f"[{','.join(str(v) for v in vec)}]"`) and passing it to asyncpg as `$11::vector`. asyncpg cannot bind a stringified literal to a `vector` type — it expects `list[float]` (handled by `pgvector.asyncpg.register_vector`). Secondary issue: 1024-dim BGE-Large model would have crashed the `vector(384)` column even with correct binding. **Fix**: pass `list[float]` directly (matches how `memory.add` does it), drop the `::vector` cast, truncate/pad to 384 dims. **3 new tests** in `tests/test_thought_chains.py::TestAddThought` including a key regression test that captures the actual arg passed to `conn.fetchrow` and asserts it's a `list`, not a `str`. **766 tests passing** (was 763, +3), ruff+mypy clean, in-process E2E verified. **Boomerang Protocol step 2 (Thought Chains) is now fully functional over MCP stdio.**
 - **2026-06-02 (Session 5)**: **v0.7.0 DUAL-MODEL RRF RELEASED** ✅ — All 15 implementation steps done in a single session (orchestrator file-level parallel edits; Task tool still blocked by cached agent configs). Commit `18f37ed` on `main`, tag `v0.7.0` pushed to `VeeDubin/memini-ai-dev`. **763 tests passing (740 baseline + 23 new), ruff + mypy clean, 83 memories preserved (zero data loss).** New: `memory/system.py` cpu/auto/gpu dispatch with defensive `asyncio.iscoroutinefunction` guards (MagicMock-safe), `_query_dual_model_rrf` and `_query_gpu_1024` private methods, deleted dead `_get_fallback_for_dimension()`. New `elevate_memory_to_1024` MCP tool (auto-mode gated at call time). 3 new test files: `test_rrf.py` (10), `test_dual_model.py` (8), `test_schema_migration.py` (5). 3 pre-existing ruff issues in `test_dialectic.py` / `test_extractor.py` / `test_input_validation.py` also cleaned up. **OpenCode restart STILL REQUIRED** for `task` dispatch to work (PID 307190 has cached `ollama-cloud/<model>:<tag>-cloud` agent config).
