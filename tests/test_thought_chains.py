@@ -221,19 +221,24 @@ class TestAddThought:
         assert adjusted_total == 5
 
     def test_embedding_truncates_to_384_when_model_returns_1024(self):
-        """v0.7.1 bugfix: when BGE-Large (1024-dim) is loaded, the embedding
-        must be truncated to 384 dims to fit the thoughts.embedding vector(384)
-        column. Previously the code stringified the vector and crashed with
+        """v0.7.1 bugfix: when a 1024-dim model (e.g. BGE-M3) is loaded, the
+        embedding must be truncated to 384 dims to fit the
+        thoughts.embedding vector(384) column. Previously the code
+        stringified the vector and crashed with
         "expected 384 dimensions, not 1024".
+
+        BGE-Large was removed in v0.7.6 — this test now simulates a generic
+        1024-dim model (the test exercises dim-handling, not the model
+        identity). BGE-M3 is the only production 1024-dim model.
         """
         from memini_ai.model.embeddings import EmbeddingResult
 
-        # Simulate BGE-Large returning 1024-dim vector
+        # Simulate a 1024-dim model returning 1024-dim vector
         big_vec = [0.1 * i for i in range(1024)]
         result = EmbeddingResult(
             embedding=big_vec,
             token_count=10,
-            model_id="BAAI/bge-large-en-v1.5",
+            model_id="BAAI/bge-m3",
             device="cuda",
             timestamp=0,
             latency_ms=0,

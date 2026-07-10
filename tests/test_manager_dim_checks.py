@@ -17,14 +17,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from memini_ai.model.manager import (
-    BGE_LARGE_DIM,
-    BGE_LARGE_MODEL_ID,
     BGE_M3_DIM,
     BGE_M3_MODEL_ID,
     MINILM_DIM,
     MINILM_MODEL_ID,
-    MODEL_COLUMNS,
-    MODEL_DIMS,
     ModelManager,
 )
 
@@ -165,7 +161,7 @@ class TestModelSelectionByName:
         """When model_name=BAAI/bge-m3 and embedding_dim=1024, BGE-M3 is loaded.
 
         This is the key regression: previously the 1024-dim branch always
-        picked BGE-Large, so BGE-M3 could never be loaded.
+        picked a fixed 1024-dim model, so BGE-M3 could never be loaded.
         """
         mock_transformer = _make_mock_transformer(BGE_M3_DIM)
 
@@ -191,35 +187,6 @@ class TestModelSelectionByName:
         mock_st.assert_called_once()
         call_args = mock_st.call_args
         assert call_args[0][0] == BGE_M3_MODEL_ID
-        ModelManager._instance = None
-
-    @pytest.mark.asyncio
-    async def test_load_model_bge_large_when_model_name_is_bge_large(self) -> None:
-        """When model_name=BAAI/bge-large-en-v1.5 and embedding_dim=1024, BGE-Large is loaded."""
-        mock_transformer = _make_mock_transformer(BGE_LARGE_DIM)
-
-        ModelManager._instance = None
-        with patch(
-            "memini_ai.model.manager.get_config",
-            return_value=_make_config_mock(
-                embedding_dim=1024,
-                use_gpu=False,
-                model_name=BGE_LARGE_MODEL_ID,
-            ),
-        ):
-            manager = ModelManager()
-
-        with patch(
-            "sentence_transformers.SentenceTransformer",
-            return_value=mock_transformer,
-        ) as mock_st:
-            await manager._load_model()
-
-        assert manager._model_id == BGE_LARGE_MODEL_ID
-        assert manager._dimensions == BGE_LARGE_DIM
-        mock_st.assert_called_once()
-        call_args = mock_st.call_args
-        assert call_args[0][0] == BGE_LARGE_MODEL_ID
         ModelManager._instance = None
 
     @pytest.mark.asyncio

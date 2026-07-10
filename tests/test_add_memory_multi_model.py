@@ -3,9 +3,14 @@
 Verifies that ``add_memory`` writes the embedding vector to the column
 matching the model's dimensionality:
 
-  * ``all-MiniLM-L6-v2``      → ``embedding``          (384-dim)
-  * ``BAAI/bge-m3``           → ``embedding_bge_m3``   (1024-dim)
-  * ``BAAI/bge-large-en-v1.5`` → ``embedding_bge_large`` (1024-dim)
+  * ``all-MiniLM-L6-v2``  → ``embedding``        (384-dim)
+  * ``BAAI/bge-m3``       → ``embedding_bge_m3`` (1024-dim)
+
+BGE-Large support was removed in v0.7.6 — only MiniLM and BGE-M3 are
+supported. The BGE-Large migration script in
+``archives/memini-embedding-migration-2026-07-10/migrate_to_bge_large.py``
+is kept as a reference example for users who want to do similar
+migrations on their own.
 
 The tests use the live PostgreSQL database at ``MEMINI_DB_URL`` (port 5434)
 and clean up after themselves by deleting the inserted rows.
@@ -20,11 +25,7 @@ import pytest
 import pytest_asyncio
 
 from memini_ai.memory.schema import MemoryEntry, MemorySourceType
-from memini_ai.model.manager import (
-    BGE_LARGE_MODEL_ID,
-    BGE_M3_MODEL_ID,
-    MINILM_MODEL_ID,
-)
+from memini_ai.model.manager import BGE_M3_MODEL_ID, MINILM_MODEL_ID
 from memini_ai.postgres.database import PostgresDatabase
 
 TEST_DB_URL = os.getenv(
@@ -74,7 +75,6 @@ class TestEntryToRecordColumnRouting:
         assert record["embedding"] == vec
         # No bge columns should be populated
         assert "embedding_bge_m3" not in record
-        assert "embedding_bge_large" not in record
 
     def test_bge_m3_writes_to_embedding_bge_m3(self) -> None:
         """BGE-M3 vectors go to the ``embedding_bge_m3`` key."""
@@ -90,23 +90,6 @@ class TestEntryToRecordColumnRouting:
         assert record["embedding_bge_m3"] == vec
         # The generic ``embedding`` key must be present (None) for compat
         assert record["embedding"] is None
-        # bge_large should NOT be populated
-        assert "embedding_bge_large" not in record
-
-    def test_bge_large_writes_to_embedding_bge_large(self) -> None:
-        """BGE-Large vectors go to the ``embedding_bge_large`` key."""
-        db = PostgresDatabase.__new__(PostgresDatabase)
-        vec = _make_vector(1024, seed=3)
-        entry = MemoryEntry(
-            text="bge-large test",
-            vector=vec,
-            embedding_model=BGE_LARGE_MODEL_ID,
-            source_type=MemorySourceType.project,
-        )
-        record = db._entry_to_record(entry)
-        assert record["embedding_bge_large"] == vec
-        assert record["embedding"] is None
-        assert "embedding_bge_m3" not in record
 
     def test_no_embedding_model_defaults_to_embedding(self) -> None:
         """When embedding_model is None, the vector goes to ``embedding``."""
@@ -153,8 +136,8 @@ class TestAddMemoryLiveDB:
         try:
             async with db._pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT embedding, embedding_bge_m3, embedding_bge_large, "
-                    "embedding_model FROM memories WHERE id = $1",
+                    "SELECT embedding, embedding_bge_m3, embedding_model "
+                    "FROM memories WHERE id = $1",
                     mem_id,
                 )
             assert row is not None, "Memory row not found after insert"
@@ -167,50 +150,8 @@ class TestAddMemoryLiveDB:
             assert row["embedding"] is None, (
                 "embedding column should be NULL for BGE-M3 entries"
             )
-            # bge_large must also be NULL
-            assert row["embedding_bge_large"] is None, (
-                "embedding_bge_large should be NULL for BGE-M3 entries"
-            )
         finally:
             # Hard-delete the test row (bypasses soft-delete)
-            async with db._pool.acquire() as conn:
-                await conn.execute("DELETE FROM memories WHERE id = $1", mem_id)
-
-    @pytest.mark.asyncio
-    async def test_bge_large_vector_lands_in_bge_large_column(
-        self, db: PostgresDatabase
-    ) -> None:
-        """BGE-Large 1024-dim vector must populate embedding_bge_large."""
-        vec = _make_vector(1024, seed=99)
-        entry = MemoryEntry(
-            text="test_bge_large_column_routing_2026_07_10",
-            vector=vec,
-            embedding_model=BGE_LARGE_MODEL_ID,
-            source_type=MemorySourceType.project,
-            source_path="multi-model-test",
-        )
-        mem_id = await db.add_memory(entry)
-        assert mem_id is not None
-
-        try:
-            async with db._pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT embedding, embedding_bge_m3, embedding_bge_large, "
-                    "embedding_model FROM memories WHERE id = $1",
-                    mem_id,
-                )
-            assert row is not None
-            assert row["embedding_model"] == BGE_LARGE_MODEL_ID
-            assert row["embedding_bge_large"] is not None, (
-                "embedding_bge_large should be populated for BGE-Large"
-            )
-            assert row["embedding"] is None, (
-                "embedding column should be NULL for BGE-Large entries"
-            )
-            assert row["embedding_bge_m3"] is None, (
-                "embedding_bge_m3 should be NULL for BGE-Large entries"
-            )
-        finally:
             async with db._pool.acquire() as conn:
                 await conn.execute("DELETE FROM memories WHERE id = $1", mem_id)
 
@@ -233,8 +174,8 @@ class TestAddMemoryLiveDB:
         try:
             async with db._pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT embedding, embedding_bge_m3, embedding_bge_large, "
-                    "embedding_model FROM memories WHERE id = $1",
+                    "SELECT embedding, embedding_bge_m3, embedding_model "
+                    "FROM memories WHERE id = $1",
                     mem_id,
                 )
             assert row is not None
@@ -243,7 +184,6 @@ class TestAddMemoryLiveDB:
                 "embedding should be populated for MiniLM"
             )
             assert row["embedding_bge_m3"] is None
-            assert row["embedding_bge_large"] is None
         finally:
             async with db._pool.acquire() as conn:
                 await conn.execute("DELETE FROM memories WHERE id = $1", mem_id)
@@ -265,8 +205,8 @@ class TestAddMemoryLiveDB:
         try:
             async with db._pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT embedding, embedding_bge_m3, embedding_bge_large, "
-                    "embedding_model FROM memories WHERE id = $1",
+                    "SELECT embedding, embedding_bge_m3, embedding_model "
+                    "FROM memories WHERE id = $1",
                     mem_id,
                 )
             assert row is not None
@@ -274,7 +214,6 @@ class TestAddMemoryLiveDB:
             assert row["embedding_model"] is None
             assert row["embedding"] is not None
             assert row["embedding_bge_m3"] is None
-            assert row["embedding_bge_large"] is None
         finally:
             async with db._pool.acquire() as conn:
                 await conn.execute("DELETE FROM memories WHERE id = $1", mem_id)

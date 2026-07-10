@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-07-10
+
+### Removed (BGE-Large support)
+
+- **BGE-Large (`BAAI/bge-large-en-v1.5`) support removed.** BGE-Large was added in v0.7.0 alongside BGE-M3 as a "high-precision 1024-dim option" but turned out not to be used in production. v0.7.6 keeps the codebase clean by removing BGE-Large entirely. The supported models are now exactly two: **MiniLM-L6-v2 (384-dim, default)** and **BGE-M3 (1024-dim, optional upgrade)**.
+- **`embedding_bge_large` column dropped** from the `memories` table. Migration 000007 drops the column and its index. Applied to live `memini-postgres` (port 5434) — 821 memories preserved, 819 with MiniLM, 800 with BGE-M3.
+- **`BGE_LARGE_MODEL_ID` / `BGE_LARGE_DIM` constants removed** from `src/memini_ai/model/manager.py`. `_MODEL_ALIASES` reduced to two aliases: `bge-m3` and `minilm`.
+- **`INSERT_MEMORY_BGE_LARGE` and `SEARCH_MEMORIES_BGE_LARGE` queries removed** from `src/memini_ai/postgres/queries.py`. The `add_memory` routing is now a 2-way switch (MiniLM → `embedding`, BGE-M3 → `embedding_bge_m3`).
+- **`COLUMN_TO_MODEL` reduced to 2 columns** in `src/memini_ai/memory/rrf.py`. RRF now searches only the `embedding` and `embedding_bge_m3` columns.
+- **`enabled_models` default in `config.py`** reduced to `['BAAI/bge-m3']` (was `['BAAI/bge-m3', 'BAAI/bge-large-en-v1.5']`).
+
+### Migration Script Kept (Reference)
+
+- **`/home/jcharles/Projects/MCP-Servers/archives/memini-embedding-migration-2026-07-10/migrate_to_bge_large.py`** is kept as a reference example for users who want to do similar migrations on their own (e.g. swap to a different 1024-dim model, or upgrade from MiniLM to a custom model). The script is self-contained and works against any PostgreSQL with the `memini-ai-dev` schema — it does NOT need BGE-Large to be installed in the memini-ai codebase.
+- The corresponding **`migrate_minilm_to_bge_m3.py`** is the canonical MiniLM → BGE-M3 upgrade script and is the recommended path for production use.
+
+### Use Case: MiniLM → BGE-M3 Upgrade
+
+The user-stated motivation for the v0.7.0 → v0.7.5 multi-model work was the **"GPU upgrade path"**: start with MiniLM (fast, small, CPU-friendly), get a machine with a GPU, then **migrate the existing memories to BGE-M3 (higher precision, GPU-friendly)** without losing the original data. The migration is:
+
+1. Set `MEMINI_MODEL_NAME=BAAI/bge-m3` in `.env`.
+2. Install `sentence-transformers` with the `[gpu]` extra (`uv pip install sentence-transformers[gpu]`).
+3. Run the migration script: `python archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py` (with the DB URL pointing at the live DB).
+4. Verify with `SELECT COUNT(*) FROM memories WHERE embedding_bge_m3 IS NOT NULL;` — should match the original memory count.
+5. Set `MEMINI_ENABLE_RRF=true` to enable RRF search across both MiniLM and BGE-M3 columns.
+
+The MiniLM column is **never touched** by this migration — the 384-dim vectors remain for backwards compatibility. New memories written after the migration land in `embedding_bge_m3` (BGE-M3); old memories can be re-embedded as needed (or left as MiniLM).
+
+### Tests
+
+- **40 tests removed** (was 824, now 784). Removed: 4 BGE-Large unit tests + 2 BGE-Large integration tests in `test_add_memory_multi_model.py`; 1 BGE-Large test in `test_manager_dim_checks.py`; 5 mock model_id references in `test_embeddings.py` (BGE-Large → BGE-M3) + 1 in `test_search.py` + 1 in `test_system.py`; BGE-Large assertions in `test_thought_chains.py` and `test_postgres_database.py` updated to reference BGE-M3 (the only 1024-dim model).
+- **Quality gates**: `ruff check src/ tests/` → 0 errors, `mypy src/` → 0 errors (53 source files), `pytest` → 784 passing + 4 pre-existing env-var-pollution failures (NOT caused by this change; present on `main` before v0.7.6).
+
+### Notes
+
+- **Live DB migration applied**: `podman exec memini-postgres psql ... ALTER TABLE memories DROP COLUMN embedding_bge_large;` — 821 memories preserved, 0 rows lost.
+- **Backwards incompatible at the schema level** (column dropped), but **backwards compatible at the API level**: callers passing `embedding_model="BAAI/bge-large-en-v1.5"` will now get a `ValueError: Unknown model ...` from `ModelManager._load_model()`. The fix is to either remove the field (MiniLM will be used) or switch to BGE-M3. This is the intended behavior — BGE-Large is no longer supported.
+- **No new env vars.** No breaking config changes. Existing setups with `MEMINI_MODEL_NAME=BAAI/bge-m3` continue to work unchanged.
+
 ## [0.7.5] - 2026-07-10
 
 ### Bug Fixes (Multi-Model RRF — three latent bugs from v0.7.0/v0.7.3)

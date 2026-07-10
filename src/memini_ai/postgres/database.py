@@ -53,12 +53,10 @@ from memini_ai.postgres.queries import (
     INSERT_ENTITY_RELATIONSHIP,
     INSERT_MEMORY,
     INSERT_MEMORY_1024,
-    INSERT_MEMORY_BGE_LARGE,
     INSERT_MEMORY_BGE_M3,
     INSERT_MEMORY_DELTA,
     INSERT_MEMORY_WITH_MODEL,
     SEARCH_MEMORIES_1024_VECTOR,
-    SEARCH_MEMORIES_BGE_LARGE,
     SEARCH_MEMORIES_BGE_M3,
     SEARCH_MEMORIES_MINILM,
     SEARCH_MEMORIES_VECTOR,
@@ -277,11 +275,11 @@ class PostgresDatabase(VectorDatabase):
         """Convert MemoryEntry to database record dict.
 
         The vector is stored under a column-specific key (``embedding`` for
-        MiniLM, ``embedding_bge_m3`` for BGE-M3, ``embedding_bge_large`` for
-        BGE-Large) based on ``entry.embedding_model``.  For backwards
-        compatibility, when the target column is ``embedding`` the vector is
-        ALSO stored under the generic ``embedding`` key — matching the
-        behaviour every caller relied on before v0.12.0.
+        MiniLM, ``embedding_bge_m3`` for BGE-M3) based on
+        ``entry.embedding_model``.  For backwards compatibility, when the
+        target column is ``embedding`` the vector is ALSO stored under the
+        generic ``embedding`` key — matching the behaviour every caller
+        relied on before v0.12.0.
         """
         from memini_ai.model.manager import MODEL_COLUMNS
 
@@ -394,7 +392,6 @@ class PostgresDatabase(VectorDatabase):
 
           * ``all-MiniLM-L6-v2`` (or None) → ``embedding`` (384-dim)
           * ``BAAI/bge-m3`` → ``embedding_bge_m3`` (1024-dim)
-          * ``BAAI/bge-large-en-v1.5`` → ``embedding_bge_large`` (1024-dim)
 
         Args:
             entry: MemoryEntry to add.
@@ -442,19 +439,6 @@ class PostgresDatabase(VectorDatabase):
                 # BGE-M3 (1024-dim) → write to embedding_bge_m3 column
                 memory_id = await conn.fetchval(
                     INSERT_MEMORY_BGE_M3,
-                    memory_id,
-                    record["text"],
-                    vector_value,
-                    record["source_type"],
-                    record["content_hash"],
-                    json.dumps(record["metadata"]),
-                    record["created_at_ms"],
-                    record["embedding_model"],
-                )
-            elif target_column == "embedding_bge_large":
-                # BGE-Large (1024-dim) → write to embedding_bge_large column
-                memory_id = await conn.fetchval(
-                    INSERT_MEMORY_BGE_LARGE,
                     memory_id,
                     record["text"],
                     vector_value,
@@ -719,7 +703,7 @@ class PostgresDatabase(VectorDatabase):
                 e.g. {"all-MiniLM-L6-v2": [0.1, ...], "BAAI/bge-m3": [0.2, ...]}
             options: Search options (top_k, threshold, etc.).
             enabled_columns: Optional dict mapping model name to column name.
-                If None, uses all three: embedding, embedding_bge_m3, embedding_bge_large.
+                If None, uses both: embedding, embedding_bge_m3.
 
         Returns:
             List of MemoryEntry objects ordered by fused RRF score.
@@ -731,14 +715,12 @@ class PostgresDatabase(VectorDatabase):
             enabled_columns = {
                 "all-MiniLM-L6-v2": "embedding",
                 "BAAI/bge-m3": "embedding_bge_m3",
-                "BAAI/bge-large-en-v1.5": "embedding_bge_large",
             }
 
         # Map column names to their search SQL
         column_to_query = {
             "embedding": SEARCH_MEMORIES_MINILM,
             "embedding_bge_m3": SEARCH_MEMORIES_BGE_M3,
-            "embedding_bge_large": SEARCH_MEMORIES_BGE_LARGE,
         }
 
         config = get_config()
@@ -970,7 +952,7 @@ class PostgresDatabase(VectorDatabase):
             collection_name: Collection to check (unused in pgvector impl).
 
         Returns:
-            Vector dimension from config (384 for MiniLM, 1024 for BGE-Large)
+            Vector dimension from config (384 for MiniLM, 1024 for BGE-M3)
             or None if not supported.
         """
         # PostgreSQL pgvector always uses fixed dimension from config
@@ -1303,7 +1285,7 @@ class PostgresDatabase(VectorDatabase):
     # =============================================================================
     #
     # The methods below operate on the memories_1024 sidecar table, which
-    # holds 1024-dim BGE-Large embeddings for "elevated" memories. The 384-dim
+    # holds 1024-dim embeddings for "elevated" memories. The 384-dim
     # memories table is always the source of truth — these are quality-boost
     # sidecars used in the AUTO mode of the dual-model RRF system.
 
@@ -1316,10 +1298,10 @@ class PostgresDatabase(VectorDatabase):
 
         v0.7.0 ships with a deterministic placeholder: zero-pad the 384-dim
         vector up to 1024 dims and L2-normalize the result. This is NOT a
-        real BGE-Large re-embedding — it's a stable stand-in so the
+        real re-embedding — it's a stable stand-in so the
         memories_1024 table can be populated, queried, and RRF-fused without
         pulling in a second embedding model. A future version will swap this
-        for an actual BGE-Large call when the elevate tool is invoked.
+        for an actual 1024-dim model call when the elevate tool is invoked.
 
         Args:
             vector_384: 384-dim source vector (Python list or None).
@@ -1348,7 +1330,7 @@ class PostgresDatabase(VectorDatabase):
         memory_id: str,
         vector_1024: list[float],
         trust_score: float = 0.5,
-        embedding_model: str = "bge-large-placeholder",
+        embedding_model: str = "placeholder-1024",
     ) -> str | None:
         """Insert (or no-op if already present) a 1024-dim sidecar for a memory.
 
@@ -1511,7 +1493,7 @@ class PostgresDatabase(VectorDatabase):
                 memory_id,
                 vector_1024,
                 new_trust,
-                "bge-large-placeholder",
+                "placeholder-1024",
             )
             elevated = inserted_id is not None
 
@@ -1581,7 +1563,7 @@ class PostgresDatabase(VectorDatabase):
         """Count memories per embedding model (multi-model stats).
 
         Returns:
-            Dict with keys: minilm_count, bge_m3_count, bge_large_count,
+            Dict with keys: minilm_count, bge_m3_count,
             model_tracked_count.
         """
         await self.initialize()
@@ -1593,13 +1575,11 @@ class PostgresDatabase(VectorDatabase):
             return {
                 "minilm_count": 0,
                 "bge_m3_count": 0,
-                "bge_large_count": 0,
                 "model_tracked_count": 0,
             }
         return {
             "minilm_count": int(row["minilm_count"]),
             "bge_m3_count": int(row["bge_m3_count"]),
-            "bge_large_count": int(row["bge_large_count"]),
             "model_tracked_count": int(row["model_tracked_count"]),
         }
 

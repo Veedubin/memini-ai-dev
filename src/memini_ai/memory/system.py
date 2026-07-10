@@ -499,7 +499,7 @@ class MemorySystem:
 
         Generates a 1024-dim query vector via the placeholder expansion
         of the 384-dim embedder (v0.7.0 has no real 1024 embedder
-        wired in — a future version will swap in BGE-Large). Returns
+        wired in — a future version will swap in BGE-M3). Returns
         ``[]`` if the underlying db has no 1024 support.
 
         Args:

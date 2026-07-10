@@ -20,18 +20,19 @@ Local-first semantic memory server with vector search, trust scoring, and persis
 - **Knowledge Graph**: Entity extraction and relationship tracking with live D3.js visualization
 - **Dialectic Reasoning**: Built-in contradiction detection and resolution logic
 - **Multi-Peer Sharing**: Share memory subsets across different agent peers
-- **Vector Search**: Default 384-dim MiniLM embeddings for speed, with BGE-Large (1024-dim) support
+- **Vector Search**: Default 384-dim MiniLM embeddings for speed, with optional BGE-M3 (1024-dim) for higher precision on GPU
 - **Memory Decay**: Temporal trust decay to ensure memory relevance over time
 - **Project Isolation**: Strict memory separation by project ID
-## Multi-Model RRF (v0.7.0+)
+## Multi-Model RRF (v0.7.0+, refined v0.7.6)
 
-memini-ai-dev supports **three embedding models** for flexible accuracy/speed tradeoffs:
+memini-ai-dev supports **two embedding models** — a fast CPU-friendly default and a higher-precision GPU upgrade:
 
 | Model | Dim | Use Case | Env Var (`MEMINI_MODEL_NAME`) |
 |-------|-----|----------|-------------------------------|
-| `sentence-transformers/all-MiniLM-L6-v2` | 384 | Fast, lightweight | `'minilm'` (alias) or full HF name |
-| `BAAI/bge-m3` | 1024 | High accuracy, multi-lingual | `'bge-m3'` (alias) or full HF name |
-| `BAAI/bge-large-en-v1.5` | 1024 | Highest accuracy (English) | `'bge-large'` (alias) or full HF name |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | Fast, lightweight, CPU-friendly (default) | `'minilm'` (alias) or full HF name |
+| `BAAI/bge-m3` | 1024 | Higher precision, multi-lingual, GPU-friendly | `'bge-m3'` (alias) or full HF name |
+
+**Recommended migration path**: start with MiniLM (default), get a GPU, then upgrade to BGE-M3 using the migration script in `archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py`. The MiniLM column is preserved — both vectors coexist for RRF search.
 
 ### Embedding Mode Dispatch (`EMBEDDING_MODE`)
 
@@ -39,30 +40,31 @@ memini-ai-dev supports **three embedding models** for flexible accuracy/speed tr
 |------|----------|---------|
 | `cpu` | 384-dim-only (MiniLM) | `EMBEDDING_MODE=cpu` |
 | `auto` | 384-dim writes; queries fuse 384 + 1024 via RRF (k=60) | `EMBEDDING_MODE=auto` (default) |
-| `gpu` | 1024-dim-only (BGE-M3 or BGE-Large) | `EMBEDDING_MODE=gpu` |
+| `gpu` | 1024-dim-only (BGE-M3) | `EMBEDDING_MODE=gpu` |
 
 ### Database Schema
 
-The PostgreSQL schema now includes **three vector columns** for multi-model support:
+The PostgreSQL schema includes **two vector columns** for multi-model support:
 
 ```sql
 CREATE TABLE memories (
     id UUID PRIMARY KEY,
     embedding vector(384),           -- MiniLM-L6-v2 (384-dim)
-    embedding_bge_m3 vector(1024),   -- BGE-M3 (1024-dim)
-    embedding_bge_large vector(1024) -- BGE-Large (1024-dim)
+    embedding_bge_m3 vector(1024)   -- BGE-M3 (1024-dim, optional GPU upgrade)
 );
 ```
+
+The `embedding_bge_large` column (BGE-Large, 1024-dim) was removed in v0.7.6. The BGE-Large migration script is kept as a reference example for users who want to do similar migrations on their own (see `archives/memini-embedding-migration-2026-07-10/migrate_to_bge_large.py`).
 
 ### v0.7.5 Bug Fixes (Critical for Multi-Model)
 
 The v0.7.5 release fixes **three latent bugs** that prevented the multi-model RRF feature from working end-to-end:
 
 1. **Model Selection**: `ModelManager._load_model()` was constrained by `embedding_dim` instead of `config.model_name`, making BGE-M3 unreachable.
-2. **Column Routing**: `add_memory` wrote 1024-dim vectors to the 384-dim `embedding` column — silent data loss for BGE-M3/BGE-Large writes.
+2. **Column Routing**: `add_memory` wrote 1024-dim vectors to the 384-dim `embedding` column — silent data loss for BGE-M3 writes.
 3. **RRF Mapping**: RRF `COLUMN_TO_MODEL` used short name `'all-MiniLM-L6-v2'` but `ModelManager` expects full HF name.
 
-**Fixes**: Model name-driven selection with alias support, multi-model column routing (new `INSERT_MEMORY_BGE_M3` / `INSERT_MEMORY_BGE_LARGE` queries), and full-HF-name RRF column mapping. See [CHANGELOG.md](CHANGELOG.md#075---2026-07-10) for details.
+**Fixes**: Model name-driven selection with alias support, multi-model column routing (new `INSERT_MEMORY_BGE_M3` query), and full-HF-name RRF column mapping. See [CHANGELOG.md](CHANGELOG.md#075---2026-07-10) for details. v0.7.6 then removed BGE-Large support to keep the codebase clean — see [CHANGELOG.md](CHANGELOG.md#076---2026-07-10).
 
 ### Enabling Multi-Model
 
@@ -123,7 +125,7 @@ Configured via environment variables or a JSON config file.
 |----------|---------|-------------|
 | `MEMINI_DB_URL` | (empty) | PostgreSQL connection URL (set via `.env`, see `.env.example`) |
 | `MEMINI_PROJECT_ID` | auto-generated | Project identifier for isolation |
-| `MEMINI_EMBEDDING_DIM` | `384` | Embedding dimension (384 for MiniLM, 1024 for BGE-Large) |
+| `MEMINI_EMBEDDING_DIM` | `384` | Embedding dimension (384 for MiniLM, 1024 for BGE-M3) |
 | `MEMINI_CHUNK_SIZE` | `512` | Chunk size for file indexing |
 | `MEMINI_CHUNK_OVERLAP` | `50` | Overlap between chunks |
 | `MEMINI_BATCH_SIZE` | `32` | Batch size for embedding generation |

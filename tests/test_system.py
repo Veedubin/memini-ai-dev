@@ -55,7 +55,7 @@ def mock_embedding() -> MagicMock:
     """Create mock embedding result."""
     result = MagicMock()
     result.embedding = [0.1] * 1024
-    result.model_id = "BAAI/bge-large-en-v1.5"
+    result.model_id = "BAAI/bge-m3"
     result.device = "cpu"
     result.token_count = 50
     result.timestamp = 1234567890

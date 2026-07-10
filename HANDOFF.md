@@ -1,8 +1,233 @@
 # Memini-ai Handoff Document
 
-> **Session**: 2026-06-04 (v0.7.2 patch metadata release — **RELEASED** ✅)
-> **Project**: Memini-ai v0.7.2 (formerly Super-Memory-TS)
-> **Status**: v0.7.2 RELEASED. No code changes from v0.7.1; CHANGELOG entry records the Session 10 health-check verification (206 memories at 384-dim, 766 tests passing, MCP server end-to-end working) and corrects the stale Session 9 "memory server broken" diagnosis. Companion release to `@veedubin/boomerang-v3@0.5.3`.
+> **Session**: 2026-07-10 (Session 40 — v0.7.6 BGE-Large removal — **RELEASED** ✅)
+> **Project**: Memini-ai v0.7.6
+> **Status**: v0.7.6 RELEASED. BGE-Large support removed. The supported models are now exactly two: **MiniLM-L6-v2 (384-dim, default)** and **BGE-M3 (1024-dim, optional GPU upgrade)**. The `embedding_bge_large` column was dropped from live `memini-postgres` (port 5434) via migration 000007 — 821 memories preserved, 819 MiniLM + 800 BGE-M3, zero data loss. The BGE-Large migration script (`archives/memini-embedding-migration-2026-07-10/migrate_to_bge_large.py`) is kept as a reference example. The canonical upgrade path is now MiniLM → BGE-M3 (script at `archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py`). 784 tests passing (-40 from removing BGE-Large tests; 4 pre-existing env-var failures unchanged). Backwards-incompatible at the schema level (column dropped), backwards-compatible at the API level (callers passing BGE-Large model_id get a clear `ValueError`).
+
+---
+
+## 2026-07-10 (Session 40) — v0.7.6: BGE-Large removal — **RELEASED** ✅
+
+**Status**: ✅ **RELEASED as v0.7.6**. BGE-Large support removed to keep the codebase clean. The v0.7.0 multi-model feature originally supported 3 models (MiniLM, BGE-M3, BGE-Large), but BGE-Large turned out not to be used in production. v0.7.6 reduces the supported model set to 2 and removes the corresponding schema column, constants, and queries. Migration scripts are preserved for reference.
+
+### What was removed
+
+- `embedding_bge_large vector(1024)` column dropped from `memories` table (migration 000007)
+- `BGE_LARGE_MODEL_ID` / `BGE_LARGE_DIM` constants from `src/memini_ai/model/manager.py`
+- `INSERT_MEMORY_BGE_LARGE` / `SEARCH_MEMORIES_BGE_LARGE` query constants from `src/memini_ai/postgres/queries.py`
+- `embedding_bge_large` entry from `COLUMN_TO_MODEL` / `MODEL_TO_DIM` in `src/memini_ai/memory/rrf.py`
+- `'BAAI/bge-large-en-v1.5'` entry from `enabled_models` default in `src/memini_ai/config.py`
+- 4 BGE-Large unit tests + 2 BGE-Large integration tests in `tests/test_add_memory_multi_model.py`
+- 1 BGE-Large test in `tests/test_manager_dim_checks.py`
+- 5+ mock `model_id="BAAI/bge-large-en-v1.5"` references in `tests/test_embeddings.py`, `test_search.py`, `test_system.py` (changed to BGE-M3)
+
+### What was kept
+
+- `archives/memini-embedding-migration-2026-07-10/migrate_to_bge_large.py` — kept as a reference example for users who want to do similar migrations on their own (e.g. swap to a different 1024-dim model, or upgrade from MiniLM to a custom model). The script is self-contained and works against any PostgreSQL with the `memini-ai-dev` schema.
+- `archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py` — the canonical MiniLM → BGE-M3 upgrade script, recommended for production use.
+
+### The Canonical Migration Story (MiniLM → BGE-M3)
+
+The user-stated motivation for the v0.7.0 → v0.7.5 multi-model work was the **"GPU upgrade path"**: start with MiniLM (fast, small, CPU-friendly), get a machine with a GPU, then migrate the existing memories to BGE-M3 (higher precision, GPU-friendly) without losing the original data. The migration is:
+
+1. Set `MEMINI_MODEL_NAME=BAAI/bge-m3` in `.env`.
+2. Install `sentence-transformers` with the `[gpu]` extra (`uv pip install sentence-transformers[gpu]`).
+3. Run the migration script: `python archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py` (with the DB URL pointing at the live DB).
+4. Verify with `SELECT COUNT(*) FROM memories WHERE embedding_bge_m3 IS NOT NULL;` — should match the original memory count.
+5. Set `MEMINI_ENABLE_RRF=true` to enable RRF search across both MiniLM and BGE-M3 columns.
+
+The MiniLM column is **never touched** by this migration — the 384-dim vectors remain for backwards compatibility. New memories written after the migration land in `embedding_bge_m3` (BGE-M3); old memories can be re-embedded as needed (or left as MiniLM).
+
+### Quality Gates
+
+- `ruff check src/ tests/` → 0 errors
+- `mypy src/` → 0 errors (53 source files)
+- `pytest` → 784 passing + 4 pre-existing env-var-pollution failures (NOT caused by this change; present on `main` before v0.7.6)
+
+### Backwards Compatibility
+
+- **Schema level**: NOT backwards compatible — the `embedding_bge_large` column is dropped. Existing setups with the column will need to run migration 000007 (idempotent: `DROP INDEX IF EXISTS ...; ALTER TABLE memories DROP COLUMN IF EXISTS ...`).
+- **API level**: Backwards compatible. Callers passing `embedding_model="BAAI/bge-large-en-v1.5"` will get a `ValueError: Unknown model ...` from `ModelManager._load_model()` — this is the intended behavior. Fix: either remove the field (MiniLM will be used) or switch to BGE-M3.
+- **No new env vars.** No breaking config changes. Existing setups with `MEMINI_MODEL_NAME=BAAI/bge-m3` continue to work unchanged.
+
+---
+
+## 2026-07-10 (Session 39) — v0.7.5: Multi-Model RRF Bugfixes — **RELEASED** ✅
+
+**Status**: ✅ **RELEASED as v0.7.5**. 3 latent bugs fixed that prevented the v0.7.0 multi-model feature from actually working. Commit `014a608` on `main`, tag `v0.7.5` pushed. 824 tests passing (was 777, +47 new). ruff+mypy clean.
+
+[See CHANGELOG.md for full v0.7.5 details — note that the BGE-Large fixes referenced in v0.7.5 are obsolete after v0.7.6 removed BGE-Large entirely.]
+
+---
+
+## 2026-07-06 (Session 12) — v0.7.3 BUGFIX: query_memories read-path threshold — **RELEASED** ✅
+
+**Status**: ✅ **RELEASED as v0.7.3**. Commit `339ad47` on `main`. Tag `v0.7.3` (annotated) pushed to `https://github.com/Veedubin/memini-ai-dev.git`. **CI workflow (Run 28822896533) completed/success in ~75s; PyPI live at 2026-07-06T21:00:43Z (172978 bytes, `memini_ai_dev-0.7.3-py3-none-any.whl`).** 777 tests passing (was 766, +11 net). ruff+mypy clean.
+
+### The Diagnosis That Almost Led Us Astray
+
+The 2026-07-06 diagnostic writeup the user pasted described "writes are silently dropped" with detailed symptoms, recommended a `self_test` MCP tool, post-write read-back, and a count-check in `get_status`. The writeup's specific conclusion (Priority 0 recommendation #1): "*Make add_memory actually return a non-success status when the write doesn't persist. Add a post-write read-back check.*"
+
+**That conclusion was wrong about the storage layer — but right about the *observability gap*.** I verified directly against the live `postgres` database:
+
+- UUID `5417cb0c-5bf9-4b07-a493-7ee08b6909ba` (the example in the report) **is present** in the `postgres` database, with valid 384-dim embedding, `source_type=session`, and the exact reported text.
+- UUIDs `50e696d9-...`, `da2fab50-...`, `599da157-...` (other UUIDs in the report) are also present and queryable via direct SQL.
+- A fresh `add_memory` call I issued at the start of the session was written and verified in PostgreSQL within 1 second.
+- The `memini` database (the one initially checked in the report) is **empty and unused**. The active config (`.env` + `~/.config/opencode/opencode.json` consumer path via `/home/jcharles/Projects/MCP-Servers/.opencode/opencode.json`) points at `localhost:5434/postgres`, where the data lives.
+- The `memini-postgres` container has been up 13+ hours as of 2026-07-06 (verified `podman ps`); the 2026-06-11 "offline" review note is **also stale**.
+
+So the storage layer was healthy. The bug was on the **read path** — in two specific places.
+
+### The Real Root Cause (2 bugs)
+
+#### Bug A — `SearchOptions.threshold = 0.72` is unrealistically tight for MiniLM-L6-v2 cosine similarity
+
+`src/memini_ai/memory/schema.py:324` had `threshold: float = 0.72`. The SQL filter is `embedding <=> $1::vector < 0.28` (cosine distance must be < 0.28). Empirically, MiniLM-L6-v2's cosine similarity between a natural-language query and a semantically related stored memory typically lands in 0.4-0.7 (distance 0.3-0.6). The 0.72 threshold filtered out the vast majority of legitimate matches.
+
+Repro evidence:
+```python
+# Query: "Inversion Audit Program Wave 0 1 COMPLETE open work backlog"
+# Target: 5417cb0c-... (the "Session Close: Inversion Audit Program Wave 0 + 1 COMPLETE" memory)
+# cosine_similarity = 0.6563 → distance = 0.3437
+# threshold 0.72 → distance_threshold 0.28 → REJECTED (0.3437 > 0.28)
+# With threshold=0.0 → 5 results returned (top score 0.224, dist 0.776)
+```
+
+#### Bug B — `_query_dual_model_rrf` doesn't propagate the caller's threshold to the 384-side search
+
+`src/memini_ai/memory/system.py:456-460` built the 384-side `SearchOptions` like this:
+```python
+search_options_384 = SearchOptions(
+    topK=fetch_k,
+    strategy=SearchStrategy.VECTOR_ONLY,
+    filter=options.filter,
+)  # NO threshold=options.threshold ← the bug
+```
+
+Even if the caller sets a permissive `threshold` on the outer `SearchOptions`, the RRF path's internal 384-side search silently used the (then-buggy) 0.72 default. The 1024-side is correct (it takes `threshold=0.9` explicitly), but in practice `memories_1024` is empty (0 rows), so the 384-side is the only source of recall. **This is the bug that produced "0 results in auto mode" regardless of caller intent.**
+
+### What `get_tier0_summary` "LLM call failed" was actually about
+
+NOT a separate bug. Same root cause cascading. With `query_memories` returning 0 for everything, the agent fell back to `get_tier0_summary` for context retrieval, but the tiered loader's own memory selection also uses the (then-broken) threshold-filtered search path in some configurations, and the LLM call's input was empty. With Bug A+B fixed, the LLM now gets a non-empty input and produces a real summary. The Ollama endpoint (`qwen3.5:9b` on `localhost:11434`) was healthy throughout (verified with curl).
+
+### What This Release Contains
+
+**P0 bugfix (2 lines of code + tests):**
+1. `src/memini_ai/memory/schema.py:324` — `threshold: float = 0.72` → `0.0`. Updated docstring to explain MiniLM-L6-v2 cosine similarity range and note that callers can pass higher values to be selective.
+2. `src/memini_ai/memory/system.py:456-460` — RRF now propagates `threshold=options.threshold` and `exact_search=options.exact_search` to the 384-side `SearchOptions`.
+
+**P1/P2 observability (addresses the diagnostic writeup's Priority-0/1 recommendations):**
+- `get_status` now reports `memoryCount`, `thoughtsCount`, `queryLatencyMs` — a `memoryCount: 0` with `memoryReady: true` is now a contradiction the agent can detect from within the protocol. (Report recommendation #2.)
+- `add_memory` does a post-write read-back via `get_memory(memory_id)`. If the read-back returns `None`, the response is `{"success": false, "id": id, "error": "post_write_readback_failed", ...}` instead of falsely claiming success. Audit log includes `readback_verified: True`. (Report recommendation #1.)
+- New `healthcheck` MCP tool: writes a known marker memory, immediately reads it back, returns `{"status": "pass"|"fail", "memoryId": ..., "writeLatencyMs": ..., "readLatencyMs": ..., "readbackMatch": bool, "error": str|None}`. Audit-logs critical on failure. (Report recommendation #3.)
+- New `count_thoughts()` helpers in `postgres/database.py`, `memory/database.py` (abstract), `memory/system.py` (wrapper). Best-effort — backends that don't implement it return 0.
+
+**5 new regression tests (all passing):**
+- `tests/test_dual_model.py::test_rrf_propagates_threshold_to_384_side` — **the key regression test for Bug B** — patches the search layer to capture the inner `SearchOptions`, asserts the caller's `threshold=0.5` and `exact_search=True` reach the 384-side.
+- `tests/test_dual_model.py::test_default_search_options_threshold_is_zero` — regression test for Bug A.
+- `tests/test_server.py::test_add_memory_post_write_readback_failure` — mock `get_memory` returns `None`, assert handler returns `success=False, error="post_write_readback_failed"`.
+- `tests/test_server.py::test_get_status_includes_row_counts` — assert `memoryCount` and `thoughtsCount` are non-negative ints.
+- `tests/test_server.py::test_get_status_count_failure_does_not_break` — count probe errors must not crash the whole status call.
+- `tests/test_server.py::TestHealthcheck::test_healthcheck_pass` and `test_healthcheck_fail_on_readback_mismatch` — pass/fail paths for the new healthcheck tool.
+
+Plus 1 updated test (`test_schema.py::test_default_values` now asserts `threshold == 0.0`).
+
+### Files Changed (13 files, +646/-7)
+
+| File | Change |
+| --- | --- |
+| `src/memini_ai/memory/schema.py` | Default threshold 0.72 → 0.0 (Bug A) |
+| `src/memini_ai/memory/system.py` | RRF propagates threshold + exact_search (Bug B) + `count_thoughts()` wrapper |
+| `src/memini_ai/postgres/database.py` | `count_thoughts()` implementation |
+| `src/memini_ai/postgres/queries.py` | `COUNT_THOUGHTS` SQL constant |
+| `src/memini_ai/memory/database.py` | Abstract `count_thoughts` declaration |
+| `src/memini_ai/server.py` | Post-write read-back in `add_memory` + `healthcheck` tool + `memoryCount`/`thoughtsCount`/`queryLatencyMs` in `get_status` |
+| `tests/test_dual_model.py` | 2 new tests (RRF threshold propagation, default threshold) |
+| `tests/test_server.py` | 5 new tests (post-write read-back, get_status counts, healthcheck pass/fail, count failure) |
+| `tests/test_schema.py` | Updated `test_default_values` for new default |
+| `pyproject.toml` | version 0.7.2 → 0.7.3 |
+| `CHANGELOG.md` | `[0.7.3]` entry |
+| `AGENTS.md` | Review Notes entry |
+| `TASKS.md` | v0.7.3 section + v0.7.4 backlog |
+
+### Verification
+
+- `ruff check src/ tests/` → **0 errors** ✅
+- `mypy src/` → **0 errors** (53 source files) ✅
+- `pytest tests/ --ignore=tests/test_postgres_database.py` → **777 passing** (was 766, +11 net) ✅
+- 4 pre-existing failures in `test_config.py` and `test_thought_chains.py` are caused by `MEMINI_PROJECT_ID=reverse_engineering` and `THOUGHT_CHAINS=true` env vars in the active shell — not regressions, present on `main` before the fix.
+- In-process E2E (via `MCPServer`): `add_memory` succeeded, `query_memories("Inversion Audit Program Wave 0 1 COMPLETE")` returned **5 results** (was 0 pre-fix), `healthcheck()` returned `status: pass, readbackMatch: True`, `get_status()` returned `memoryCount: 634, thoughtsCount: 358, queryLatencyMs: 0.82`.
+- PyPI verification: `https://pypi.org/pypi/memini-ai-dev/0.7.3/json` returns HTTP 200.
+
+### Process State
+
+- **PostgreSQL on port 5434** — running, healthy, **634 memories at 384-dim** (was 627 at start of session; +7 from session E2E tests). `memories_1024` empty. `thoughts` table: 358 rows.
+- **PyPI** — v0.7.3 live, ~90s after tag push.
+- **Working tree** — clean ✅
+- **OpenCode TUI restart still required** — running TUI processes (from Sessions 11/12) have the pre-v0.7.3 memini-ai-dev MCP server code cached in memory. **After restart, the next `query_memories` call will return matches instead of 0.**
+
+### Next Session Starting Point
+
+v0.7.3 is done. The user's two main "next steps" in the diagnostic writeup are now closed (post-write read-back ✅, count in get_status ✅, healthcheck-style self-test ✅). Possible v0.7.4 candidates (none blocking; tracked in `TASKS.md` "v0.7.4 Candidates" section):
+
+1. **`text_only_search` is still broken** — `src/memini_ai/memory/search.py` relies on an in-memory BM25 index that must be hydrated via `_ensure_bm25()`. The hydration is lazy and was never triggered during the Session 12 E2E. If the SQL vector filter is aggressive (or for short queries with no embedding match), `tiered` falls back to `text_only_search` and returns 0. **Next step**: add a regression test that forces `text_only_search` and asserts it returns at least the in-memory data; or replace the BM25 cache with a Postgres `tsvector` column for consistency.
+2. **Pre-existing test env-var pollution** — 4 tests in `test_config.py` and `test_thought_chains.py` fail when `MEMINI_PROJECT_ID=reverse_engineering` and `THOUGHT_CHAINS=true` are set in the shell. Should be made env-isolated (use `monkeypatch.setenv`/`delenv` or move to a `conftest.py` fixture that resets env). Tracked as Session 13 P2 cleanup.
+3. **OpenCode TUI restart** — required to load the v0.7.3 fix (PIDs to be recorded next session).
+4. **Verify `get_tier0_summary` / `get_tier1_summary` end-to-end on the new code** — Session 12 E2E did not exercise tier0/tier1 (the old MCP server was still returning "LLM call failed"). Session 13 should confirm tier0/tier1 produce real summaries after the OpenCode restart.
+5. **Clean up the pre-existing AGENTS.md "MCP Servers" section** — bundled into the v0.7.3 commit (no way to split without a 2-commit workaround). Not a blocker.
+6. **The remaining Boomerang-v3 work from the user's 2026-07-06 session** — the user mentioned "we have some work to do on memini-ai-dev" but the boomerang-v3 v0.5.4 release entry (`964089eb-...`) shows the package was also updated same day. Confirm whether boomerang-v3 needs a companion release for the threshold fix (it doesn't — the read path is server-side, not client-side).
+
+### Companion Release
+
+- **boomerang-v3 v0.5.4** was released earlier the same day (2026-07-06, session 12, memory `964089eb-3f06-4f52-8c40-f8015df6b0e0`). Unrelated to v0.7.3 (it was a patch release with its own config fix). The threshold bug is server-side only; no companion release needed in boomerang-v3.
+
+### Process State Cross-Reference
+
+- **PostgreSQL on port 5434** — running, healthy, 634 memories at 384-dim
+- **Ollama Cloud** — still works, 40+ models available
+- **Working tree** — clean ✅
+- **OpenCode restart still required** — multiple live TUIs from Sessions 11/12 have old code cached
+
+### Quick Resume Commands (for next session)
+
+```bash
+cd /home/jcharles/Projects/MCP-Servers/memini-ai-dev
+
+# 1. Verify state
+git log --oneline -3
+# expect: 339ad47 Release v0.7.3: query_memories read-path threshold bugfix
+git tag --points-at HEAD
+# expect: v0.7.3
+git status -s
+# expect: clean
+
+# 2. Verify DB
+PGPASSWORD=password psql -h localhost -p 5434 -U postgres -d postgres -c "SELECT count(*) FROM memories"
+# expect: 634+
+PGPASSWORD=password psql -h localhost -p 5434 -U postgres -d postgres -c "SELECT count(*) FROM memories_1024"
+# expect: 0
+
+# 3. Verify PyPI
+curl -s "https://pypi.org/pypi/memini-ai-dev/0.7.3/json" | python3 -c "import json,sys; d=json.load(sys.stdin); print('v0.7.3 is live:', d['info']['version'])"
+
+# 4. Quality gates
+uv run ruff check src/ tests/
+uv run mypy src/
+uv run pytest tests/ --ignore=tests/test_postgres_database.py -q
+# expect: 777 passed, 4 failed (pre-existing env-var pollution)
+
+# 5. After OpenCode restart, verify the live MCP server:
+#    - query_memories should return >0 for natural-language queries
+#    - get_status should include memoryCount, thoughtsCount, queryLatencyMs
+#    - healthcheck should return status=pass
+```
+
+### Lessons Learned (worth carrying forward)
+
+1. **Verify the storage layer directly before concluding "writes are dropped."** A direct SQL count + sample UUID check takes 30 seconds and is far more reliable than trusting the agent's perceived symptoms. The 2026-07-06 diagnostic writeup was 80% right (the symptoms were real, the recommended fix was good defense-in-depth) but 100% wrong about the storage layer.
+2. **Default `threshold` values need to be empirically validated for the embedding model in use.** A 0.72 default might be right for one model and wrong for another. The v0.7.3 fix uses 0.0 (no SQL-side filtering) and lets the caller opt into stricter filtering; RRF and parallel_search handle the ranking.
+3. **The `_query_dual_model_rrf` bug (not propagating threshold) is a textbook "pass through user intent" failure.** When wrapping one query in another (384+1024 RRF), every field of the caller's `SearchOptions` should be propagated unless there's a documented reason not to. The fix is 2 lines but the lesson is larger.
+4. **Pre-existing test failures caused by shell env vars are noise, not regressions.** When `MEMINI_PROJECT_ID=reverse_engineering` and `THOUGHT_CHAINS=true` are set in the active shell, 4 tests in `test_config.py` and `test_thought_chains.py` fail. These are pre-existing (fail on `main` too). Document them in the commit body so the next agent doesn't waste time investigating.
 
 ---
 

@@ -633,9 +633,10 @@ class TestGetCollectionDimension:
     async def test_get_collection_dimension_returns_dimension(
         self, pg_db_isolated: PostgresDatabase
     ):
-        """Should return the configured vector dimension (1024 for BGE-Large)."""
+        """Should return the configured vector dimension (1024 for BGE-M3 / miniLM-or-BGE-M3 dual-mode)."""
         dimension = await pg_db_isolated.get_collection_dimension("memories")
-        # PostgresDatabase hardcodes 1024 for BGE-Large embeddings
+        # PostgresDatabase returns the dimension of the largest supported vector column.
+        # BGE-Large support was removed in v0.7.6 — only BGE-M3 (1024-dim) is supported.
         assert dimension == 1024
 
 

@@ -505,8 +505,8 @@ class ThoughtChains:
         #
         # Also handle the dimension-mismatch case: the thoughts table column is
         # hardcoded to `vector(384)` (see `postgres/schema.py`), but the
-        # embedding model may return 1024-dim BGE-Large vectors if a GPU is
-        # available (ModelManager prefers BGE-Large on CUDA). In that case we
+        # embedding model may return 1024-dim vectors if a GPU is
+        # available (ModelManager may load BGE-M3 on CUDA). In that case we
         # truncate to the first 384 dims to avoid a `expected 384 dimensions,
         # not 1024` Postgres error. (An ideal long-term fix is to widen the
         # column to `vector` and store whatever dim the model emits, but that

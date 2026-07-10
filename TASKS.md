@@ -674,3 +674,20 @@ The `get_tier0_summary` "LLM call failed" message was NOT a separate bug — it 
 ---
 
 *Last Updated: 2026-07-06 (Session 12 — **v0.7.3 BUGFIX RELEASED** ✅: read-path threshold bug fixed in 2 lines of code (schema.py default + system.py RRF propagation) + 3 observability improvements (memoryCount/thoughtsCount in get_status, post-write read-back, healthcheck MCP tool) + 5 regression tests. 777 passing (was 766, +11). All quality gates green. In-process E2E verified end-to-end through MCPServer: add_memory succeeds, query_memories returns 5 results, healthcheck passes, get_status shows real counts. The 2026-07-06 diagnostic writeup's "writes silently dropped" claim is corrected — the storage layer was healthy throughout (627+ memories preserved, exact UUIDs from the report queryable via direct SQL). The bug was purely on the read path. OpenCode TUI restart required to load the new MCP server code.)*
+
+---
+
+## v0.7.4 Candidates (Session 13+ backlog)
+
+Open follow-up items discovered during the Session 12 fix. Not yet scheduled; evaluate priority when next session starts.
+
+1. **Text-only search path is broken** — `text_only_search` in `src/memini_ai/memory/search.py` relies on an in-memory BM25 index that must be hydrated via `_ensure_bm25()`. The hydration is lazy and was never triggered during the Session 12 test cycle. If the SQL vector filter is set aggressively (or for short queries with no embedding match), the `tiered` strategy falls back to `text_only_search` and returns 0. **Next step**: add a regression test that forces `text_only_search` and asserts it returns at least the in-memory data; or replace the BM25 cache with a Postgres `tsvector` column for consistency.
+2. **Pre-existing test env-var pollution** — 4 tests in `test_config.py` and `test_thought_chains.py` fail when `MEMINI_PROJECT_ID=reverse_engineering` and `THOUGHT_CHAINS=true` are set in the shell. Should be made env-isolated (use `monkeypatch.setenv`/`delenv` or move to a `conftest.py` fixture that resets env). Tracked as Session 13 P2 cleanup.
+3. **OpenCode TUI restart still required** — the running TUI processes from Session 11 (PIDs 917732, 1160224, 1162490) and any from Session 12 are still on the pre-v0.7.3 memini-ai-dev MCP server code. Restart OpenCode to load the fix. After restart, the next `query_memories` call will return matches instead of 0.
+4. **Tier0 L0/L1 summaries still need end-to-end verification on the new code** — the Session 12 E2E verified `add_memory`, `query_memories`, `healthcheck`, and `get_status` work, but `get_tier0_summary` and `get_tier1_summary` need a manual test after the OpenCode restart (the old MCP server is still returning "LLM call failed" because it's pre-v0.7.3 code). Session 13 should confirm tier0/tier1 produce real summaries.
+5. **Pre-existing AGENTS.md "MCP Servers" section was bundled into the v0.7.3 commit** — added by a prior session, not part of v0.7.3 work. Not a blocker; just note for future splits. If a clean split is desired, revert that hunk in a follow-up commit and re-cherry-pick.
+6. **Consider adding `get_tier1_summary` to the diagnostic writeup verification flow** — the Session 12 E2E did not exercise tier1 (which uses LLM summarization over a broader set of memories). Session 13 E2E should add a tier1 call to confirm the LLM path works end-to-end.
+
+---
+
+*Last Updated: 2026-07-06 (Session 12 wrap-up — v0.7.3 RELEASED ✅. v0.7.4 backlog above. OpenCode restart required to load the fix. See HANDOFF.md for the session-close record.)*

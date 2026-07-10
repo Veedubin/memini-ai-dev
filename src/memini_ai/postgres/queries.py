@@ -511,7 +511,7 @@ WHERE id = $1
 # Dual-Model RRF Queries (v0.7.0)
 # =============================================================================
 #
-# The memories_1024 table holds 1024-dim BGE-Large embeddings for "elevated"
+# The memories_1024 table holds 1024-dim embeddings for "elevated"
 # memories. All operations are FK-linked to memories.id. The 384-dim memories
 # table remains the source of truth — these are just query helpers for the
 # high-dimensional sidecar.
@@ -625,26 +625,11 @@ ORDER BY embedding_bge_m3 <=> $1::vector
 LIMIT $3
 """
 
-# Search the BGE-Large (1024-dim) embedding column on the memories table
-SEARCH_MEMORIES_BGE_LARGE = """
-SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
-       supersedes_id, structured_fields, change_ratio, created_at_ms,
-       embedding_model,
-       embedding_bge_large <=> $1::vector as distance
-FROM memories
-WHERE embedding_bge_large IS NOT NULL
-  AND embedding_bge_large <=> $1::vector < $2
-  AND is_archived = FALSE
-ORDER BY embedding_bge_large <=> $1::vector
-LIMIT $3
-"""
-
 # Count how many memories have each embedding model populated
 COUNT_BY_EMBEDDING_MODEL = """
 SELECT
     COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS minilm_count,
     COUNT(*) FILTER (WHERE embedding_bge_m3 IS NOT NULL) AS bge_m3_count,
-    COUNT(*) FILTER (WHERE embedding_bge_large IS NOT NULL) AS bge_large_count,
     COUNT(*) FILTER (WHERE embedding_model IS NOT NULL) AS model_tracked_count
 FROM memories
 WHERE is_archived = FALSE
@@ -663,16 +648,6 @@ RETURNING id
 # embedding_bge_m3 column instead of the default embedding (384-dim).
 INSERT_MEMORY_BGE_M3 = """
 INSERT INTO memories (id, text, embedding_bge_m3, source_type, content_hash, metadata,
-                      created_at_ms, embedding_model)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id
-"""
-
-# Insert memory with embedding written to the BGE-Large column (1024-dim)
-# Used when embedding_model is BAAI/bge-large-en-v1.5 so the vector lands in
-# the embedding_bge_large column instead of the default embedding (384-dim).
-INSERT_MEMORY_BGE_LARGE = """
-INSERT INTO memories (id, text, embedding_bge_large, source_type, content_hash, metadata,
                       created_at_ms, embedding_model)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id

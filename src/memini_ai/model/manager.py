@@ -14,27 +14,24 @@ if TYPE_CHECKING:
 
 
 # Model identifiers
-BGE_LARGE_MODEL_ID = "BAAI/bge-large-en-v1.5"
 BGE_M3_MODEL_ID = "BAAI/bge-m3"
 MINILM_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Model dimensions
-BGE_LARGE_DIM = 1024
 BGE_M3_DIM = 1024
 MINILM_DIM = 384
 
 # Model name → dimension mapping
+# Production-supported models: MiniLM (384-dim) and BGE-M3 (1024-dim).
 MODEL_DIMS: dict[str, int] = {
     MINILM_MODEL_ID: MINILM_DIM,
     BGE_M3_MODEL_ID: BGE_M3_DIM,
-    BGE_LARGE_MODEL_ID: BGE_LARGE_DIM,
 }
 
 # Model name → column name in memories table
 MODEL_COLUMNS: dict[str, str] = {
     MINILM_MODEL_ID: "embedding",
     BGE_M3_MODEL_ID: "embedding_bge_m3",
-    BGE_LARGE_MODEL_ID: "embedding_bge_large",
 }
 
 # Short-name aliases → canonical HuggingFace model IDs.
@@ -44,11 +41,8 @@ _MODEL_ALIASES: dict[str, str] = {
     "minilm": MINILM_MODEL_ID,
     "minilm-l6-v2": MINILM_MODEL_ID,
     "bge-m3": BGE_M3_MODEL_ID,
-    "bge-large": BGE_LARGE_MODEL_ID,
-    "bge-large-en-v1.5": BGE_LARGE_MODEL_ID,
     MINILM_MODEL_ID: MINILM_MODEL_ID,
     BGE_M3_MODEL_ID: BGE_M3_MODEL_ID,
-    BGE_LARGE_MODEL_ID: BGE_LARGE_MODEL_ID,
 }
 
 
@@ -56,8 +50,9 @@ def _normalize_model_name(name: str) -> str:
     """Normalize a user-provided model name to its canonical HF ID.
 
     Accepts full HuggingFace IDs (sentence-transformers/all-MiniLM-L6-v2)
-    and short aliases (minilm, bge-m3, bge-large).  Unknown values are
-    returned unchanged so custom HF models can be loaded by name.
+    and short aliases (minilm, bge-m3).  Unknown values are returned
+    unchanged so custom HF models can be loaded by name, but they must
+    produce either 384 or 1024 dim vectors to match the DB schema.
     """
     key = name.strip()
     return _MODEL_ALIASES.get(key, key)
@@ -77,13 +72,12 @@ class ModelManager:
     """Singleton model manager with GPU→CPU fallback and lazy loading.
 
     Reference counting tracks model lifecycle. Model loads on first acquire().
-    Falls back from BGE-Large on CUDA to MiniLM on CPU if GPU unavailable.
 
     Model selection is driven by ``config.model_name`` (``MEMINI_MODEL_NAME``):
       - ``sentence-transformers/all-MiniLM-L6-v2`` (alias: ``minilm``) → 384-dim
       - ``BAAI/bge-m3`` (alias: ``bge-m3``) → 1024-dim
-      - ``BAAI/bge-large-en-v1.5`` (alias: ``bge-large``) → 1024-dim
-      - any other value is treated as a custom HuggingFace model name
+      - any other value is treated as a custom HuggingFace model name (must
+        produce either 384 or 1024 dim vectors to match the DB schema)
 
     ``config.embedding_dim`` is kept as a **sanity check**: after the model
     is loaded, a dimension-mismatch assertion ensures the model's output dim
@@ -102,7 +96,7 @@ class ModelManager:
         self._use_gpu = _config.use_gpu
         # Bug 1 fix: ModelManager now reads config.embedding_dim to constrain
         # model selection. Without this, MEMINI_EMBEDDING_DIM was a no-op and
-        # the 1024-dim BGE-Large model could be selected for a 384-dim DB.
+        # a 1024-dim model could be selected for a 384-dim DB.
         self._embedding_dim: int = _config.embedding_dim
         self._ref_count = 0
         self._dimensions: int | None = None
@@ -148,8 +142,10 @@ class ModelManager:
         """Load the model named by ``config.model_name`` (``MEMINI_MODEL_NAME``).
 
         Model selection is driven by the configured model name, NOT by
-        ``embedding_dim``.  Short aliases (``minilm``, ``bge-m3``, ``bge-large``)
-        are accepted.  Unknown names are treated as custom HuggingFace model IDs.
+        ``embedding_dim``.  Short aliases (``minilm``, ``bge-m3``) are
+        accepted.  Unknown names are treated as custom HuggingFace model IDs
+        (but must produce either 384 or 1024 dim vectors to match the DB
+        schema).
 
         After loading, a dimension-mismatch assertion ensures the model's
         output dim matches ``config.embedding_dim`` — this is the sanity
@@ -231,7 +227,7 @@ class ModelManager:
         """Get the embedding dimension of the loaded model.
 
         Returns:
-            The embedding dimension (1024 for BGE-Large, 384 for MiniLM).
+            The embedding dimension (1024 for BGE-M3, 384 for MiniLM).
         """
         if self._dimensions is None:
             raise RuntimeError("Model not loaded. Call acquire() first.")

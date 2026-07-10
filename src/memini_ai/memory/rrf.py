@@ -3,7 +3,7 @@
 This module implements the RRF algorithm used by the dual-model memory system
 (v0.7.0+). RRF is a simple, parameter-light method for combining ranked
 result lists from multiple retrieval sources (e.g., 384-dim MiniLM search
-and 1024-dim BGE-Large search) into a single fused ranking.
+and 1024-dim BGE-M3 search) into a single fused ranking.
 
 Algorithm:
     For each ranked list L_i, the i-th result contributes a score of
@@ -123,14 +123,12 @@ def rrf_with_limit(
 COLUMN_TO_MODEL: dict[str, str] = {
     "embedding": "sentence-transformers/all-MiniLM-L6-v2",
     "embedding_bge_m3": "BAAI/bge-m3",
-    "embedding_bge_large": "BAAI/bge-large-en-v1.5",
 }
 
 # Model name → dimension mapping (mirrors model/manager.py MODEL_DIMS)
 MODEL_TO_DIM: dict[str, int] = {
     "sentence-transformers/all-MiniLM-L6-v2": 384,
     "BAAI/bge-m3": 1024,
-    "BAAI/bge-large-en-v1.5": 1024,
 }
 
 
@@ -158,8 +156,7 @@ async def rrf_search(
         top_k_per_model: Results to fetch from each model (default 20).
         final_top_k: Results to return after fusion (default 10).
         enabled_columns: Dict mapping column name to dimension.
-            If None, uses all three: embedding(384), embedding_bge_m3(1024),
-            embedding_bge_large(1024).
+            If None, uses both: embedding(384), embedding_bge_m3(1024).
         distance_threshold: Max cosine distance for filtering (default 1.0 = all).
 
     Returns:
@@ -170,7 +167,6 @@ async def rrf_search(
         enabled_columns = {
             "embedding": 384,
             "embedding_bge_m3": 1024,
-            "embedding_bge_large": 1024,
         }
 
     # Build SQL per column
@@ -193,16 +189,6 @@ async def rrf_search(
               AND embedding_bge_m3 <=> $1::vector < $2
               AND is_archived = false
             ORDER BY embedding_bge_m3 <=> $1::vector
-            LIMIT $3
-        """,
-        "embedding_bge_large": """
-            SELECT id, text, trust_score, embedding_model,
-                   embedding_bge_large <=> $1::vector as distance
-            FROM memories
-            WHERE embedding_bge_large IS NOT NULL
-              AND embedding_bge_large <=> $1::vector < $2
-              AND is_archived = false
-            ORDER BY embedding_bge_large <=> $1::vector
             LIMIT $3
         """,
     }

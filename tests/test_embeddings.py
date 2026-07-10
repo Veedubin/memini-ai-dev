@@ -79,7 +79,7 @@ class TestGenerateEmbedding:
         mock_manager = MagicMock()
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
-            model_id="BAAI/bge-large-en-v1.5",
+            model_id="BAAI/bge-m3",
             device="auto",
         )
 
@@ -92,7 +92,7 @@ class TestGenerateEmbedding:
             assert isinstance(result, EmbeddingResult)
             assert isinstance(result.embedding, list)
             assert result.token_count == ceil(len("Hello, world!") / 4)
-            assert result.model_id == "BAAI/bge-large-en-v1.5"
+            assert result.model_id == "BAAI/bge-m3"
             assert result.device == "auto"
             assert result.timestamp > 0
             assert result.latency_ms >= 0
@@ -104,7 +104,7 @@ class TestGenerateEmbedding:
         mock_manager = MagicMock()
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
-            model_id="BAAI/bge-large-en-v1.5",
+            model_id="BAAI/bge-m3",
             device="auto",
         )
 
@@ -129,7 +129,7 @@ class TestGenerateEmbeddings:
         mock_manager = MagicMock()
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
-            model_id="BAAI/bge-large-en-v1.5",
+            model_id="BAAI/bge-m3",
             device="auto",
         )
 
@@ -157,7 +157,7 @@ class TestGenerateEmbeddings:
         mock_manager = MagicMock()
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
-            model_id="BAAI/bge-large-en-v1.5",
+            model_id="BAAI/bge-m3",
             device="auto",
         )
 
@@ -183,7 +183,7 @@ class TestEmbeddingMetadata:
         mock_manager = MagicMock()
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
-            model_id="BAAI/bge-large-en-v1.5",
+            model_id="BAAI/bge-m3",
             device="auto",
         )
 
@@ -207,7 +207,7 @@ class TestEmbeddingMetadata:
         mock_manager = MagicMock()
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
-            model_id="BAAI/bge-large-en-v1.5",
+            model_id="BAAI/bge-m3",
             device="auto",
         )
 

@@ -52,7 +52,6 @@ class MeminiConfig(BaseSettings):
         default_factory=lambda: [
             "all-MiniLM-L6-v2",
             "BAAI/bge-m3",
-            "BAAI/bge-large-en-v1.5",
         ],
         alias="MEMINI_ENABLED_MODELS",
     )

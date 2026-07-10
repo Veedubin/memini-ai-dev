@@ -5,7 +5,7 @@ pgvector for vector storage and pgvectorscale's StreamingDiskANN index for
 high-performance similarity search.
 
 Schema Design Decisions:
-- Use vector(384) for MiniLM-L6-v2 embeddings (default), configurable for BGE-Large (1024)
+- Use vector(384) for MiniLM-L6-v2 embeddings (default), vector(1024) for BGE-M3
 - Use StreamingDiskANN (diskann) index when vectorscale is available, fall back to HNSW
 - Use vector_cosine_ops for cosine distance similarity
 - Enable pgvector (required) and vectorscale (optional) extensions
@@ -82,9 +82,7 @@ CREATE TABLE IF NOT EXISTS memories (
     -- Multi-model embedding support (v0.12.0+)
     -- Tracks which model produced the primary embedding column.
     -- Nullable for backwards compat with pre-v0.12.0 rows.
-    embedding_model VARCHAR(100),
-    -- 1024-dim BGE-Large embedding (parallel to embedding_bge_m3)
-    embedding_bge_large vector(1024)
+    embedding_model VARCHAR(100)
 );
 """
 
@@ -111,10 +109,6 @@ CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_
 -- Index for peer queries
 CREATE INDEX IF NOT EXISTS idx_memories_peer ON memories(peer_id) WHERE peer_id IS NOT NULL;
 
--- Multi-model (v0.12.0+): BGE-Large vector index
-CREATE INDEX IF NOT EXISTS idx_memories_embedding_bge_large ON memories
-USING diskann (embedding_bge_large vector_cosine_ops);
-
 -- Multi-model (v0.12.0+): embedding_model index for "what models are in use" queries
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_model ON memories (embedding_model)
 WHERE embedding_model IS NOT NULL;
@@ -124,7 +118,7 @@ WHERE embedding_model IS NOT NULL;
 # memories_1024 table (v0.7.0 Dual-Model RRF)
 # =============================================================================
 #
-# The memories_1024 table holds high-dimensional BGE-Large embeddings (1024-dim)
+# The memories_1024 table holds high-dimensional embeddings (1024-dim)
 # for memories that have been "elevated" from the default 384-dim MiniLM space.
 # Each row is FK-linked to the corresponding row in the memories table, so the
 # 384-dim record is always the source of truth and the 1024-dim record is a
@@ -141,13 +135,13 @@ CREATE TABLE IF NOT EXISTS memories_1024 (
     -- The 384-dim record itself is soft-deleted (is_archived=TRUE) in normal use.
     memory_id UUID NOT NULL UNIQUE REFERENCES memories(id) ON DELETE CASCADE,
 
-    -- 1024-dim BGE-Large embedding vector
+    -- 1024-dim embedding vector
     embedding vector(1024) NOT NULL,
 
     -- Elevation metadata
     elevated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     elevated_from_dim INT DEFAULT 384,
-    embedding_model VARCHAR(100) DEFAULT 'bge-large',
+    embedding_model VARCHAR(100) DEFAULT 'placeholder-1024',
 
     -- Mirrored trust boost: this 1024 copy inherits and may extend the trust score.
     -- The 384-dim record is the canonical trust source; this is a denormalized cache.
