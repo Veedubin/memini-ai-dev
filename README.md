@@ -23,7 +23,60 @@ Local-first semantic memory server with vector search, trust scoring, and persis
 - **Vector Search**: Default 384-dim MiniLM embeddings for speed, with BGE-Large (1024-dim) support
 - **Memory Decay**: Temporal trust decay to ensure memory relevance over time
 - **Project Isolation**: Strict memory separation by project ID
-- **Dual-Model RRF (v0.7.0+)**: Optional 1024-dim sidecar with Reciprocal Rank Fusion across both stores. `EMBEDDING_MODE` env switches between `cpu` (384-only), `auto` (384+1024 RRF), and `gpu` (1024-only). The `elevate_memory_to_1024` MCP tool promotes important memories to 1024-dim with a trust boost. See [CHANGELOG.md](CHANGELOG.md) for the v0.7.0 release notes.
+## Multi-Model RRF (v0.7.0+)
+
+memini-ai-dev supports **three embedding models** for flexible accuracy/speed tradeoffs:
+
+| Model | Dim | Use Case | Env Var (`MEMINI_MODEL_NAME`) |
+|-------|-----|----------|-------------------------------|
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | Fast, lightweight | `'minilm'` (alias) or full HF name |
+| `BAAI/bge-m3` | 1024 | High accuracy, multi-lingual | `'bge-m3'` (alias) or full HF name |
+| `BAAI/bge-large-en-v1.5` | 1024 | Highest accuracy (English) | `'bge-large'` (alias) or full HF name |
+
+### Embedding Mode Dispatch (`EMBEDDING_MODE`)
+
+| Mode | Behavior | Env Var |
+|------|----------|---------|
+| `cpu` | 384-dim-only (MiniLM) | `EMBEDDING_MODE=cpu` |
+| `auto` | 384-dim writes; queries fuse 384 + 1024 via RRF (k=60) | `EMBEDDING_MODE=auto` (default) |
+| `gpu` | 1024-dim-only (BGE-M3 or BGE-Large) | `EMBEDDING_MODE=gpu` |
+
+### Database Schema
+
+The PostgreSQL schema now includes **three vector columns** for multi-model support:
+
+```sql
+CREATE TABLE memories (
+    id UUID PRIMARY KEY,
+    embedding vector(384),           -- MiniLM-L6-v2 (384-dim)
+    embedding_bge_m3 vector(1024),   -- BGE-M3 (1024-dim)
+    embedding_bge_large vector(1024) -- BGE-Large (1024-dim)
+);
+```
+
+### v0.7.5 Bug Fixes (Critical for Multi-Model)
+
+The v0.7.5 release fixes **three latent bugs** that prevented the multi-model RRF feature from working end-to-end:
+
+1. **Model Selection**: `ModelManager._load_model()` was constrained by `embedding_dim` instead of `config.model_name`, making BGE-M3 unreachable.
+2. **Column Routing**: `add_memory` wrote 1024-dim vectors to the 384-dim `embedding` column — silent data loss for BGE-M3/BGE-Large writes.
+3. **RRF Mapping**: RRF `COLUMN_TO_MODEL` used short name `'all-MiniLM-L6-v2'` but `ModelManager` expects full HF name.
+
+**Fixes**: Model name-driven selection with alias support, multi-model column routing (new `INSERT_MEMORY_BGE_M3` / `INSERT_MEMORY_BGE_LARGE` queries), and full-HF-name RRF column mapping. See [CHANGELOG.md](CHANGELOG.md#075---2026-07-10) for details.
+
+### Enabling Multi-Model
+
+```bash
+# Enable BGE-M3 for new writes + RRF queries
+export MEMINI_MODEL_NAME=BAAI/bge-m3
+# or: export MEMINI_MODEL_NAME=bge-m3  # short alias
+
+export MEMINI_ENABLE_RRF=true
+# Start the server
+uvx --from memini-ai-dev memini-ai --stdio
+```
+
+With `MEMINI_ENABLE_RRF=true`, queries fuse top-k results from each populated model column using **Reciprocal Rank Fusion (RRF)** with k=60 (standard constant).
 
 ## Installation
 

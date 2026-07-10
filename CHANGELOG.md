@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-07-10
+
+### Bug Fixes (Multi-Model RRF — three latent bugs from v0.7.0/v0.7.3)
+
+These three bugs together prevented the multi-model RRF feature from actually working end-to-end, even though the v0.7.0/v0.7.3 code appeared to be in place. All three are fixed in v0.7.5.
+
+- **Bug 1: `ModelManager._load_model()` was constrained by `embedding_dim`, ignoring `config.model_name`.**
+  The old code picked models based on `_embedding_dim`:
+    - 384 → MiniLM-L6-v2
+    - 1024 → BGE-Large (NOT BGE-M3, even if `config.model_name='BAAI/bge-m3'`)
+
+  This made BGE-M3 effectively unreachable as an active model. **Fix**: `_load_model()` now picks based on `config.model_name` (set via `MEMINI_MODEL_NAME` env var). Supported values: `'sentence-transformers/all-MiniLM-L6-v2'`, `'BAAI/bge-m3'`, `'BAAI/bge-large-en-v1.5'`, or any custom HF model ID. Short-name aliases (`'bge-m3'`, `'minilm'`, `'bge-large'`) are also accepted. The `embedding_dim` constraint is kept as a post-load sanity check.
+
+- **Bug 2: `add_memory` wrote 1024-dim vectors to the 384-dim `embedding` column — silent data loss**.
+  When `embedding_model` was BGE-M3 or BGE-Large, the 1024-dim vector was passed to `INSERT_MEMORY_WITH_MODEL`, which only writes to the `embedding vector(384)` column. The write either silently failed (vector set to NULL) or was truncated, depending on the value. **Fix**: `_entry_to_record` now writes the vector to the column matching the model's dimensionality (using `MODEL_COLUMNS[entry.embedding_model]`), and `add_memory` routes to `INSERT_MEMORY_BGE_M3` / `INSERT_MEMORY_BGE_LARGE` for non-MiniLM models. Two new query constants added.
+
+- **Bug 3: RRF `COLUMN_TO_MODEL` used short name `'all-MiniLM-L6-v2'` but `ModelManager` expects the full HF name**.
+  The RRF helper (`memini_ai/memory/rrf.py`) was passing `'all-MiniLM-L6-v2'` to `embedder.embed(model_name=...)`, which raised `ValueError: Unknown model 'all-MiniLM-L6-v2'`. **Fix**: `COLUMN_TO_MODEL` and `MODEL_TO_DIM` in `rrf.py` updated to use the full HF names. The MiniLM column is now reachable from RRF.
+
+### Tests
+
+- **8 new tests** in `tests/test_add_memory_multi_model.py` covering the column-routing fix end-to-end:
+  - 4 unit tests for `_entry_to_record` column routing (MiniLM, BGE-M3, BGE-Large, no-model)
+  - 4 live DB integration tests verifying vectors land in the correct column
+- **Rewrote `tests/test_manager_dim_checks.py`** to test `model_name`-driven selection (5 tests): MiniLM, BGE-M3, BGE-Large, custom HF model passthrough, short-alias normalization.
+- **Test count: 824 passing** (was 777 in v0.7.3, +47 new tests).
+
+### Quality Gates
+
+- `ruff check src/ tests/` → 0 errors
+- `mypy src/` → 0 errors (53 source files)
+- `pytest tests/ --ignore=tests/test_postgres_database.py` → **824 passing**
+
+### Notes
+
+- **Backwards compatible**: All 3 fixes are bug fixes for the v0.7.0 multi-model feature. No API changes. Existing 384-dim-only setups (which never set `MEMINI_MODEL_NAME`) continue to work exactly as before — they default to MiniLM.
+- **Migration to enable multi-model**: Set `MEMINI_MODEL_NAME=BAAI/bge-m3` in `.env` and `MEMINI_ENABLE_RRF=true` to get BGE-M3 for new writes + RRF queries across all populated model spaces. The DB schema (columns `embedding`, `embedding_bge_m3`, `embedding_bge_large`) is already in place via migration 000006.
+- **All 3 model spaces populated for ~800 memories** in the live `memini-postgres` (port 5434) DB after the v0.7.5 migration scripts ran (MiniLM 384, BGE-M3 1024, BGE-Large 1024).
+- **Reranking**: With `MEMINI_ENABLE_RRF=true`, queries fuse top-k results from each populated model column using `score = sum(1 / (k + rank))` (k=60, standard RRF constant).
+
 ## [0.7.3] - 2026-07-06
 
 ### Bug Fixes
