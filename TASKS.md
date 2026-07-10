@@ -1,10 +1,10 @@
 # Memini-ai Development Tasks
 
-> **Project**: Memini-ai v0.7.0 (formerly Super-Memory-TS)
+> **Project**: Memini-ai v0.7.6 (formerly Super-Memory-TS)
 > **Meaning**: "I remember" in Latin
 > **Language**: Python (porting from TypeScript)
 > **Framework**: FastMCP
-> **Last Updated**: 2026-06-03 (Session 6 — **v0.7.1 BUGFIX RELEASED** ✅: `add_thought` MCP-call vector-injection error fixed. Commit + tag `v0.7.1` pushed. **766 tests passing** (was 763, +3 new regression tests), ruff+mypy clean, in-process E2E verified: thought row landed in `thoughts` table with real 384-dim embedding. See HANDOFF.md Session 6 for full details. v0.7.0 stats preserved: 111 memories, 0 in memories_1024, 15/15 steps done.)
+> **Last Updated**: 2026-07-10 (Session 40 — **v0.7.6 RELEASED** ✅: BGE-Large support removed. 23 files changed, +393/-251 lines. 784 tests passing (was 824, -40 BGE-Large tests removed). Live DB: 821 memories preserved, BGE-Large column dropped, 819 MiniLM + 800 BGE-M3. BGE-Large migration script kept as reference. Canonical migration story: MiniLM → BGE-M3. See HANDOFF.md for session-close record.)
 
 ---
 
@@ -677,6 +677,57 @@ The `get_tier0_summary` "LLM call failed" message was NOT a separate bug — it 
 
 ---
 
+## v0.7.5 (Session 39) — Multi-Model RRF bugfix ✅ RELEASED
+
+**Status**: ✅ **RELEASED as v0.7.5** (2026-07-10). Commit `014a608` on `main`, tag `v0.7.5` pushed. 824 tests passing (was 763 in v0.7.0, +47 new). ruff+mypy clean.
+
+### 3 latent bugs fixed
+1. `ModelManager._load_model()` constrained by `embedding_dim` instead of `config.model_name` → BGE-M3 unreachable
+2. `add_memory` wrote 1024-dim vectors to 384-dim `embedding` column → silent data loss
+3. RRF `COLUMN_TO_MODEL` used short name `'all-MiniLM-L6-v2'` but `ModelManager` expects full HF name
+
+### Live DB verification
+- All 3 model spaces populated: MiniLM 384, BGE-M3 1024, BGE-Large 1024
+- ~800 memories at all 3 dims
+- RRF search returns results from all 3 spaces
+
+---
+
+## v0.7.6 (Session 40) — BGE-Large removal ✅ RELEASED
+
+**Status**: ✅ **RELEASED as v0.7.6** (2026-07-10). Commit `6ff118a` on `main`, tag `v0.7.6` pushed. 784 tests passing (was 824, -40 from removing BGE-Large tests). ruff+mypy clean.
+
+### What was removed
+- `embedding_bge_large vector(1024)` column from `memories` table (migration 000007)
+- `BGE_LARGE_MODEL_ID` / `BGE_LARGE_DIM` constants
+- `INSERT_MEMORY_BGE_LARGE` / `SEARCH_MEMORIES_BGE_LARGE` query constants
+- BGE-Large entries in `COLUMN_TO_MODEL` / `MODEL_TO_DIM` / `enabled_models`
+- 4 BGE-Large unit tests + 2 BGE-Large integration tests in `test_add_memory_multi_model.py`
+- 1 BGE-Large test in `test_manager_dim_checks.py`
+- 5+ mock `model_id="BAAI/bge-large-en-v1.5"` references in test files (changed to BGE-M3)
+
+### What was kept (reference)
+- `archives/memini-embedding-migration-2026-07-10/migrate_to_bge_large.py` — reference for users who want to do similar migrations on their own
+
+### The canonical migration story
+The supported models are now exactly two: **MiniLM-L6-v2 (384-dim, default)** and **BGE-M3 (1024-dim, optional GPU upgrade)**. The "GPU upgrade path" is: start with MiniLM (fast, small, CPU-friendly), get a machine with a GPU, then migrate to BGE-M3 (higher precision, GPU-friendly) using `archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py`. The MiniLM column is never touched — both vectors coexist for RRF search.
+
+### Live DB migration
+- Applied to `memini-postgres` (port 5434): 821 memories preserved, 819 MiniLM + 800 BGE-M3, 0 rows lost
+- Migration 000007 idempotent: `DROP INDEX IF EXISTS ...; ALTER TABLE memories DROP COLUMN IF EXISTS ...`
+
+### Backwards compatibility
+- Schema: NOT backwards compatible (column dropped). Migration 000007 handles the drop on any existing setup.
+- API: Backwards compatible. Callers passing BGE-Large `embedding_model` get a clear `ValueError: Unknown model ...` from `ModelManager._load_model()`.
+- No new env vars. No breaking config changes.
+
+### Quality gates
+- ruff: 0 errors
+- mypy: 0 errors (53 source files)
+- pytest: 784 passing + 4 pre-existing env-var-pollution failures (unchanged from prior releases)
+
+---
+
 ## v0.7.4 Candidates (Session 13+ backlog)
 
 Open follow-up items discovered during the Session 12 fix. Not yet scheduled; evaluate priority when next session starts.
@@ -690,4 +741,11 @@ Open follow-up items discovered during the Session 12 fix. Not yet scheduled; ev
 
 ---
 
-*Last Updated: 2026-07-06 (Session 12 wrap-up — v0.7.3 RELEASED ✅. v0.7.4 backlog above. OpenCode restart required to load the fix. See HANDOFF.md for the session-close record.)*
+## Session 41+ backlog (newly added)
+
+7. **Update other `opencode.json` files** — 10+ other projects reference memini-ai-dev but don't have the new `MEMINI_MODEL_NAME=BAAI/bge-m3` and `MEMINI_ENABLE_RRF=true` env vars yet (only `boomerang-v3/.opencode/opencode.json` and root `MCP-Servers/.opencode/opencode.json` were updated in Session 39)
+8. **Bump boomerang-v3 version** to reflect the memini-ai v0.7.6 dependency update (current is 0.5.0, published 2026-05-21)
+
+---
+
+*Last Updated: 2026-07-10 (Session 40 — **v0.7.6 RELEASED** ✅: BGE-Large support removed. 23 files changed, +393/-251 lines. 784 tests passing. Live DB: 821 memories preserved, BGE-Large column dropped. BGE-Large migration script kept as reference. Canonical migration story: MiniLM → BGE-M3. See HANDOFF.md for session-close record.)*

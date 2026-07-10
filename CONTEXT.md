@@ -1,9 +1,9 @@
 # Memini-ai Context Document
 
-> **Project**: Memini-ai v0.7.0 (formerly Super-Memory-TS)
+> **Project**: Memini-ai v0.7.6 (formerly Super-Memory-TS)
 > **Meaning**: "I remember" in Latin (pronounced "meh-mee-nee")
 > **Goal**: Local-first semantic memory server, MCP-compatible, Python-based
-> **Last Updated**: 2026-06-02 (v0.7.0 DUAL-MODEL RRF RELEASED ✅ — commit `18f37ed`, tag `v0.7.0` pushed. 15/15 steps done, 763 tests passing, 83 memories intact.)
+> **Last Updated**: 2026-07-10 (Session 40 — **v0.7.6 BGE-LARGE REMOVAL** ✅ — commit `6ff118a`, tag `v0.7.6` pushed. BGE-Large support removed; supported models reduced to MiniLM (384-dim, default) + BGE-M3 (1024-dim, optional GPU upgrade). `embedding_bge_large` column dropped from live `memini-postgres` via migration 000007 — 821 memories preserved, 819 MiniLM + 800 BGE-M3, zero data loss. 784 tests passing (was 824, -40 from removing BGE-Large tests). BGE-Large migration script kept as reference. Canonical upgrade path: MiniLM → BGE-M3.)
 
 ---
 
@@ -362,3 +362,49 @@ Across the **entire `/home/jcharles`** (not just MCP-Servers):
 6. Tasks: `memini-ai-dev/TASKS.md`
 7. **Dual-Model RRF Design**: `memini-ai-dev/docs/design/dual-model-rrf-architecture.md`
 8. **Previous handoff**: `memini-ai-dev/HANDOFF.md`
+
+---
+
+## v0.7.5 + v0.7.6 (Session 39 + 40) — Multi-Model RRF bugfixes + BGE-Large removal
+
+### v0.7.5 (Session 39) — Multi-Model RRF bugfix
+- 3 latent bugs in v0.7.0's multi-model feature fixed:
+  1. `ModelManager._load_model()` was constrained by `embedding_dim` instead of `config.model_name` — BGE-M3 unreachable as active model
+  2. `add_memory` wrote 1024-dim vectors to the 384-dim `embedding` column — silent data loss for BGE-M3/BGE-Large writes
+  3. RRF `COLUMN_TO_MODEL` used short name `'all-MiniLM-L6-v2'` but `ModelManager` expects full HF name — would crash on MiniLM
+- Fixes: model_name-driven selection with alias support, multi-model column routing, full-HF-name RRF column mapping
+- 824 tests passing (was 763 in v0.7.0, +47 new tests across all multi-model fixes)
+- Live DB verification: BGE-M3 with `MEMINI_MODEL_NAME=BAAI/bge-m3` loads, produces 1024-dim vectors, writes to `embedding_bge_m3` column
+- All 3 model spaces (MiniLM, BGE-M3, BGE-Large) populated for ~800 memories in `memini-postgres` (port 5434)
+- RRF search returns results from all 3 spaces
+
+### v0.7.6 (Session 40) — BGE-Large removal
+- BGE-Large (`BAAI/bge-large-en-v1.5`) support removed. Was added in v0.7.0 but not used in production.
+- `embedding_bge_large vector(1024)` column dropped from `memories` table (migration 000007)
+- `BGE_LARGE_MODEL_ID` / `BGE_LARGE_DIM` constants removed
+- `INSERT_MEMORY_BGE_LARGE` / `SEARCH_MEMORIES_BGE_LARGE` query constants removed
+- `embedding_bge_large` removed from `COLUMN_TO_MODEL` / `MODEL_TO_DIM` / `enabled_models`
+- 40 BGE-Large tests removed (was 824, now 784)
+- BGE-Large migration script kept as reference: `archives/memini-embedding-migration-2026-07-10/migrate_to_bge_large.py`
+- The supported models are now exactly two:
+  - **MiniLM-L6-v2** (384-dim, default) — fast, small, CPU-friendly
+  - **BGE-M3** (1024-dim, optional GPU upgrade) — higher precision, GPU-friendly
+- Live DB state: 821 memories, 819 with MiniLM, 800 with BGE-M3, 0 with BGE-Large (column dropped)
+- The canonical migration story is now: **MiniLM → BGE-M3** for users who get a GPU
+
+### The "GPU upgrade path" (MiniLM → BGE-M3)
+1. Set `MEMINI_MODEL_NAME=BAAI/bge-m3` in `.env`
+2. Install `sentence-transformers` with the `[gpu]` extra (`uv pip install sentence-transformers[gpu]`)
+3. Run migration script: `python archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py`
+4. Verify: `SELECT COUNT(*) FROM memories WHERE embedding_bge_m3 IS NOT NULL;`
+5. Set `MEMINI_ENABLE_RRF=true` for RRF search across both columns
+
+The MiniLM column is never touched — both vectors coexist for RRF.
+
+### Next steps (Session 41+ backlog)
+1. **Restart OpenCode TUI** to load the v0.7.6 code (running TUIs have cached pre-v0.7.5 code)
+2. **Verify tier0/tier1 summaries** end-to-end on the new code (Session 12 E2E skipped these)
+3. **Fix the text-only search path** — `text_only_search` in `src/memini_ai/memory/search.py` relies on a lazy BM25 index that may return 0 if hydration is incomplete
+4. **Make tests env-isolated** — 4 pre-existing failures in `test_config.py` / `test_thought_chains.py` from shell env vars should use `monkeypatch` fixtures
+5. **Update other `opencode.json` files** — 10+ other projects reference memini-ai-dev but don't have the new `MEMINI_MODEL_NAME` / `MEMINI_ENABLE_RRF` env vars yet (only `boomerang-v3/.opencode/opencode.json` and root `MCP-Servers/.opencode/opencode.json` were updated in Session 39)
+6. **Bump boomerang-v3 version** to reflect the memini-ai v0.7.6 dependency update
