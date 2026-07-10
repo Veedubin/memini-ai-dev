@@ -37,6 +37,31 @@ MODEL_COLUMNS: dict[str, str] = {
     BGE_LARGE_MODEL_ID: "embedding_bge_large",
 }
 
+# Short-name aliases → canonical HuggingFace model IDs.
+# Users may set MEMINI_MODEL_NAME=bge-m3 instead of the full BAAI/bge-m3.
+_MODEL_ALIASES: dict[str, str] = {
+    "all-MiniLM-L6-v2": MINILM_MODEL_ID,
+    "minilm": MINILM_MODEL_ID,
+    "minilm-l6-v2": MINILM_MODEL_ID,
+    "bge-m3": BGE_M3_MODEL_ID,
+    "bge-large": BGE_LARGE_MODEL_ID,
+    "bge-large-en-v1.5": BGE_LARGE_MODEL_ID,
+    MINILM_MODEL_ID: MINILM_MODEL_ID,
+    BGE_M3_MODEL_ID: BGE_M3_MODEL_ID,
+    BGE_LARGE_MODEL_ID: BGE_LARGE_MODEL_ID,
+}
+
+
+def _normalize_model_name(name: str) -> str:
+    """Normalize a user-provided model name to its canonical HF ID.
+
+    Accepts full HuggingFace IDs (sentence-transformers/all-MiniLM-L6-v2)
+    and short aliases (minilm, bge-m3, bge-large).  Unknown values are
+    returned unchanged so custom HF models can be loaded by name.
+    """
+    key = name.strip()
+    return _MODEL_ALIASES.get(key, key)
+
 
 @dataclass
 class ModelMetadata:
@@ -54,13 +79,15 @@ class ModelManager:
     Reference counting tracks model lifecycle. Model loads on first acquire().
     Falls back from BGE-Large on CUDA to MiniLM on CPU if GPU unavailable.
 
-    Model selection is constrained by config.embedding_dim to prevent
-    dimension mismatches with the database vector column:
-      - embedding_dim=384  → MiniLM (384-dim) only
-      - embedding_dim=1024 → BGE-Large (1024-dim) only
-      - other values       → RuntimeError at model load time
+    Model selection is driven by ``config.model_name`` (``MEMINI_MODEL_NAME``):
+      - ``sentence-transformers/all-MiniLM-L6-v2`` (alias: ``minilm``) → 384-dim
+      - ``BAAI/bge-m3`` (alias: ``bge-m3``) → 1024-dim
+      - ``BAAI/bge-large-en-v1.5`` (alias: ``bge-large``) → 1024-dim
+      - any other value is treated as a custom HuggingFace model name
 
-    This ensures MEMINI_EMBEDDING_DIM is authoritative, not decorative.
+    ``config.embedding_dim`` is kept as a **sanity check**: after the model
+    is loaded, a dimension-mismatch assertion ensures the model's output dim
+    matches what the database vector column expects.
     """
 
     _instance: ModelManager | None = None
@@ -81,7 +108,7 @@ class ModelManager:
         self._dimensions: int | None = None
         # Multi-model support (v0.12.0+): lazy-loaded model cache
         self._model_cache: dict[str, SentenceTransformer] = {}
-        self._active_model_name: str = _config.model_name
+        self._active_model_name: str = _normalize_model_name(_config.model_name)
 
     @classmethod
     def get_instance(cls) -> ModelManager:
@@ -118,46 +145,28 @@ class ModelManager:
             self.unload()
 
     async def _load_model(self) -> None:
-        """Load the appropriate model based on config.embedding_dim and GPU.
+        """Load the model named by ``config.model_name`` (``MEMINI_MODEL_NAME``).
 
-        Model selection is constrained by config.embedding_dim (Approach A):
-          - embedding_dim=384  → MiniLM only (GPU or CPU)
-          - embedding_dim=1024 → BGE-Large only (GPU or CPU)
-          - other values       → RuntimeError
+        Model selection is driven by the configured model name, NOT by
+        ``embedding_dim``.  Short aliases (``minilm``, ``bge-m3``, ``bge-large``)
+        are accepted.  Unknown names are treated as custom HuggingFace model IDs.
 
-        This prevents the 1024-dim BGE-Large model from being loaded when
-        the database schema expects vector(384), which caused INSERT errors.
+        After loading, a dimension-mismatch assertion ensures the model's
+        output dim matches ``config.embedding_dim`` — this is the sanity
+        check that prevents writing 1024-dim vectors to a 384-dim column.
         """
         # Import here to avoid heavy import at module load time
         from sentence_transformers import SentenceTransformer
 
-        # Bug 1 fix: Constrain model selection by embedding_dim.
-        # MEMINI_EMBEDDING_DIM is now authoritative, not decorative.
-        if self._embedding_dim == MINILM_DIM:
-            # 384-dim: always use MiniLM, regardless of GPU availability
-            model_id = MINILM_MODEL_ID
-            model_dim = MINILM_DIM
-            device = (
-                "cuda"
-                if (self._should_use_gpu() and self._check_cuda_available())
-                else "cpu"
-            )
-        elif self._embedding_dim == BGE_LARGE_DIM:
-            # 1024-dim: always use BGE-Large, regardless of GPU availability
-            model_id = BGE_LARGE_MODEL_ID
-            model_dim = BGE_LARGE_DIM
-            # Prefer GPU if available, but BGE-Large on CPU is valid
-            device = (
-                "cuda"
-                if (self._should_use_gpu() and self._check_cuda_available())
-                else "cpu"
-            )
-        else:
-            raise RuntimeError(
-                f"Unsupported embedding_dim={self._embedding_dim}. "
-                f"Must be {MINILM_DIM} (MiniLM) or {BGE_LARGE_DIM} (BGE-Large). "
-                f"Set MEMINI_EMBEDDING_DIM accordingly."
-            )
+        # Pick model based on model_name, not embedding_dim
+        model_id = self._active_model_name
+        model_dim = MODEL_DIMS.get(model_id, self._embedding_dim)
+
+        device = (
+            "cuda"
+            if (self._should_use_gpu() and self._check_cuda_available())
+            else "cpu"
+        )
 
         try:
             self._model = await asyncio.to_thread(
@@ -176,9 +185,9 @@ class ModelManager:
                 f"https://www.sbert.net/examples/applications/model-download/"
             ) from e
 
-        # Bug 3 fix: Defense-in-depth assertion that the loaded model's
-        # actual output dimension matches config.embedding_dim. This catches
-        # mismatches even if the selection logic above is bypassed somehow.
+        # Defense-in-depth assertion that the loaded model's actual output
+        # dimension matches config.embedding_dim. This catches mismatches
+        # even if the user picks a model whose dim doesn't match the DB column.
         assert self._model is not None  # Guaranteed by try block above
         actual_dim = self._model.get_sentence_embedding_dimension()
         if actual_dim != self._embedding_dim:

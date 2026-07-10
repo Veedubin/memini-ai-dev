@@ -119,15 +119,16 @@ def rrf_with_limit(
 # =============================================================================
 
 # Column name → model name mapping for multi-model dispatch
+# Use the FULL HuggingFace model names so ModelManager.embed(model_name=...) works
 COLUMN_TO_MODEL: dict[str, str] = {
-    "embedding": "all-MiniLM-L6-v2",
+    "embedding": "sentence-transformers/all-MiniLM-L6-v2",
     "embedding_bge_m3": "BAAI/bge-m3",
     "embedding_bge_large": "BAAI/bge-large-en-v1.5",
 }
 
 # Model name → dimension mapping (mirrors model/manager.py MODEL_DIMS)
 MODEL_TO_DIM: dict[str, int] = {
-    "all-MiniLM-L6-v2": 384,
+    "sentence-transformers/all-MiniLM-L6-v2": 384,
     "BAAI/bge-m3": 1024,
     "BAAI/bge-large-en-v1.5": 1024,
 }

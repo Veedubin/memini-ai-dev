@@ -53,6 +53,8 @@ from memini_ai.postgres.queries import (
     INSERT_ENTITY_RELATIONSHIP,
     INSERT_MEMORY,
     INSERT_MEMORY_1024,
+    INSERT_MEMORY_BGE_LARGE,
+    INSERT_MEMORY_BGE_M3,
     INSERT_MEMORY_DELTA,
     INSERT_MEMORY_WITH_MODEL,
     SEARCH_MEMORIES_1024_VECTOR,
@@ -272,7 +274,17 @@ class PostgresDatabase(VectorDatabase):
         return self._pool
 
     def _entry_to_record(self, entry: MemoryEntry) -> dict[str, Any]:
-        """Convert MemoryEntry to database record dict."""
+        """Convert MemoryEntry to database record dict.
+
+        The vector is stored under a column-specific key (``embedding`` for
+        MiniLM, ``embedding_bge_m3`` for BGE-M3, ``embedding_bge_large`` for
+        BGE-Large) based on ``entry.embedding_model``.  For backwards
+        compatibility, when the target column is ``embedding`` the vector is
+        ALSO stored under the generic ``embedding`` key — matching the
+        behaviour every caller relied on before v0.12.0.
+        """
+        from memini_ai.model.manager import MODEL_COLUMNS
+
         record: dict[str, Any] = {
             "id": entry.id or str(uuid.uuid4()),
             "text": entry.text,
@@ -284,14 +296,31 @@ class PostgresDatabase(VectorDatabase):
         # Convert vector to Python list for PostgreSQL pgvector via asyncpg
         # register_vector() (called in initialize) sets up proper type codec
         # so Python lists bind correctly to vector columns.
+        vector_list: list[float] | None = None
         if entry.vector is not None:
             import numpy as np
 
             if isinstance(entry.vector, np.ndarray):
-                record["embedding"] = entry.vector.tolist()
+                vector_list = entry.vector.tolist()
             else:
-                record["embedding"] = list(entry.vector)
+                vector_list = list(entry.vector)
+
+        # Determine the target column for the vector based on the embedding
+        # model. Default to the 384-dim ``embedding`` column when no model is
+        # specified (backwards compat with pre-v0.12.0 callers).
+        target_column = "embedding"
+        if entry.embedding_model is not None:
+            target_column = MODEL_COLUMNS.get(entry.embedding_model, "embedding")
+
+        record[target_column] = vector_list
+        # Keep the legacy ``embedding`` key populated for backwards compat when
+        # the target column IS ``embedding`` — many callers read
+        # record["embedding"] directly.
+        if target_column == "embedding":
+            record["embedding"] = vector_list
         else:
+            # Ensure the generic ``embedding`` key is still present (NULL) so
+            # downstream code that unconditionally reads it doesn't KeyError.
             record["embedding"] = None
 
         record["content_hash"] = entry.content_hash or ""
@@ -360,17 +389,32 @@ class PostgresDatabase(VectorDatabase):
     async def add_memory(self, entry: MemoryEntry) -> str:
         """Add a single memory entry.
 
+        The vector is written to the column matching the model's
+        dimensionality, selected via ``entry.embedding_model``:
+
+          * ``all-MiniLM-L6-v2`` (or None) → ``embedding`` (384-dim)
+          * ``BAAI/bge-m3`` → ``embedding_bge_m3`` (1024-dim)
+          * ``BAAI/bge-large-en-v1.5`` → ``embedding_bge_large`` (1024-dim)
+
         Args:
             entry: MemoryEntry to add.
 
         Returns:
             The ID of the added memory entry.
         """
+        from memini_ai.model.manager import MODEL_COLUMNS
+
         await self.initialize()
         pool = await self._get_pool()
 
         record = self._entry_to_record(entry)
         memory_id = record["id"]
+
+        # Determine which column holds the vector for this entry
+        target_column = "embedding"
+        if entry.embedding_model is not None:
+            target_column = MODEL_COLUMNS.get(entry.embedding_model, "embedding")
+        vector_value = record.get(target_column)
 
         async with pool.acquire() as conn:
             # Use INSERT_MEMORY_DELTA if delta fields are present
@@ -379,6 +423,8 @@ class PostgresDatabase(VectorDatabase):
                 or record.get("structured_fields") is not None
                 or record.get("change_ratio", 1.0) != 1.0
             ):
+                # Delta inserts always go to the 384-dim embedding column
+                # (delta model predates multi-model support)
                 memory_id = await conn.fetchval(
                     INSERT_MEMORY_DELTA,
                     memory_id,
@@ -392,8 +438,34 @@ class PostgresDatabase(VectorDatabase):
                     record["change_ratio"],
                     record["created_at_ms"],
                 )
+            elif target_column == "embedding_bge_m3":
+                # BGE-M3 (1024-dim) → write to embedding_bge_m3 column
+                memory_id = await conn.fetchval(
+                    INSERT_MEMORY_BGE_M3,
+                    memory_id,
+                    record["text"],
+                    vector_value,
+                    record["source_type"],
+                    record["content_hash"],
+                    json.dumps(record["metadata"]),
+                    record["created_at_ms"],
+                    record["embedding_model"],
+                )
+            elif target_column == "embedding_bge_large":
+                # BGE-Large (1024-dim) → write to embedding_bge_large column
+                memory_id = await conn.fetchval(
+                    INSERT_MEMORY_BGE_LARGE,
+                    memory_id,
+                    record["text"],
+                    vector_value,
+                    record["source_type"],
+                    record["content_hash"],
+                    json.dumps(record["metadata"]),
+                    record["created_at_ms"],
+                    record["embedding_model"],
+                )
             elif record.get("embedding_model") is not None:
-                # Multi-model: include embedding_model tracking
+                # MiniLM with embedding_model tracking → INSERT_MEMORY_WITH_MODEL
                 memory_id = await conn.fetchval(
                     INSERT_MEMORY_WITH_MODEL,
                     memory_id,
@@ -406,6 +478,7 @@ class PostgresDatabase(VectorDatabase):
                     record["embedding_model"],
                 )
             else:
+                # Legacy: no embedding_model, 384-dim embedding column
                 memory_id = await conn.fetchval(
                     INSERT_MEMORY,
                     memory_id,

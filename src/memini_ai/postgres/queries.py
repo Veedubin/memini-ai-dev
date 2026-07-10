@@ -657,3 +657,23 @@ INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata,
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id
 """
+
+# Insert memory with embedding written to the BGE-M3 column (1024-dim)
+# Used when embedding_model is BAAI/bge-m3 so the vector lands in the
+# embedding_bge_m3 column instead of the default embedding (384-dim).
+INSERT_MEMORY_BGE_M3 = """
+INSERT INTO memories (id, text, embedding_bge_m3, source_type, content_hash, metadata,
+                      created_at_ms, embedding_model)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id
+"""
+
+# Insert memory with embedding written to the BGE-Large column (1024-dim)
+# Used when embedding_model is BAAI/bge-large-en-v1.5 so the vector lands in
+# the embedding_bge_large column instead of the default embedding (384-dim).
+INSERT_MEMORY_BGE_LARGE = """
+INSERT INTO memories (id, text, embedding_bge_large, source_type, content_hash, metadata,
+                      created_at_ms, embedding_model)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id
+"""
