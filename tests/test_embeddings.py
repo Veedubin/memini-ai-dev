@@ -77,6 +77,7 @@ class TestGenerateEmbedding:
         mock_transformer = _create_mock_transformer(1024)
 
         mock_manager = MagicMock()
+        mock_manager.has_dim_mismatch = False
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
             model_id="BAAI/bge-m3",
@@ -102,6 +103,7 @@ class TestGenerateEmbedding:
         mock_transformer = _create_mock_transformer(1024)
 
         mock_manager = MagicMock()
+        mock_manager.has_dim_mismatch = False
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
             model_id="BAAI/bge-m3",
@@ -127,6 +129,7 @@ class TestGenerateEmbeddings:
         mock_transformer = _create_mock_transformer(1024)
 
         mock_manager = MagicMock()
+        mock_manager.has_dim_mismatch = False
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
             model_id="BAAI/bge-m3",
@@ -155,6 +158,7 @@ class TestGenerateEmbeddings:
         mock_transformer = _create_mock_transformer(1024)
 
         mock_manager = MagicMock()
+        mock_manager.has_dim_mismatch = False
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
             model_id="BAAI/bge-m3",
@@ -181,6 +185,7 @@ class TestEmbeddingMetadata:
         mock_transformer = _create_mock_transformer(1024)
 
         mock_manager = MagicMock()
+        mock_manager.has_dim_mismatch = False
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
             model_id="BAAI/bge-m3",
@@ -205,6 +210,7 @@ class TestEmbeddingMetadata:
         mock_transformer = _create_mock_transformer(1024)
 
         mock_manager = MagicMock()
+        mock_manager.has_dim_mismatch = False
         mock_manager.acquire = AsyncMock(return_value=mock_transformer)
         mock_manager.get_metadata.return_value = MagicMock(
             model_id="BAAI/bge-m3",

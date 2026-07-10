@@ -20,7 +20,9 @@ from memini_ai.memory.schema import (
 )
 from memini_ai.memory.search import MemorySearch
 from memini_ai.model.embeddings import generate_embedding
+from memini_ai.model.manager import ModelManager
 from memini_ai.utils.hash import hash_content
+from memini_ai.utils.logger import logger
 
 
 @dataclass
@@ -172,8 +174,25 @@ class MemorySystem:
         # Generate 384-dim vector if not present. The MiniLM embedder is the
         # current model — same path used in v0.6.x.
         if input.vector is None:
-            embedding = await generate_embedding(input.text)
-            input.vector = embedding.embedding
+            try:
+                embedding = await generate_embedding(input.text)
+                input.vector = embedding.embedding
+            except Exception as e:
+                # v0.7.7: EmbeddingDimMismatchError — the loaded model's dim
+                # doesn't match the DB column. Store the memory with a NULL
+                # embedding so the content is preserved; vector search will
+                # be disabled until the mismatch is resolved.
+                from memini_ai.model.manager import EmbeddingDimMismatchError
+
+                if isinstance(e, EmbeddingDimMismatchError):
+                    logger.warning(
+                        "add_memory_embedding_dim_mismatch",
+                        message=str(e),
+                        content_prefix=input.text[:80],
+                    )
+                    input.vector = None
+                else:
+                    raise
 
         # Set content hash
         if not input.content_hash:
@@ -376,6 +395,13 @@ class MemorySystem:
             raise ValueError(
                 f"Invalid embedding_mode '{mode}'. Must be one of: cpu, auto, gpu"
             )
+
+        # v0.7.7: if the loaded model's dim doesn't match config.embedding_dim,
+        # vector search would produce bad results (or crash the embedder).
+        # Fall back to text-only search so the system stays usable.
+        manager = ModelManager.get_instance()
+        if manager.has_dim_mismatch:
+            options.strategy = SearchStrategy.TEXT_ONLY
 
         # Get query collections
         collections = self._config.query_collections

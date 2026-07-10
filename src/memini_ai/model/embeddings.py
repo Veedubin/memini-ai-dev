@@ -8,7 +8,7 @@ from math import ceil
 
 from pydantic import BaseModel
 
-from memini_ai.model.manager import ModelManager
+from memini_ai.model.manager import EmbeddingDimMismatchError, ModelManager
 
 
 class EmbeddingResult(BaseModel):
@@ -67,6 +67,17 @@ async def generate_embeddings(
 
     manager = ModelManager.get_instance()
     model = await manager.acquire()
+
+    # v0.7.7: if the loaded model's dim doesn't match config.embedding_dim,
+    # refuse to generate vectors. Callers (add_memory) should catch this and
+    # store the memory with embedding=NULL.
+    if manager.has_dim_mismatch:
+        manager.release()
+        raise EmbeddingDimMismatchError(
+            model_id=manager._model_id,
+            model_dim=manager._dimensions,
+            config_dim=manager.embedding_dim,
+        )
 
     metadata = manager.get_metadata()
     results: list[EmbeddingResult] = []

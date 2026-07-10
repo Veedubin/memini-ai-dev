@@ -336,6 +336,140 @@ class TestTextOnlySearch:
 
         assert len(results) <= 5
 
+    @pytest.mark.asyncio
+    async def test_text_only_empty_query_returns_empty(
+        self, mock_db: MagicMock, mock_entries: list[MemoryEntry]
+    ) -> None:
+        """Empty query string should return [] (not crash, not return all)."""
+        from memini_ai.memory.search import MemorySearch
+
+        mock_db.list_memories = AsyncMock(return_value=mock_entries)
+        search = MemorySearch(mock_db)
+        await search._build_bm25_index()
+
+        assert await search.text_only_search("", SearchOptions(top_k=5)) == []
+        assert await search.text_only_search("   ", SearchOptions(top_k=5)) == []
+
+    @pytest.mark.asyncio
+    async def test_text_only_whitespace_query_returns_empty(
+        self, mock_db: MagicMock, mock_entries: list[MemoryEntry]
+    ) -> None:
+        """Whitespace-only query should return [] (not all results with score 1.0)."""
+        from memini_ai.memory.search import MemorySearch
+
+        mock_db.list_memories = AsyncMock(return_value=mock_entries)
+        search = MemorySearch(mock_db)
+        await search._build_bm25_index()
+
+        # Regression: before the fix, empty query tokens caused
+        # _normalize_bm25_scores to return [1.0]*N (all-same-scores edge
+        # case), returning ALL memories as if they were perfect matches.
+        results = await search.text_only_search("\t\n  ", SearchOptions(top_k=5))
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_text_only_empty_corpus_no_crash(self, mock_db: MagicMock) -> None:
+        """All-empty-text memories should not crash BM25Okapi (ZeroDivisionError)."""
+        from memini_ai.memory.search import MemorySearch
+
+        empty_entries = [
+            MemoryEntry(
+                id="empty-1",
+                text="",
+                source_type=MemorySourceType.session,
+                content_hash="e1",
+            ),
+            MemoryEntry(
+                id="empty-2",
+                text="   ",
+                source_type=MemorySourceType.session,
+                content_hash="e2",
+            ),
+        ]
+        mock_db.list_memories = AsyncMock(return_value=empty_entries)
+        search = MemorySearch(mock_db)
+
+        # Before the fix this raised ZeroDivisionError inside BM25Okapi
+        # because all token lists were empty.
+        await search._build_bm25_index()
+        results = await search.text_only_search("anything", SearchOptions(top_k=5))
+        assert results == []
+        assert search._bm25_index is None
+
+    @pytest.mark.asyncio
+    async def test_text_only_filters_empty_text_memories_from_corpus(
+        self, mock_db: MagicMock, mock_entries: list[MemoryEntry]
+    ) -> None:
+        """Empty-text memories in the DB should be filtered, not crash or skew."""
+        from memini_ai.memory.search import MemorySearch
+
+        # Mix of valid and empty-text memories
+        mixed = [
+            mock_entries[0],
+            MemoryEntry(
+                id="empty",
+                text="",
+                source_type=MemorySourceType.session,
+                content_hash="empty",
+            ),
+            mock_entries[1],
+        ]
+        mock_db.list_memories = AsyncMock(return_value=mixed)
+        search = MemorySearch(mock_db)
+        await search._build_bm25_index()
+
+        # Only the 2 valid entries should be in the corpus
+        assert len(search._bm25_corpus) == 2
+        results = await search.text_only_search(
+            "python programming", SearchOptions(top_k=5)
+        )
+        # Empty-text memory should never appear in results
+        result_ids = [r.id for r in results]
+        assert "empty" not in result_ids
+
+
+class TestTextSearchCollection:
+    """Tests for text_search_collection method — BM25 within a collection."""
+
+    @pytest.mark.asyncio
+    async def test_collection_empty_query_returns_empty(
+        self, mock_db: MagicMock, mock_entries: list[MemoryEntry]
+    ) -> None:
+        """Empty query should return [] (not crash)."""
+        from memini_ai.memory.search import MemorySearch
+
+        mock_db.scroll_collection = AsyncMock(return_value=mock_entries)
+        search = MemorySearch(mock_db)
+
+        assert await search.text_search_collection("", "memories") == []
+        assert await search.text_search_collection("   ", "memories") == []
+
+    @pytest.mark.asyncio
+    async def test_collection_all_empty_text_no_crash(self, mock_db: MagicMock) -> None:
+        """All-empty-text entries in collection should not crash BM25Okapi."""
+        from memini_ai.memory.search import MemorySearch
+
+        empty_entries = [
+            MemoryEntry(
+                id="e1",
+                text="",
+                source_type=MemorySourceType.session,
+                content_hash="h1",
+            ),
+            MemoryEntry(
+                id="e2",
+                text="   ",
+                source_type=MemorySourceType.session,
+                content_hash="h2",
+            ),
+        ]
+        mock_db.scroll_collection = AsyncMock(return_value=empty_entries)
+        search = MemorySearch(mock_db)
+
+        # Before the fix this raised ZeroDivisionError
+        results = await search.text_search_collection("query", "memories")
+        assert results == []
+
 
 class TestParallelSearch:
     """Tests for parallel_search strategy."""

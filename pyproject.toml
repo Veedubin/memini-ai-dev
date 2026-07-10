@@ -1,6 +1,6 @@
 [project]
 name = "memini-ai-dev"
-version = "0.7.6"
+version = "0.7.7"
 description = "Local-first semantic memory server with vector search"
 readme = "README.md"
 requires-python = ">=3.11"

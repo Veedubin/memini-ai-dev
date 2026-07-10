@@ -201,6 +201,21 @@ class MCPServer:
         for attempt in range(max_attempts):
             try:
                 await system.initialize()
+                # v0.7.7: auto-detect new deployments (0 memories) and default
+                # to BGE-M3. Only fires when auto_detect_model is True and
+                # the model_name is still at the factory default.
+                from memini_ai.model.manager import ModelManager
+
+                count = await system._db.count_memories()
+                overridden = await ModelManager.auto_detect_model(memory_count=count)
+                if overridden:
+                    # The model_name was changed — re-initialize the memory
+                    # system so the new model_name is picked up by the
+                    # ModelManager singleton on first acquire().
+                    await system.close()
+                    system = MemorySystem()
+                    await system.initialize()
+                    count = await system._db.count_memories()
                 # Initialize trust engine with memory system
                 self._trust_engine = TrustEngine(memory_system=system)
                 # Initialize memory graph with memory system
@@ -830,11 +845,27 @@ class MCPServer:
 
         # Check model (always ready if we got here)
         model_ready = True
+        model_name: str | None = None
+        model_dimension: int | None = None
+        embedding_dim_mismatch = False
+        embedding_dim_expected: int | None = None
+        embedding_dim_actual: int | None = None
         try:
             from memini_ai.model.manager import ModelManager
 
             manager = ModelManager.get_instance()
             model_ready = manager.get_dimensions() > 0
+            # v0.7.7: expose model + dim mismatch details for observability.
+            model_name = manager._model_id
+            model_dimension = manager._dimensions
+            embedding_dim_mismatch = manager.has_dim_mismatch
+            embedding_dim_expected = manager.embedding_dim
+            # actual_dim is the model's real output dim (may differ from
+            # config.embedding_dim when there's a mismatch).
+            if manager._model is not None:
+                embedding_dim_actual = manager._model.get_embedding_dimension()
+            elif model_dimension is not None:
+                embedding_dim_actual = model_dimension
         except Exception:
             pass
 
@@ -900,6 +931,11 @@ class MCPServer:
             "memoryCount": memory_count,
             "thoughtsCount": thoughts_count,
             "queryLatencyMs": query_latency_ms,
+            "modelName": model_name,
+            "modelDimension": model_dimension,
+            "embeddingDimMismatch": embedding_dim_mismatch,
+            "embeddingDimExpected": embedding_dim_expected,
+            "embeddingDimActual": embedding_dim_actual,
             "initError": self._init_error,
         }
 

@@ -46,23 +46,41 @@ class MemorySearch:
         return text.lower().split()
 
     async def _build_bm25_index(self) -> None:
-        """Build or rebuild BM25 index from all memories."""
+        """Build or rebuild BM25 index from all memories.
+
+        Memories with empty/whitespace-only text are filtered out because
+        ``BM25Okapi`` divides by the corpus frequency of each token — if
+        every document is empty the internal ``idf`` computation hits a
+        ``ZeroDivisionError``. Individual empty token lists are also
+        dropped because they produce all-zero scores that skew ranking.
+        """
         async with self._bm25_lock:
-            # Get all memories
+            # Get all memories (list_memories already filters is_archived=FALSE)
             memories = await self._db.list_memories()
 
-            # Handle empty corpus - skip BM25 index building
+            # Filter out memories with empty/whitespace text — they break
+            # BM25Okapi and contribute nothing to text search.
+            memories = [m for m in memories if m.text and m.text.strip()]
+
             if not memories:
                 self._bm25_index = None
                 self._bm25_corpus = []
                 return
 
-            # Tokenize corpus
-            corpus_tokens = [self._tokenize(m.text) for m in memories]
+            # Tokenize corpus, then drop any remaining empty token lists
+            # (e.g. text that was all punctuation with no whitespace splits).
+            valid_pairs = [
+                (m, t) for m in memories for t in [self._tokenize(m.text)] if t
+            ]
 
-            # Build BM25 index
-            self._bm25_index = BM25Okapi(corpus_tokens)
-            self._bm25_corpus = memories
+            if not valid_pairs:
+                self._bm25_index = None
+                self._bm25_corpus = []
+                return
+
+            valid_memories, valid_tokens = zip(*valid_pairs, strict=True)
+            self._bm25_index = BM25Okapi(list(valid_tokens))
+            self._bm25_corpus = list(valid_memories)
 
     async def _ensure_bm25(self) -> None:
         """Ensure BM25 index is built."""
@@ -258,13 +276,19 @@ class MemorySearch:
         Returns:
             List of MemoryEntry objects.
         """
+        # Empty/whitespace query → no results (don't crash or return all)
+        if not question or not question.strip():
+            return []
+
         await self._ensure_bm25()
 
         if self._bm25_index is None or not self._bm25_corpus:
             return []
 
-        # Tokenize query
+        # Tokenize query — guard against all-punctuation/whitespace queries
         query_tokens = self._tokenize(question)
+        if not query_tokens:
+            return []
 
         # Get BM25 scores
         raw_scores = self._bm25_index.get_scores(query_tokens)
@@ -428,24 +452,40 @@ class MemorySearch:
         Returns:
             List of MemoryEntry objects.
         """
+        # Empty/whitespace query → no results
+        if not query or not query.strip():
+            return []
+
         # Get all entries from collection
         entries = await self._db.scroll_collection(collection_name, limit=1000)
 
         if not entries:
             return []
 
-        # Build temporary BM25 index
-        corpus_tokens = [self._tokenize(e.text) for e in entries]
-        bm25 = BM25Okapi(corpus_tokens)
+        # Filter out empty-text entries — they break BM25Okapi
+        entries = [e for e in entries if e.text and e.text.strip()]
+        if not entries:
+            return []
 
-        # Score
+        # Build temporary BM25 index, dropping empty token lists
+        valid_pairs = [(e, t) for e in entries for t in [self._tokenize(e.text)] if t]
+        if not valid_pairs:
+            return []
+
+        valid_entries, valid_tokens = zip(*valid_pairs, strict=True)
+        bm25 = BM25Okapi(list(valid_tokens))
+
+        # Score — guard against empty query tokens
         query_tokens = self._tokenize(query)
+        if not query_tokens:
+            return []
+
         scores = bm25.get_scores(query_tokens)
         normalized = self._normalize_bm25_scores(scores.tolist())
 
         # Sort and return top results
         scored_entries = sorted(
-            zip(entries, normalized, strict=True),
+            zip(valid_entries, normalized, strict=True),
             key=lambda x: x[1],
             reverse=True,
         )

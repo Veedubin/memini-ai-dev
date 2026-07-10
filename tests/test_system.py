@@ -492,3 +492,105 @@ class TestContentExists:
             result = await system.content_exists("nonexistent text")
 
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# v0.7.7: Embedding dim mismatch graceful degradation
+# ---------------------------------------------------------------------------
+
+
+class TestAddMemoryDimMismatch:
+    """Tests for add_memory when EmbeddingDimMismatchError is raised."""
+
+    @pytest.mark.asyncio
+    async def test_add_memory_stores_null_embedding_on_mismatch(
+        self, mock_db: MagicMock, mock_search: MagicMock
+    ) -> None:
+        """When generate_embedding raises EmbeddingDimMismatchError, the
+        memory should still be stored with vector=None (NULL embedding).
+        """
+        from memini_ai.model.manager import EmbeddingDimMismatchError
+
+        system = MemorySystem(db=mock_db, search=mock_search)
+
+        entry = MemoryEntry(
+            text="Test memory with mismatch",
+            source_type=MemorySourceType.session,
+            content_hash="abc123",
+        )
+
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(
+                    side_effect=EmbeddingDimMismatchError(
+                        model_id="BAAI/bge-m3",
+                        model_dim=1024,
+                        config_dim=384,
+                    )
+                ),
+            ),
+            patch("memini_ai.memory.system.hash_content", return_value="abc123"),
+        ):
+            await system.add_memory(entry)
+
+        # The entry's vector should be None (no embedding generated)
+        assert entry.vector is None
+        # The DB add_memory should still have been called (stores with NULL vector)
+        mock_db.add_memory.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_add_memory_reraises_non_mismatch_errors(
+        self, mock_db: MagicMock, mock_search: MagicMock
+    ) -> None:
+        """Non-EmbeddingDimMismatchError exceptions from generate_embedding
+        should be re-raised, not swallowed.
+        """
+        system = MemorySystem(db=mock_db, search=mock_search)
+
+        entry = MemoryEntry(
+            text="Test memory with other error",
+            source_type=MemorySourceType.session,
+            content_hash="abc123",
+        )
+
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(side_effect=RuntimeError("model download failed")),
+            ),
+            patch("memini_ai.memory.system.hash_content", return_value="abc123"),
+            pytest.raises(RuntimeError, match="model download failed"),
+        ):
+            await system.add_memory(entry)
+
+
+class TestQueryMemoriesDimMismatch:
+    """Tests for query_memories when has_dim_mismatch is True."""
+
+    @pytest.mark.asyncio
+    async def test_query_falls_back_to_text_only_on_mismatch(
+        self, mock_db: MagicMock, mock_search: MagicMock
+    ) -> None:
+        """When has_dim_mismatch=True, query_memories should force
+        SearchStrategy.TEXT_ONLY.
+        """
+        from memini_ai.model.manager import ModelManager
+
+        # Mock the ModelManager singleton to report a dim mismatch
+        mock_manager = MagicMock()
+        mock_manager.has_dim_mismatch = True
+
+        mock_search.query = AsyncMock(return_value=[])
+
+        system = MemorySystem(db=mock_db, search=mock_search)
+        await system.initialize()
+
+        with patch.object(ModelManager, "get_instance", return_value=mock_manager):
+            options = SearchOptions(top_k=10, strategy=SearchStrategy.TIERED)
+            await system.query_memories("test query", options)
+
+        # The strategy should have been overridden to TEXT_ONLY
+        assert options.strategy == SearchStrategy.TEXT_ONLY
+        # The search should have been called (text-only fallback)
+        mock_search.query.assert_called_once()

@@ -6,8 +6,10 @@ Integration tests require a running PostgreSQL instance.
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -15,6 +17,34 @@ import pytest
 from memini_ai.config import MeminiConfig
 from memini_ai.memory.schema import MemorySourceType
 from memini_ai.thought_chains import Thought, ThoughtChain, ThoughtChains
+
+
+# ---------------------------------------------------------------------------
+# Env isolation fixture
+# ---------------------------------------------------------------------------
+# ThoughtChains.is_enabled reads from the get_config() singleton, which in
+# turn reads THOUGHT_CHAINS from env vars AND the project .env file. When
+# the shell or .env has THOUGHT_CHAINS=true (as in the dev environment),
+# tests that assert "disabled by default" fail. This fixture chdir's to a
+# clean temp dir (no .env) and resets the config singleton so each test
+# gets a fresh MeminiConfig with default values.
+@pytest.fixture(autouse=True)
+def _isolate_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Isolate thought-chain tests from shell/env config leaks."""
+    monkeypatch.chdir(tmp_path)
+    # Delete THOUGHT_CHAINS and all MEMINI_ env vars
+    monkeypatch.delenv("THOUGHT_CHAINS", raising=False)
+    for key in list(os.environ):
+        if key.startswith("MEMINI_") or key == "THOUGHT_CHAINS":
+            monkeypatch.delenv(key, raising=False)
+    # Reset the get_config() singleton so it re-reads from the now-clean env
+    import memini_ai.config as _cfg_mod
+
+    monkeypatch.setattr(_cfg_mod, "_config", None)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

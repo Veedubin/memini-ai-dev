@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -363,3 +363,78 @@ class TestGracefulDegradation:
 
         # In degraded mode, memory should not be ready (no memory system initialized)
         assert result["memoryReady"] is False
+
+
+# ---------------------------------------------------------------------------
+# v0.7.7: get_status embedding observability fields
+# ---------------------------------------------------------------------------
+
+
+class TestGetStatusEmbeddingFields:
+    """Tests for v0.7.7 get_status embedding observability fields."""
+
+    @pytest.mark.asyncio
+    async def test_get_status_includes_embedding_fields(
+        self,
+        mcp_server: MCPServer,
+        mock_memory_system: MagicMock,
+    ) -> None:
+        """get_status must include modelName, modelDimension,
+        embeddingDimMismatch, embeddingDimExpected, embeddingDimActual.
+        """
+        mcp_server._memory_system = mock_memory_system
+
+        # Mock ModelManager so the get_status code path can read the fields
+        from memini_ai.model.manager import ModelManager
+
+        mock_manager = MagicMock()
+        mock_manager._model_id = "sentence-transformers/all-MiniLM-L6-v2"
+        mock_manager._dimensions = 384
+        mock_manager.has_dim_mismatch = False
+        mock_manager.embedding_dim = 384
+        mock_manager._model = MagicMock()
+        mock_manager._model.get_embedding_dimension.return_value = 384
+        mock_manager.get_dimensions.return_value = 384
+
+        with patch.object(ModelManager, "get_instance", return_value=mock_manager):
+            result = await mcp_server.get_status()
+
+        assert "modelName" in result
+        assert "modelDimension" in result
+        assert "embeddingDimMismatch" in result
+        assert "embeddingDimExpected" in result
+        assert "embeddingDimActual" in result
+        assert result["modelName"] == "sentence-transformers/all-MiniLM-L6-v2"
+        assert result["modelDimension"] == 384
+        assert result["embeddingDimMismatch"] is False
+        assert result["embeddingDimExpected"] == 384
+        assert result["embeddingDimActual"] == 384
+
+    @pytest.mark.asyncio
+    async def test_get_status_reports_mismatch(
+        self,
+        mcp_server: MCPServer,
+        mock_memory_system: MagicMock,
+    ) -> None:
+        """When has_dim_mismatch=True, get_status should surface it."""
+        mcp_server._memory_system = mock_memory_system
+
+        from memini_ai.model.manager import ModelManager
+
+        mock_manager = MagicMock()
+        mock_manager._model_id = "BAAI/bge-m3"
+        mock_manager._dimensions = 1024
+        mock_manager.has_dim_mismatch = True
+        mock_manager.embedding_dim = 384
+        mock_manager._model = MagicMock()
+        mock_manager._model.get_embedding_dimension.return_value = 1024
+        mock_manager.get_dimensions.return_value = 1024
+
+        with patch.object(ModelManager, "get_instance", return_value=mock_manager):
+            result = await mcp_server.get_status()
+
+        assert result["embeddingDimMismatch"] is True
+        assert result["embeddingDimExpected"] == 384
+        assert result["embeddingDimActual"] == 1024
+        assert result["modelName"] == "BAAI/bge-m3"
+        assert result["modelDimension"] == 1024

@@ -44,6 +44,18 @@ class MeminiConfig(BaseSettings):
         default=5, alias="AUTO_EXTRACT_INTERVAL_SECONDS"
     )
 
+    # Embedding policy (v0.7.7+)
+    # When True, a model dim mismatch raises RuntimeError at load time
+    # (old behavior). When False (default), a dim mismatch logs a warning
+    # and degrades to text-only search.
+    strict_embedding_dim: bool = Field(
+        default=False, alias="MEMINI_STRICT_EMBEDDING_DIM"
+    )
+    # When True (default), new deployments (0 memories) with the default
+    # model (all-MiniLM-L6-v2) are auto-upgraded to BGE-M3 (1024-dim).
+    # Existing deployments (memory_count > 0) keep their configured model.
+    auto_detect_model: bool = Field(default=True, alias="MEMINI_AUTO_DETECT_MODEL")
+
     # Multi-model embedding support (v0.12.0+)
     # The active model used for NEW writes. Must be one of ENABLED_MODELS.
     model_name: str = Field(default="all-MiniLM-L6-v2", alias="MEMINI_MODEL_NAME")

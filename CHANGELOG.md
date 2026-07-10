@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.7] - 2026-07-10
+
+### Changed
+
+- **BGE-M3 is now the recommended default for new deployments.** On first
+  startup with an empty database (0 memories), memini-ai auto-detects the
+  greenfield state and defaults to `BAAI/bge-m3` (1024-dim) instead of
+  `all-MiniLM-L6-v2` (384-dim). Existing users with data are **not
+  affected** — your current model and dimension settings are preserved.
+  Set `MEMINI_AUTO_DETECT_MODEL=false` to disable auto-detection.
+- **Dimension mismatch no longer crashes the server.** When
+  `MEMINI_MODEL_NAME` and `MEMINI_EMBEDDING_DIM` disagree, the server now
+  logs a warning and degrades gracefully to text-only search instead of
+  raising a `RuntimeError`. Vector search is disabled until the mismatch
+  is resolved. The old strict behavior is available via
+  `MEMINI_STRICT_EMBEDDING_DIM=true`.
+
+### Added
+
+- `docs/upgrading-embeddings.md` — a mini-how-to covering why and when
+  to upgrade from MiniLM to BGE-M3, a 4-step migration recipe, rollback
+  instructions, new-deployment guidance, and an FAQ.
+- `MEMINI_STRICT_EMBEDDING_DIM` env var (default `false`): opt in to the
+  old crash-on-mismatch behavior for safety-conscious deployments.
+- `MEMINI_AUTO_DETECT_MODEL` env var (default `true`): opt out of the
+  new-deployment auto-detection.
+- `get_status` now reports `embeddingDimMismatch`, `embeddingDimExpected`,
+  `embeddingDimActual`, `modelName`, and `modelDimension`.
+
+### Migration
+
+- Existing users: **no action required.** Your MiniLM 384-dim setup
+  continues to work exactly as before.
+- Users who want to upgrade to BGE-M3: see `docs/upgrading-embeddings.md`
+  and run `archives/memini-embedding-migration-2026-07-10/migrate_minilm_to_bge_m3.py`.
+- The migration script is non-destructive — your original 384-dim vectors
+  are preserved in the `embedding` column.
+
 ## [0.7.6] - 2026-07-10
 
 ### Removed (BGE-Large support)

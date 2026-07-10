@@ -11,6 +11,61 @@ import pytest
 
 from memini_ai.config import MeminiConfig, _sanitize_project_id, get_config
 
+# ---------------------------------------------------------------------------
+# Env isolation fixture
+# ---------------------------------------------------------------------------
+# Several tests in this file assert that MeminiConfig defaults are None/False.
+# When the shell (or the project .env file) has MEMINI_PROJECT_ID,
+# THOUGHT_CHAINS, or other feature toggles set, those leak into the test
+# process via pydantic-settings' env_file + env_prefix mechanism and break
+# the default-value assertions.
+#
+# The fixture chdir's to a fresh temp directory (no .env, no
+# .opencode/memini-ai/config.json) and deletes all MEMINI_/THOUGHT_CHAINS/
+# related env vars so each test starts from a clean config baseline.
+# Tests that explicitly set env vars (e.g. via monkeypatch.setenv) still
+# work because monkeypatch is session-scoped per-test.
+_ENV_VARS_TO_ISOLATE = [
+    "MEMINI_PROJECT_ID",
+    "THOUGHT_CHAINS",
+    "MEMINI_TRUST_ENGINE",
+    "MEMINI_KG_ENABLED",
+    "MEMINI_TIERED_LOADING",
+    "MEMINI_DIALECTIC_ENABLED",
+    "MEMINI_MEMORY_GRAPH",
+    "MEMINI_MULTI_PEER_ENABLED",
+    "MEMINI_USER_MODELING",
+    "MEMINI_DECAY_ENABLED",
+    "MEMINI_AUTO_EXTRACT",
+    "MEMINI_PRECOMPRESS",
+    "MEMINI_DB_URL",
+    "MEMINI_EMBEDDING_DIM",
+    "MEMINI_EMBEDDING_MODE",
+    "MEMINI_ELEVATE_ENABLED",
+    "MEMINI_RRF_K",
+    "DB_SSLMODE",
+    "LLM_URL",
+]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Isolate config tests from shell/env leaks.
+
+    Chdir to a temp dir (no .env, no JSON config) and delete all
+    memini-related env vars so default-value assertions are reliable.
+    """
+    monkeypatch.chdir(tmp_path)
+    for var in _ENV_VARS_TO_ISOLATE:
+        monkeypatch.delenv(var, raising=False)
+    # Also clear any other MEMINI_ vars that might leak from the shell
+    for key in list(os.environ):
+        if key.startswith("MEMINI_") or key == "THOUGHT_CHAINS":
+            monkeypatch.delenv(key, raising=False)
+
 
 class TestMeminiConfigDefaults:
     """Tests for default configuration values."""
@@ -260,3 +315,38 @@ class TestGetConfig:
         config1 = get_config()
         config2 = get_config()
         assert config1 is config2
+
+
+# ---------------------------------------------------------------------------
+# v0.7.7: Embedding policy config fields
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddingPolicyConfig:
+    """Tests for strict_embedding_dim and auto_detect_model config fields."""
+
+    def test_strict_embedding_dim_default_false(self) -> None:
+        """strict_embedding_dim should default to False (lenient mode)."""
+        config = MeminiConfig()
+        assert config.strict_embedding_dim is False
+
+    def test_auto_detect_model_default_true(self) -> None:
+        """auto_detect_model should default to True (auto-detect new deployments)."""
+        config = MeminiConfig()
+        assert config.auto_detect_model is True
+
+    def test_strict_embedding_dim_env_var_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MEMINI_STRICT_EMBEDDING_DIM=true should set strict_embedding_dim=True."""
+        monkeypatch.setenv("MEMINI_STRICT_EMBEDDING_DIM", "true")
+        config = MeminiConfig()
+        assert config.strict_embedding_dim is True
+
+    def test_auto_detect_model_env_var_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MEMINI_AUTO_DETECT_MODEL=false should set auto_detect_model=False."""
+        monkeypatch.setenv("MEMINI_AUTO_DETECT_MODEL", "false")
+        config = MeminiConfig()
+        assert config.auto_detect_model is False

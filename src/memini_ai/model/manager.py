@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from memini_ai.config import get_config
+from memini_ai.utils.logger import logger
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -17,9 +18,36 @@ if TYPE_CHECKING:
 BGE_M3_MODEL_ID = "BAAI/bge-m3"
 MINILM_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
+# Default model name (the factory default that auto-detection overrides)
+DEFAULT_MODEL_NAME = "all-MiniLM-L6-v2"
+
 # Model dimensions
 BGE_M3_DIM = 1024
 MINILM_DIM = 384
+
+
+class EmbeddingDimMismatchError(RuntimeError):
+    """Raised when the loaded model's output dim doesn't match config.embedding_dim.
+
+    Callers (like add_memory) should catch this and store the memory with
+    embedding=NULL, since the vector can't be written to the wrong-dim column.
+    """
+
+    def __init__(
+        self,
+        model_id: str | None,
+        model_dim: int | None,
+        config_dim: int,
+    ) -> None:
+        self.model_id = model_id
+        self.model_dim = model_dim
+        self.config_dim = config_dim
+        super().__init__(
+            f"Model '{model_id}' produces {model_dim}-dim vectors but "
+            f"config.embedding_dim={config_dim}. Vector generation disabled. "
+            f"Text search still works."
+        )
+
 
 # Model name → dimension mapping
 # Production-supported models: MiniLM (384-dim) and BGE-M3 (1024-dim).
@@ -98,8 +126,13 @@ class ModelManager:
         # model selection. Without this, MEMINI_EMBEDDING_DIM was a no-op and
         # a 1024-dim model could be selected for a 384-dim DB.
         self._embedding_dim: int = _config.embedding_dim
+        # v0.7.7: strict dim-mismatch behavior. When True, a dim mismatch
+        # raises RuntimeError (old behavior). When False (default), it
+        # logs a warning and degrades to text-only search.
+        self._strict_embedding_dim: bool = _config.strict_embedding_dim
         self._ref_count = 0
         self._dimensions: int | None = None
+        self._has_dim_mismatch: bool = False
         # Multi-model support (v0.12.0+): lazy-loaded model cache
         self._model_cache: dict[str, SentenceTransformer] = {}
         self._active_model_name: str = _normalize_model_name(_config.model_name)
@@ -185,17 +218,46 @@ class ModelManager:
         # dimension matches config.embedding_dim. This catches mismatches
         # even if the user picks a model whose dim doesn't match the DB column.
         assert self._model is not None  # Guaranteed by try block above
-        actual_dim = self._model.get_sentence_embedding_dimension()
+        # Use the new method name to avoid the FutureWarning from
+        # get_sentence_embedding_dimension (deprecated in sentence-transformers 3.x).
+        actual_dim = self._model.get_embedding_dimension()
         if actual_dim != self._embedding_dim:
-            self._model = None
-            self._model_id = None
-            self._dimensions = None
-            raise RuntimeError(
-                f"Model dimension mismatch: model '{model_id}' produces "
-                f"{actual_dim}-dim vectors but config.embedding_dim={self._embedding_dim}. "
-                f"This is a configuration error — set MEMINI_EMBEDDING_DIM={actual_dim} "
-                f"or choose a model that produces {self._embedding_dim}-dim vectors."
+            if self._strict_embedding_dim:
+                # Strict mode: refuse to start with a misconfiguration
+                self._model = None
+                self._model_id = None
+                self._dimensions = None
+                self._has_dim_mismatch = False
+                raise RuntimeError(
+                    f"Model dimension mismatch: model '{model_id}' produces "
+                    f"{actual_dim}-dim vectors but config.embedding_dim="
+                    f"{self._embedding_dim}. "
+                    f"This is a configuration error — set MEMINI_EMBEDDING_DIM="
+                    f"{actual_dim} "
+                    f"or choose a model that produces {self._embedding_dim}-dim "
+                    f"vectors. (Strict mode: set MEMINI_STRICT_EMBEDDING_DIM=false "
+                    f"to downgrade to a warning + text-only search.)"
+                )
+            # Lenient mode (default): warn and degrade to text-only
+            logger.warning(
+                "embedding_dim_mismatch",
+                model=model_id,
+                model_dim=actual_dim,
+                config_dim=self._embedding_dim,
+                message=(
+                    f"Model '{model_id}' produces {actual_dim}-dim vectors but "
+                    f"config.embedding_dim={self._embedding_dim}. "
+                    f"Vector search will be disabled. Text search still works. "
+                    f"See docs/upgrading-embeddings.md for the migration path. "
+                    f"Set MEMINI_STRICT_EMBEDDING_DIM=true to crash on this "
+                    f"instead."
+                ),
             )
+            self._has_dim_mismatch = True
+            # Keep the model loaded so get_status etc. still work, but mark
+            # the mismatch. generate_embedding() will check has_dim_mismatch
+            # and raise EmbeddingDimMismatchError to prevent writing bad
+            # vectors.
 
     def _should_use_gpu(self) -> bool:
         """Determine if GPU should be used based on config."""
@@ -233,6 +295,54 @@ class ModelManager:
             raise RuntimeError("Model not loaded. Call acquire() first.")
         return self._dimensions
 
+    @property
+    def has_dim_mismatch(self) -> bool:
+        """True if the loaded model's dim != config.embedding_dim.
+
+        When True, vector search is disabled — callers should fall back
+        to text-only search and store memories with embedding=NULL.
+        """
+        return self._has_dim_mismatch
+
+    @property
+    def embedding_dim(self) -> int:
+        """The configured embedding dimension (from config.embedding_dim)."""
+        return self._embedding_dim
+
+    @classmethod
+    async def auto_detect_model(cls, memory_count: int) -> bool:
+        """Auto-detect new deployments (0 memories) and default to BGE-M3.
+
+        Returns True if the model was overridden, False if config was
+        respected. Only fires when:
+        - ``MEMINI_AUTO_DETECT_MODEL`` is True (default)
+        - ``config.model_name`` is at the default value (all-MiniLM-L6-v2)
+        - ``memory_count == 0`` (no existing data to break)
+        """
+        config = get_config()
+        if not config.auto_detect_model:
+            return False
+        if config.model_name != DEFAULT_MODEL_NAME:
+            # User explicitly set a model — respect their choice
+            return False
+        if memory_count > 0:
+            # Existing user — keep their MiniLM
+            return False
+        # New deployment: switch to BGE-M3
+        logger.info(
+            "auto_detect_bge_m3",
+            reason="empty database + default model",
+            message=(
+                "Detected new deployment (0 memories). Switching to BGE-M3 "
+                "(1024-dim) for higher semantic precision. Set "
+                "MEMINI_AUTO_DETECT_MODEL=false to disable, or "
+                "MEMINI_MODEL_NAME=all-MiniLM-L6-v2 to keep MiniLM."
+            ),
+        )
+        config.model_name = BGE_M3_MODEL_ID
+        config.embedding_dim = BGE_M3_DIM
+        return True
+
     def get_metadata(self) -> ModelMetadata:
         """Get metadata about the currently loaded model.
 
@@ -256,6 +366,7 @@ class ModelManager:
         self._model = None
         self._model_id = None
         self._dimensions = None
+        self._has_dim_mismatch = False
 
     def is_gpu_available(self) -> bool:
         """Check if a GPU is available for embedding generation.
