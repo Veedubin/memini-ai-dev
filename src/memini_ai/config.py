@@ -44,6 +44,23 @@ class MeminiConfig(BaseSettings):
         default=5, alias="AUTO_EXTRACT_INTERVAL_SECONDS"
     )
 
+    # Multi-model embedding support (v0.12.0+)
+    # The active model used for NEW writes. Must be one of ENABLED_MODELS.
+    model_name: str = Field(default="all-MiniLM-L6-v2", alias="MEMINI_MODEL_NAME")
+    # All models the system knows about (for RRF query dispatch)
+    enabled_models: list[str] = Field(
+        default_factory=lambda: [
+            "all-MiniLM-L6-v2",
+            "BAAI/bge-m3",
+            "BAAI/bge-large-en-v1.5",
+        ],
+        alias="MEMINI_ENABLED_MODELS",
+    )
+    # When True, query_memories merges results from all model spaces via RRF
+    enable_rrf: bool = Field(default=True, alias="MEMINI_ENABLE_RRF")
+    # How many results to fetch from each model's vector space before fusion
+    rrf_top_k_per_model: int = Field(default=20, alias="RRF_TOP_K_PER_MODEL")
+
     # Database settings
     table_name: str = "memories"
     project_id: str | None = None

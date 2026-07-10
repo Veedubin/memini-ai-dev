@@ -21,7 +21,7 @@ References:
 from __future__ import annotations
 
 from collections.abc import Hashable, Sequence
-from typing import TypeVar
+from typing import Any, TypeVar
 
 T = TypeVar("T", bound=Hashable)
 
@@ -112,3 +112,152 @@ def rrf_with_limit(
     if limit is None:
         return [item for item, _ in fused]
     return [item for item, _ in fused[:limit]]
+
+
+# =============================================================================
+# Multi-model RRF search helper (v0.12.0+)
+# =============================================================================
+
+# Column name → model name mapping for multi-model dispatch
+COLUMN_TO_MODEL: dict[str, str] = {
+    "embedding": "all-MiniLM-L6-v2",
+    "embedding_bge_m3": "BAAI/bge-m3",
+    "embedding_bge_large": "BAAI/bge-large-en-v1.5",
+}
+
+# Model name → dimension mapping (mirrors model/manager.py MODEL_DIMS)
+MODEL_TO_DIM: dict[str, int] = {
+    "all-MiniLM-L6-v2": 384,
+    "BAAI/bge-m3": 1024,
+    "BAAI/bge-large-en-v1.5": 1024,
+}
+
+
+async def rrf_search(
+    conn: Any,
+    query_text: str,
+    embedder: Any,
+    k: int = 60,
+    top_k_per_model: int = 20,
+    final_top_k: int = 10,
+    enabled_columns: dict[str, int] | None = None,
+    distance_threshold: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Run RRF search across all enabled model vector spaces.
+
+    For each enabled model, embeds the query and runs top-k vector search
+    in that model's column, then merges the ranked lists using RRF.
+
+    Args:
+        conn: asyncpg Connection (already initialized with pgvector codec).
+        query_text: Query string to search for.
+        embedder: Object with an async ``embed(text, model_name)`` method
+            that returns ``(list[float], model_name)``.
+        k: RRF constant (default 60).
+        top_k_per_model: Results to fetch from each model (default 20).
+        final_top_k: Results to return after fusion (default 10).
+        enabled_columns: Dict mapping column name to dimension.
+            If None, uses all three: embedding(384), embedding_bge_m3(1024),
+            embedding_bge_large(1024).
+        distance_threshold: Max cosine distance for filtering (default 1.0 = all).
+
+    Returns:
+        List of dicts with keys: id, text, trust_score, embedding_model,
+        rrf_score, ranks, best_distance.
+    """
+    if enabled_columns is None:
+        enabled_columns = {
+            "embedding": 384,
+            "embedding_bge_m3": 1024,
+            "embedding_bge_large": 1024,
+        }
+
+    # Build SQL per column
+    column_sql: dict[str, str] = {
+        "embedding": """
+            SELECT id, text, trust_score, embedding_model,
+                   embedding <=> $1::vector as distance
+            FROM memories
+            WHERE embedding IS NOT NULL
+              AND embedding <=> $1::vector < $2
+              AND is_archived = false
+            ORDER BY embedding <=> $1::vector
+            LIMIT $3
+        """,
+        "embedding_bge_m3": """
+            SELECT id, text, trust_score, embedding_model,
+                   embedding_bge_m3 <=> $1::vector as distance
+            FROM memories
+            WHERE embedding_bge_m3 IS NOT NULL
+              AND embedding_bge_m3 <=> $1::vector < $2
+              AND is_archived = false
+            ORDER BY embedding_bge_m3 <=> $1::vector
+            LIMIT $3
+        """,
+        "embedding_bge_large": """
+            SELECT id, text, trust_score, embedding_model,
+                   embedding_bge_large <=> $1::vector as distance
+            FROM memories
+            WHERE embedding_bge_large IS NOT NULL
+              AND embedding_bge_large <=> $1::vector < $2
+              AND is_archived = false
+            ORDER BY embedding_bge_large <=> $1::vector
+            LIMIT $3
+        """,
+    }
+
+    all_results: dict[str, dict[str, Any]] = {}
+
+    for column, _dim in enabled_columns.items():
+        model_name = COLUMN_TO_MODEL.get(column)
+        if model_name is None:
+            continue
+        sql = column_sql.get(column)
+        if sql is None:
+            continue
+
+        # Embed the query with this model
+        try:
+            query_vector, used_model = await embedder.embed(
+                query_text, model_name=model_name
+            )
+        except Exception:
+            # Model not available — skip this column
+            continue
+
+        # Run top-k search
+        try:
+            rows = await conn.fetch(
+                sql, query_vector, distance_threshold, top_k_per_model
+            )
+        except Exception:
+            # Column might not exist — skip
+            continue
+
+        # Update RRF scores
+        for rank, row in enumerate(rows, start=1):
+            mid = str(row["id"])
+            rrf_contribution = 1.0 / (k + rank)
+            if mid not in all_results:
+                all_results[mid] = {
+                    "id": mid,
+                    "text": row["text"],
+                    "trust_score": (
+                        float(row["trust_score"])
+                        if row["trust_score"] is not None
+                        else 0.5
+                    ),
+                    "embedding_model": row["embedding_model"],
+                    "rrf_score": 0.0,
+                    "ranks": {},
+                    "best_distance": float(row["distance"]),
+                }
+            all_results[mid]["rrf_score"] += rrf_contribution
+            all_results[mid]["ranks"][model_name] = rank
+            dist = float(row["distance"])
+            if dist < all_results[mid]["best_distance"]:
+                all_results[mid]["best_distance"] = dist
+
+    # Sort by RRF score, return top-k
+    ranked = sorted(all_results.values(), key=lambda x: x["rrf_score"], reverse=True)
+    return ranked[:final_top_k]

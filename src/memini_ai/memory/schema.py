@@ -225,6 +225,13 @@ class MemoryEntry(BaseModel):
     project_id: str | None = Field(default=None, alias="projectId")
     score: float | None = None
 
+    # Multi-model embedding support (v0.12.0+)
+    embedding_model: str | None = Field(
+        default=None,
+        alias="embeddingModel",
+        description="Which embedding model produced the primary vector",
+    )
+
     # Trust engine fields
     trust_score: float = Field(default=TRUST_DEFAULT, alias="trustScore")
     retrieval_count: int = Field(default=0, alias="retrievalCount")

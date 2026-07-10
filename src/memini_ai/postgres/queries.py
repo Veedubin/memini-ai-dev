@@ -590,3 +590,70 @@ DELETE FROM memories_1024
 WHERE memory_id = $1
 RETURNING memory_id
 """
+
+# =============================================================================
+# Multi-Model RRF Queries (v0.12.0+)
+# =============================================================================
+#
+# These queries search individual model vector columns on the memories table.
+# Each returns memory IDs ordered by cosine distance for RRF fusion.
+
+# Search the MiniLM (384-dim) embedding column
+SEARCH_MEMORIES_MINILM = """
+SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
+       supersedes_id, structured_fields, change_ratio, created_at_ms,
+       embedding_model,
+       embedding <=> $1::vector as distance
+FROM memories
+WHERE embedding <=> $1::vector < $2
+AND is_archived = FALSE
+ORDER BY embedding <=> $1::vector
+LIMIT $3
+"""
+
+# Search the BGE-M3 (1024-dim) embedding column on the memories table
+SEARCH_MEMORIES_BGE_M3 = """
+SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
+       supersedes_id, structured_fields, change_ratio, created_at_ms,
+       embedding_model,
+       embedding_bge_m3 <=> $1::vector as distance
+FROM memories
+WHERE embedding_bge_m3 IS NOT NULL
+  AND embedding_bge_m3 <=> $1::vector < $2
+  AND is_archived = FALSE
+ORDER BY embedding_bge_m3 <=> $1::vector
+LIMIT $3
+"""
+
+# Search the BGE-Large (1024-dim) embedding column on the memories table
+SEARCH_MEMORIES_BGE_LARGE = """
+SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
+       supersedes_id, structured_fields, change_ratio, created_at_ms,
+       embedding_model,
+       embedding_bge_large <=> $1::vector as distance
+FROM memories
+WHERE embedding_bge_large IS NOT NULL
+  AND embedding_bge_large <=> $1::vector < $2
+  AND is_archived = FALSE
+ORDER BY embedding_bge_large <=> $1::vector
+LIMIT $3
+"""
+
+# Count how many memories have each embedding model populated
+COUNT_BY_EMBEDDING_MODEL = """
+SELECT
+    COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS minilm_count,
+    COUNT(*) FILTER (WHERE embedding_bge_m3 IS NOT NULL) AS bge_m3_count,
+    COUNT(*) FILTER (WHERE embedding_bge_large IS NOT NULL) AS bge_large_count,
+    COUNT(*) FILTER (WHERE embedding_model IS NOT NULL) AS model_tracked_count
+FROM memories
+WHERE is_archived = FALSE
+"""
+
+# Insert memory with embedding_model tracking
+INSERT_MEMORY_WITH_MODEL = """
+INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata,
+                      created_at_ms, embedding_model)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id
+"""

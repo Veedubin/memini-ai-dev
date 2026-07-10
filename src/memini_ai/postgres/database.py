@@ -32,6 +32,7 @@ from memini_ai.memory.schema import (
     SearchOptions,
 )
 from memini_ai.postgres.queries import (
+    COUNT_BY_EMBEDDING_MODEL,
     COUNT_MEMORIES_1024,
     COUNT_THOUGHTS,
     DELETE_ENTITY,
@@ -53,7 +54,11 @@ from memini_ai.postgres.queries import (
     INSERT_MEMORY,
     INSERT_MEMORY_1024,
     INSERT_MEMORY_DELTA,
+    INSERT_MEMORY_WITH_MODEL,
     SEARCH_MEMORIES_1024_VECTOR,
+    SEARCH_MEMORIES_BGE_LARGE,
+    SEARCH_MEMORIES_BGE_M3,
+    SEARCH_MEMORIES_MINILM,
     SEARCH_MEMORIES_VECTOR,
     UPDATE_MEMORY_METADATA,
     UPSERT_ENTITY,
@@ -305,6 +310,7 @@ class PostgresDatabase(VectorDatabase):
         )
         record["change_ratio"] = entry.change_ratio
         record["created_at_ms"] = entry.created_at_ms
+        record["embedding_model"] = entry.embedding_model
 
         return record
 
@@ -346,6 +352,7 @@ class PostgresDatabase(VectorDatabase):
             "structured_fields": row.get("structured_fields"),
             "change_ratio": row.get("change_ratio", 1.0),
             "created_at_ms": row.get("created_at_ms"),
+            "embedding_model": row.get("embedding_model"),
         }
 
         return MemoryEntry.model_validate(data)
@@ -384,6 +391,19 @@ class PostgresDatabase(VectorDatabase):
                     record["structured_fields"],
                     record["change_ratio"],
                     record["created_at_ms"],
+                )
+            elif record.get("embedding_model") is not None:
+                # Multi-model: include embedding_model tracking
+                memory_id = await conn.fetchval(
+                    INSERT_MEMORY_WITH_MODEL,
+                    memory_id,
+                    record["text"],
+                    record["embedding"],
+                    record["source_type"],
+                    record["content_hash"],
+                    json.dumps(record["metadata"]),
+                    record["created_at_ms"],
+                    record["embedding_model"],
                 )
             else:
                 memory_id = await conn.fetchval(
@@ -609,6 +629,111 @@ class PostgresDatabase(VectorDatabase):
                 results.append(self._row_to_memory(row, score=score))
 
             return results
+
+    async def search_memories_rrf(
+        self,
+        query_vectors: dict[str, list[float]],
+        options: SearchOptions,
+        enabled_columns: dict[str, str] | None = None,
+    ) -> list[MemoryEntry]:
+        """Search memories across multiple model vector spaces and fuse via RRF.
+
+        For each enabled model, runs top-k vector search in that model's column,
+        collects the ranked results, then merges using Reciprocal Rank Fusion.
+
+        Args:
+            query_vectors: Dict mapping model name to query vector.
+                e.g. {"all-MiniLM-L6-v2": [0.1, ...], "BAAI/bge-m3": [0.2, ...]}
+            options: Search options (top_k, threshold, etc.).
+            enabled_columns: Optional dict mapping model name to column name.
+                If None, uses all three: embedding, embedding_bge_m3, embedding_bge_large.
+
+        Returns:
+            List of MemoryEntry objects ordered by fused RRF score.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        if enabled_columns is None:
+            enabled_columns = {
+                "all-MiniLM-L6-v2": "embedding",
+                "BAAI/bge-m3": "embedding_bge_m3",
+                "BAAI/bge-large-en-v1.5": "embedding_bge_large",
+            }
+
+        # Map column names to their search SQL
+        column_to_query = {
+            "embedding": SEARCH_MEMORIES_MINILM,
+            "embedding_bge_m3": SEARCH_MEMORIES_BGE_M3,
+            "embedding_bge_large": SEARCH_MEMORIES_BGE_LARGE,
+        }
+
+        config = get_config()
+        top_k_per_model = max(options.top_k * 2, config.rrf_top_k_per_model)
+        distance_threshold = 1.0 - options.threshold
+
+        # Collect ranked results from each model space
+        # model_name -> list of (memory_id, row, distance)
+        per_model_results: dict[str, list[tuple[str, asyncpg.Record, float]]] = {}
+
+        async with pool.acquire() as conn:
+            for model_name, column in enabled_columns.items():
+                query_vec = query_vectors.get(model_name)
+                if query_vec is None:
+                    continue
+                sql = column_to_query.get(column)
+                if sql is None:
+                    continue
+                try:
+                    rows = await conn.fetch(
+                        sql,
+                        query_vec,
+                        distance_threshold,
+                        top_k_per_model,
+                    )
+                except Exception:
+                    # Column might not exist or vector is wrong dim — skip
+                    continue
+                per_model_results[model_name] = [
+                    (str(row["id"]), row, float(row["distance"])) for row in rows
+                ]
+
+        if not per_model_results:
+            return []
+
+        # RRF fusion: build ranked ID lists
+        ranked_lists: list[list[str]] = []
+        all_entries: dict[str, MemoryEntry] = {}
+        all_distances: dict[str, float] = {}
+
+        for _model_name, results in per_model_results.items():
+            ranked_ids: list[str] = []
+            for mid, row, dist in results:
+                ranked_ids.append(mid)
+                if mid not in all_entries:
+                    mem_entry = self._row_to_memory(row, score=1.0 - dist)
+                    all_entries[mid] = mem_entry
+                    all_distances[mid] = dist
+                else:
+                    # Keep the smallest (best) distance
+                    if dist < all_distances.get(mid, float("inf")):
+                        all_distances[mid] = dist
+            ranked_lists.append(ranked_ids)
+
+        # Use the RRF helper to fuse
+        from memini_ai.memory.rrf import rrf_with_limit
+
+        fused_ids = rrf_with_limit(ranked_lists, k=config.rrf_k, limit=options.top_k)
+
+        # Return entries in fused order with RRF score as score
+        result: list[MemoryEntry] = []
+        for mid in fused_ids:
+            entry: MemoryEntry | None = all_entries.get(mid)
+            if entry is not None:
+                # Score is the best cosine similarity across models
+                best_sim = 1.0 - all_distances.get(mid, 1.0)
+                result.append(entry.model_copy(update={"score": best_sim}))
+        return result
 
     async def list_memories(
         self,
@@ -1378,6 +1503,32 @@ class PostgresDatabase(VectorDatabase):
         async with pool.acquire() as conn:
             row = await conn.fetchval(DELETE_MEMORY_1024_BY_MEMORY_ID, memory_id)
         return str(row) if row else None
+
+    async def count_by_embedding_model(self) -> dict[str, int]:
+        """Count memories per embedding model (multi-model stats).
+
+        Returns:
+            Dict with keys: minilm_count, bge_m3_count, bge_large_count,
+            model_tracked_count.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(COUNT_BY_EMBEDDING_MODEL)
+        if row is None:
+            return {
+                "minilm_count": 0,
+                "bge_m3_count": 0,
+                "bge_large_count": 0,
+                "model_tracked_count": 0,
+            }
+        return {
+            "minilm_count": int(row["minilm_count"]),
+            "bge_m3_count": int(row["bge_m3_count"]),
+            "bge_large_count": int(row["bge_large_count"]),
+            "model_tracked_count": int(row["model_tracked_count"]),
+        }
 
 
 def create_postgres_database(

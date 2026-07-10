@@ -77,7 +77,14 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at_ms BIGINT DEFAULT 0,
     supersedes_id UUID REFERENCES memories(id) ON DELETE SET NULL,
     structured_fields JSONB DEFAULT NULL,
-    change_ratio FLOAT DEFAULT 1.0 CHECK (change_ratio >= 0 AND change_ratio <= 1)
+    change_ratio FLOAT DEFAULT 1.0 CHECK (change_ratio >= 0 AND change_ratio <= 1),
+
+    -- Multi-model embedding support (v0.12.0+)
+    -- Tracks which model produced the primary embedding column.
+    -- Nullable for backwards compat with pre-v0.12.0 rows.
+    embedding_model VARCHAR(100),
+    -- 1024-dim BGE-Large embedding (parallel to embedding_bge_m3)
+    embedding_bge_large vector(1024)
 );
 """
 
@@ -103,6 +110,14 @@ CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_
 
 -- Index for peer queries
 CREATE INDEX IF NOT EXISTS idx_memories_peer ON memories(peer_id) WHERE peer_id IS NOT NULL;
+
+-- Multi-model (v0.12.0+): BGE-Large vector index
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_bge_large ON memories
+USING diskann (embedding_bge_large vector_cosine_ops);
+
+-- Multi-model (v0.12.0+): embedding_model index for "what models are in use" queries
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_model ON memories (embedding_model)
+WHERE embedding_model IS NOT NULL;
 """
 
 # =============================================================================

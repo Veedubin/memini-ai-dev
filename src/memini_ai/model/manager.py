@@ -15,11 +15,27 @@ if TYPE_CHECKING:
 
 # Model identifiers
 BGE_LARGE_MODEL_ID = "BAAI/bge-large-en-v1.5"
+BGE_M3_MODEL_ID = "BAAI/bge-m3"
 MINILM_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Model dimensions
 BGE_LARGE_DIM = 1024
+BGE_M3_DIM = 1024
 MINILM_DIM = 384
+
+# Model name → dimension mapping
+MODEL_DIMS: dict[str, int] = {
+    MINILM_MODEL_ID: MINILM_DIM,
+    BGE_M3_MODEL_ID: BGE_M3_DIM,
+    BGE_LARGE_MODEL_ID: BGE_LARGE_DIM,
+}
+
+# Model name → column name in memories table
+MODEL_COLUMNS: dict[str, str] = {
+    MINILM_MODEL_ID: "embedding",
+    BGE_M3_MODEL_ID: "embedding_bge_m3",
+    BGE_LARGE_MODEL_ID: "embedding_bge_large",
+}
 
 
 @dataclass
@@ -63,6 +79,9 @@ class ModelManager:
         self._embedding_dim: int = _config.embedding_dim
         self._ref_count = 0
         self._dimensions: int | None = None
+        # Multi-model support (v0.12.0+): lazy-loaded model cache
+        self._model_cache: dict[str, SentenceTransformer] = {}
+        self._active_model_name: str = _config.model_name
 
     @classmethod
     def get_instance(cls) -> ModelManager:
@@ -240,3 +259,81 @@ class ModelManager:
             True if GPU (CUDA) is available, False otherwise.
         """
         return self._check_cuda_available()
+
+    # =========================================================================
+    # Multi-model support (v0.12.0+)
+    # =========================================================================
+
+    async def get_model_for(self, model_name: str) -> SentenceTransformer:
+        """Get (or lazy-load) a specific model by name.
+
+        Models are cached after first load. This enables RRF queries to
+        embed the query text with multiple models without reloading.
+
+        Args:
+            model_name: One of the keys in MODEL_DIMS.
+
+        Returns:
+            The loaded SentenceTransformer for the requested model.
+
+        Raises:
+            ValueError: If model_name is not recognized.
+            RuntimeError: If model download fails.
+        """
+        if model_name not in MODEL_DIMS:
+            raise ValueError(
+                f"Unknown model '{model_name}'. Known models: {list(MODEL_DIMS.keys())}"
+            )
+        if model_name in self._model_cache:
+            return self._model_cache[model_name]
+
+        from sentence_transformers import SentenceTransformer
+
+        device = (
+            "cuda"
+            if (self._should_use_gpu() and self._check_cuda_available())
+            else "cpu"
+        )
+        try:
+            model = await asyncio.to_thread(
+                SentenceTransformer,
+                model_name,
+                device=device,
+                cache_folder=self._get_cache_folder(),
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load embedding model '{model_name}' on {device}."
+            ) from e
+        self._model_cache[model_name] = model
+        return model  # type: ignore[no-any-return]
+
+    async def embed(
+        self,
+        text: str,
+        model_name: str | None = None,
+    ) -> tuple[list[float], str]:
+        """Embed text with a specific model (multi-model dispatch).
+
+        Args:
+            text: Input text to embed.
+            model_name: Model to use. If None, uses the active model
+                (config.model_name).
+
+        Returns:
+            Tuple of (embedding_vector, model_name_used).
+        """
+        model_name = model_name or self._active_model_name
+        model = await self.get_model_for(model_name)
+        vector = await asyncio.to_thread(model.encode, [text])
+        vec = vector[0]
+        embedding_list = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+        return embedding_list, model_name
+
+    def get_loaded_models(self) -> list[str]:
+        """Get list of currently loaded model names (for memory reporting).
+
+        Returns:
+            List of model names currently in the cache.
+        """
+        return list(self._model_cache.keys())
