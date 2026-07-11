@@ -1,5 +1,31 @@
 # Memini-ai Agent Context
 
+## ⚠️ CRITICAL: Never Commit Memory Data (MUST FOLLOW)
+
+**The memini-ai-dev repo is PUBLIC** (`github.com/Veedubin/memini-ai-dev`). Every commit is visible to the world.
+
+**BEFORE `git add` of any new directory or `.dump` / `.jsonl` / `.sql` / `.csv` / `.parquet` / `.tar*` / `.zip` file, run:**
+
+```bash
+# Inspect file types — text/json/JSON-L/SQL/archive are suspicious
+find <new_dir> -type f | xargs file | grep -iE "text|json|sql|archive"
+# Check sizes — anything > 1MB is suspicious for source code
+du -sh <new_dir>/*
+# If any are data, exclude via .gitignore and STOP
+```
+
+**The .gitignore MUST include these patterns (already in place as of v0.7.8):**
+
+```
+*.dump
+*.jsonl
+archives/memini-migration-backup.jsonl
+archives/memini-migration-to-bge-large-backup.jsonl
+archives/memini-postgres-pre-migration.dump
+```
+
+**Background (2026-07-10, Session 42):** v0.7.8 commit initially contained 19MB of memory text + a 3.2MB PostgreSQL dump. User caught it: "Why are my memories being commited to a public repo?" Resolved before push, but the pattern (boomerang-coder moving a directory without inspecting contents) must not recur. The 3 safe files in `archives/` are the 2 migration `.py` scripts — those are source code and may be committed. **Everything else in `archives/` is data and must stay out of git.**
+
 ## Provider Configuration (Ollama Cloud & Alternatives)
 
 All projects in this workspace ship with **Ollama Cloud** as the default
