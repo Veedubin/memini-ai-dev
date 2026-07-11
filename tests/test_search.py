@@ -555,3 +555,46 @@ class TestInvalidateBm25:
 
         assert search._bm25_index is None
         assert search._bm25_corpus == []
+
+
+@pytest.mark.asyncio
+async def test_punctuation_only_query_returns_empty():
+    """Test that a query with only punctuation returns no results."""
+    from memini_ai.memory.search import MemorySearch
+
+    search = MemorySearch(MagicMock())
+    search._bm25_index = MagicMock()
+    search._bm25_corpus = ["test"]
+    search._tokenize = lambda x: x.lower().split()
+
+    # Mock get_scores to return [0.0] (would return 1 result if not guarded)
+    search._bm25_index.get_scores = MagicMock(return_value=[0.0])
+
+    results = await search.text_only_search("... !!! ???", SearchOptions())
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_punctuation_and_words_returns_results():
+    """Test that a query with mixed punctuation and words returns results."""
+    from unittest.mock import MagicMock
+
+    from memini_ai.memory.schema import MemoryEntry
+    from memini_ai.memory.search import MemorySearch
+
+    # Create a real MemoryEntry so the test exercises the real code path
+    entry = MemoryEntry(
+        text="sample memory text",
+        source_type="session",
+    )
+
+    search = MemorySearch(MagicMock())
+    search._bm25_index = MagicMock()
+    search._bm25_corpus = [entry]
+    search._tokenize = lambda x: x.lower().split()
+
+    # Mock get_scores to return [1.0] (1 result with non-zero score)
+    search._bm25_index.get_scores = MagicMock(return_value=[1.0])
+
+    results = await search.text_only_search("v0.7.7 ... !", SearchOptions())
+    assert len(results) == 1

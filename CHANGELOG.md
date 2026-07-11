@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.8] - 2026-07-10
+
+### Fixed
+
+- **BM25 punctuation-only query guard** — `text_only_search` and `text_search_collection` now correctly return `[]` for queries where all tokens are non-alphabetic (e.g. `"... !!! ???"`). Previously only empty/whitespace queries were guarded; punctuation-only queries returned 0-score results. Also fixed `rank-bm25` compatibility — `get_scores()` may return either a numpy array or a plain list depending on version; the normalization step now handles both.
+- **Migration script deprecation** — `archives/migrate_minilm_to_bge_m3.py` now uses `get_embedding_dimension()` (sentence-transformers 3.x) instead of the deprecated `get_sentence_embedding_dimension()`.
+
+### Documentation
+
+- **README rewrite** — comprehensive update for v0.7.7 reality: fixed the CRITICAL bug in the "Enabling Multi-Model" example (was missing `MEMINI_EMBEDDING_DIM=1024`, would have caused a silent degradation to text-only search); updated tool count to 52 (was "35+"); added 24 missing tools to the categorized listing; regenerated the architecture tree from the actual file layout (53 source files); added 6 v0.7.7 env vars to the Core Settings table; added a model_name vs embedding_mode explanation.
+- **`.env.example` v0.7.7 section** — added 6 new env vars (`MEMINI_AUTO_DETECT_MODEL`, `MEMINI_STRICT_EMBEDDING_DIM`, `MEMINI_MODEL_NAME`, `MEMINI_ENABLE_RRF`, `RRF_TOP_K_PER_MODEL`, `MEMINI_ENABLED_MODELS`) with defaults and descriptions.
+- **`docs/upgrading-embeddings.md`** — replaced the bogus `sentence-transformers[gpu]` pip extra (which doesn't exist) with the correct torch CUDA install commands (cu118 / cu121). Moved `archives/` directory into `memini-ai-dev/` so the migration script path is accurate from within the package.
+- **CHANGELOG v0.7.6 fix** — corrected the `enabled_models` claim: it was reduced from `['all-MiniLM-L6-v2', 'BAAI/bge-m3', 'BAAI/bge-large-en-v1.5']` to `['all-MiniLM-L6-v2', 'BAAI/bge-m3']` (2 entries), not to `['BAAI/bge-m3']` (1 entry) as the v0.7.6 entry incorrectly stated.
+- **AGENTS.md v0.7.7 review note** — added Session 41 entry documenting v0.7.7 changes.
+- **HANDOFF.md Session 42 entry** — added comprehensive audit + doc-rewrite entry.
+
+### Process
+
+- **Step limits bumped 10x** — all 61 agent `.md` files across the boomerang-v3 monorepo (root, boomerang-v3, boomerang, Super-Memory, neuralgentics) had their `steps: N` frontmatter bumped from 30→300, 40→400, 50→500. Sub-agents were hitting 50-step limits on legitimate long-running tasks (the v0.7.7 implementation, the audit). Now they can complete without artificial truncation.
+
+### Audit
+
+- **Comprehensive audit by boomerang-architect + boomerang-tester** — 8-area read-only review of v0.7.7 (correctness, config, MCP tools, tests, migration, security, performance, docs). 13 findings: 1 CRITICAL, 4 HIGH, 6 MEDIUM, 2 LOW. All 13 fixed in this release. Live validation confirmed 70/70 probes pass, 0 real bugs in the code. Full reports at `docs/audits/v0.7.7-audit.md` (225 lines, 13 findings) and `docs/audits/v0.7.7-validation.md` (135 lines, 70 probes).
+
+### Quality Gates
+
+- 809 tests pass, 3 skipped, 0 failed (was 807, +2 new BM25 punctuation tests)
+- ruff 0 errors
+- mypy 0 errors (1 pre-existing numpy stub error on Python 3.14, not from this work)
+- 6 files changed, 1 directory moved (archives/), 165 insertions(+), 30 deletions(-)
+
+---
+
 ## [0.7.7] - 2026-07-10
 
 ### Changed

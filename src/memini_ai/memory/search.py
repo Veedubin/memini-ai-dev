@@ -287,14 +287,22 @@ class MemorySearch:
 
         # Tokenize query — guard against all-punctuation/whitespace queries
         query_tokens = self._tokenize(question)
-        if not query_tokens:
-            return []
+        # Filter out non-alphabetic tokens (e.g. "..." "!!!" "???")
+        alpha_tokens = [t for t in query_tokens if any(c.isalnum() for c in t)]
+        if not alpha_tokens:
+            return []  # all tokens are punctuation, no meaningful search
+        query_tokens = alpha_tokens
 
         # Get BM25 scores
         raw_scores = self._bm25_index.get_scores(query_tokens)
 
-        # Normalize scores to [0, 1]
-        normalized_scores = self._normalize_bm25_scores(raw_scores.tolist())
+        # Normalize scores to [0, 1] — handle both numpy array and plain list
+        # (rank-bm25 returns numpy array; some versions return plain list)
+        if hasattr(raw_scores, "tolist"):
+            scores_list = raw_scores.tolist()
+        else:
+            scores_list = list(raw_scores)
+        normalized_scores = self._normalize_bm25_scores(scores_list)
 
         # Pair entries with scores and sort
         scored_entries = sorted(
@@ -477,8 +485,11 @@ class MemorySearch:
 
         # Score — guard against empty query tokens
         query_tokens = self._tokenize(query)
-        if not query_tokens:
-            return []
+        # Filter out non-alphabetic tokens (e.g. "..." "!!!" "???")
+        alpha_tokens = [t for t in query_tokens if any(c.isalnum() for c in t)]
+        if not alpha_tokens:
+            return []  # all tokens are punctuation, no meaningful search
+        query_tokens = alpha_tokens
 
         scores = bm25.get_scores(query_tokens)
         normalized = self._normalize_bm25_scores(scores.tolist())

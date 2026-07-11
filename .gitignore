@@ -23,3 +23,14 @@ certs/
 
 # memini indexer SQLite database
 .memini/
+
+# Memory data dumps (NEVER commit — these contain user memories)
+# Pre-migration pg_dump, jsonl exports, and any per-mem backups
+*.dump
+*.jsonl
+archives/memini-migration-backup.jsonl
+archives/memini-migration-to-bge-large-backup.jsonl
+archives/memini-postgres-pre-migration.dump
+
+# Audit / session dumps (may contain private reasoning)
+docs/audits/*.private.md

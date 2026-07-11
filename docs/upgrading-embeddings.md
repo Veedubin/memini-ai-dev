@@ -42,13 +42,19 @@ pg_dump -h localhost -p 5434 -U postgres -d postgres \
   -Fc -f memini-backup-$(date +%Y%m%d).dump
 ```
 
-### Step 2: Install BGE-M3 dependencies (optional but recommended for GPU)
+### Step 2: Ensure torch with CUDA support is installed (sentence-transformers[gpu] is not a valid pip extra)
 
+For CUDA 11.8:
 ```bash
-uv pip install sentence-transformers[gpu]
-# or
-pip install sentence-transformers[gpu]
+pip install torch --index-url https://download.pytorch.org/whl/cu118
 ```
+
+For CUDA 12.1:
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+```
+
+For CPU only (default), torch is already a core dependency — no action needed.
 
 ### Step 3: Run the migration script
 
