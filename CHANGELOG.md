@@ -5,19 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.9] - 2026-07-11
+
+### Security
+
+- **AGENTS.md "Never Commit Memory Data" rule** — adds a critical pre-commit inspection pattern to `AGENTS.md`. Aftermath of the Session 42 data leak (v0.7.8 working tree initially contained 19MB of memory text + 3.2MB PostgreSQL dump before being caught and amended before push). The rule mandates running `find` + `file` + `du -sh` on any new directory before `git add`, and ensures the `.gitignore` includes `*.dump`, `*.jsonl`, and similar data-file patterns. **This is a follow-up to v0.7.8 — v0.7.8 already contained the `.gitignore` change that prevented the leak; this release ensures the rule is documented in `AGENTS.md` so all agents (human or AI) see it on every session start.**
+
+### Changed
+
+- `uv.lock` — version bump `0.7.6 → 0.7.8` to match the latest `pyproject.toml`.
+
+### Quality Gates
+
+- No code changes; 809 tests still pass, 3 skipped, 0 failed.
+- ruff 0 errors
+- mypy 0 errors (1 pre-existing numpy stub error on Python 3.14, not from this work)
+
+---
+
 ## [0.7.8] - 2026-07-10
 
-### Fixed
+> **🚨 UPGRADE NOTICE for v0.7.7 users:** This release fixes a **user-visible bug** in the v0.7.7 README — the "Enabling Multi-Model" example was missing `MEMINI_EMBEDDING_DIM=1024`. Users who followed the v0.7.7 README verbatim would have had their server silently degraded to text-only search (vector search disabled, no crash). **Upgrade to v0.7.8 to get the corrected README and `.env.example`.** See the [GitHub release notes](https://github.com/Veedubin/memini-ai-dev/releases/tag/v0.7.8) for the full audit report.
 
+### Fixed (user-facing)
+
+- **🚨 CRITICAL README fix** — the v0.7.7 "Enabling Multi-Model" example was missing `MEMINI_EMBEDDING_DIM=1024`. A user copying the example would set `MEMINI_MODEL_NAME=BAAI/bge-m3` + `MEMINI_ENABLE_RRF=true` (without `MEMINI_EMBEDDING_DIM=1024`) and silently get a server in **dim-mismatch mode** (text-only search, no vector search). The example is now complete with all three env vars plus a callout warning that "MEMINI_EMBEDDING_DIM must match the model's output dimension (1024 for BGE-M3, 384 for MiniLM)."
+- **`.env.example` v0.7.7 section** — added 6 new env vars (`MEMINI_AUTO_DETECT_MODEL`, `MEMINI_STRICT_EMBEDDING_DIM`, `MEMINI_MODEL_NAME`, `MEMINI_ENABLE_RRF`, `RRF_TOP_K_PER_MODEL`, `MEMINI_ENABLED_MODELS`) with defaults and descriptions. v0.7.7's `.env.example` was missing all 6.
+- **CHANGELOG v0.7.6 fix** — corrected the `enabled_models` claim: it was reduced from `['all-MiniLM-L6-v2', 'BAAI/bge-m3', 'BAAI/bge-large-en-v1.5']` to `['all-MiniLM-L6-v2', 'BAAI/bge-m3']` (2 entries), not to `['BAAI/bge-m3']` (1 entry) as the v0.7.6 entry incorrectly stated.
 - **BM25 punctuation-only query guard** — `text_only_search` and `text_search_collection` now correctly return `[]` for queries where all tokens are non-alphabetic (e.g. `"... !!! ???"`). Previously only empty/whitespace queries were guarded; punctuation-only queries returned 0-score results. Also fixed `rank-bm25` compatibility — `get_scores()` may return either a numpy array or a plain list depending on version; the normalization step now handles both.
 - **Migration script deprecation** — `archives/migrate_minilm_to_bge_m3.py` now uses `get_embedding_dimension()` (sentence-transformers 3.x) instead of the deprecated `get_sentence_embedding_dimension()`.
 
 ### Documentation
 
-- **README rewrite** — comprehensive update for v0.7.7 reality: fixed the CRITICAL bug in the "Enabling Multi-Model" example (was missing `MEMINI_EMBEDDING_DIM=1024`, would have caused a silent degradation to text-only search); updated tool count to 52 (was "35+"); added 24 missing tools to the categorized listing; regenerated the architecture tree from the actual file layout (53 source files); added 6 v0.7.7 env vars to the Core Settings table; added a model_name vs embedding_mode explanation.
-- **`.env.example` v0.7.7 section** — added 6 new env vars (`MEMINI_AUTO_DETECT_MODEL`, `MEMINI_STRICT_EMBEDDING_DIM`, `MEMINI_MODEL_NAME`, `MEMINI_ENABLE_RRF`, `RRF_TOP_K_PER_MODEL`, `MEMINI_ENABLED_MODELS`) with defaults and descriptions.
+- **README rewrite** — comprehensive update for v0.7.7 reality: updated tool count to 52 (was "35+"); added 24 missing tools to the categorized listing; regenerated the architecture tree from the actual file layout (53 source files); added 6 v0.7.7 env vars to the Core Settings table; added a model_name vs embedding_mode explanation; added a Docker image note (dev uses pgvector, prod uses timescaledb-ha:pg18).
 - **`docs/upgrading-embeddings.md`** — replaced the bogus `sentence-transformers[gpu]` pip extra (which doesn't exist) with the correct torch CUDA install commands (cu118 / cu121). Moved `archives/` directory into `memini-ai-dev/` so the migration script path is accurate from within the package.
-- **CHANGELOG v0.7.6 fix** — corrected the `enabled_models` claim: it was reduced from `['all-MiniLM-L6-v2', 'BAAI/bge-m3', 'BAAI/bge-large-en-v1.5']` to `['all-MiniLM-L6-v2', 'BAAI/bge-m3']` (2 entries), not to `['BAAI/bge-m3']` (1 entry) as the v0.7.6 entry incorrectly stated.
 - **AGENTS.md v0.7.7 review note** — added Session 41 entry documenting v0.7.7 changes.
 - **HANDOFF.md Session 42 entry** — added comprehensive audit + doc-rewrite entry.
 
