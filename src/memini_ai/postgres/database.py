@@ -38,6 +38,7 @@ from memini_ai.postgres.queries import (
     DELETE_ENTITY,
     DELETE_MEMORY,
     DELETE_MEMORY_1024_BY_MEMORY_ID,
+    DELETE_MEMORY_IMAGE,
     GET_ENTITIES,
     GET_ENTITIES_BY_TYPE,
     GET_ENTITIES_WITH_RELATIONSHIPS,
@@ -55,15 +56,26 @@ from memini_ai.postgres.queries import (
     INSERT_MEMORY_1024,
     INSERT_MEMORY_BGE_M3,
     INSERT_MEMORY_DELTA,
+    INSERT_MEMORY_IMAGE,
     INSERT_MEMORY_WITH_MODEL,
     SEARCH_MEMORIES_1024_VECTOR,
     SEARCH_MEMORIES_BGE_M3,
+    SEARCH_MEMORIES_IMAGE,
+    SEARCH_MEMORIES_IMAGE_BY_SHA256,
     SEARCH_MEMORIES_MINILM,
     SEARCH_MEMORIES_VECTOR,
+    UPDATE_MEMORY_IMAGE_TRUST,
     UPDATE_MEMORY_METADATA,
     UPSERT_ENTITY,
 )
-from memini_ai.postgres.schema import get_schema_sql
+from memini_ai.postgres.schema import (
+    SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_DISKANN,
+    SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_HNSW,
+    SQL_CREATE_MEMORIES_IMAGE_INDEXES,
+    SQL_CREATE_MEMORIES_IMAGE_TABLE,
+    SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK_IMAGE,
+    get_schema_sql,
+)
 from memini_ai.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -1557,6 +1569,205 @@ class PostgresDatabase(VectorDatabase):
 
         async with pool.acquire() as conn:
             row = await conn.fetchval(DELETE_MEMORY_1024_BY_MEMORY_ID, memory_id)
+        return str(row) if row else None
+
+    # =========================================================================
+    # Image Recall RRF methods (v0.8.0)
+    # =========================================================================
+
+    async def ensure_memories_image_table(self) -> None:
+        """Create the ``memories_image`` table + indexes if absent.
+
+        Idempotent: ``CREATE ... IF NOT EXISTS``. Uses DiskANN index when
+        pgvectorscale is available, else HNSW. Also applies the extended
+        ``source_type`` CHECK constraint (adds ``'image'``). Safe to call
+        at startup regardless of ``MEMINI_IMAGE_SEARCH_ENABLED`` — the
+        table exists but is empty/unqueried until the feature is enabled.
+        This ensures videre-mcp can write image rows via the
+        ``memini-vision`` library without memini-ai needing image search on.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+        use_vectorscale = await self._detect_vectorscale()
+        image_index = (
+            SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_DISKANN
+            if use_vectorscale
+            else SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_HNSW
+        )
+        async with pool.acquire() as conn:
+            await conn.execute(SQL_CREATE_MEMORIES_IMAGE_TABLE)
+            await conn.execute(image_index)
+            await conn.execute(SQL_CREATE_MEMORIES_IMAGE_INDEXES)
+            await conn.execute(SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK_IMAGE)
+
+    async def insert_image_memory(
+        self,
+        memory_id: str,
+        embedding: list[float],
+        image_path: str,
+        image_sha256: str,
+        mime_type: str,
+        embedding_model: str = "placeholder-768",
+        width: int | None = None,
+        height: int | None = None,
+        caption: str | None = None,
+        file_size_bytes: int | None = None,
+        trust_score: float = 0.5,
+    ) -> str | None:
+        """Insert (or no-op if already present) an image sidecar for a memory.
+
+        Idempotent: uses ON CONFLICT (memory_id) DO NOTHING. The embedding
+        must be 768-dim (ViT-B/32 zero-padded or ViT-L/14 native).
+
+        Args:
+            memory_id: UUID of the source memories row (must exist).
+            embedding: 768-dim CLIP embedding vector.
+            image_path: Absolute filesystem path to the stored image.
+            image_sha256: SHA-256 hex digest of the image bytes.
+            mime_type: MIME type (e.g. ``image/png``).
+            embedding_model: CLIP model ID (default placeholder).
+            width: Image width in pixels (optional).
+            height: Image height in pixels (optional).
+            caption: Optional human-readable caption.
+            file_size_bytes: File size in bytes (optional).
+            trust_score: Trust score for the image copy (default 0.5).
+
+        Returns:
+            The image-row id if inserted, None if already existed.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row_id = await conn.fetchval(
+                INSERT_MEMORY_IMAGE,
+                memory_id,
+                embedding,
+                embedding_model,
+                image_path,
+                image_sha256,
+                mime_type,
+                width,
+                height,
+                caption,
+                file_size_bytes,
+                float(trust_score),
+            )
+        return str(row_id) if row_id else None
+
+    async def search_image_memories(
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+        threshold: float = 0.9,
+    ) -> list[MemoryEntry]:
+        """Search the ``memories_image`` table by CLIP vector similarity.
+
+        Joins back to the ``memories`` table so the returned MemoryEntry
+        has full text/metadata. Results are ordered by cosine distance ASC.
+
+        Args:
+            query_embedding: 768-dim CLIP query vector.
+            limit: Max results (default 10).
+            threshold: Max cosine distance (default 0.9 = permissive; RRF
+                re-ranks anyway).
+
+        Returns:
+            List of MemoryEntry objects with ``score`` set to cosine
+            distance. The ``source_path`` field carries the image_path
+            so callers can locate the image file on disk.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                SEARCH_MEMORIES_IMAGE,
+                query_embedding,
+                float(threshold),
+                int(limit),
+            )
+
+        results: list[MemoryEntry] = []
+        for row in rows:
+            entry = self._row_to_memory(row, score=float(row["distance"]))
+            # Attach image_path via source_path so the caller can locate the file
+            image_path = row.get("image_path")
+            if image_path is not None:
+                entry.source_path = str(image_path)
+            results.append(entry)
+        return results
+
+    async def get_image_by_sha256(self, image_sha256: str) -> dict[str, Any] | None:
+        """Look up an image row by SHA-256 (idempotent re-insertion check).
+
+        Args:
+            image_sha256: SHA-256 hex digest of the image bytes.
+
+        Returns:
+            Dict with keys (id, memory_id, image_path, image_sha256,
+            mime_type, caption, created_at) or None if not found.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(SEARCH_MEMORIES_IMAGE_BY_SHA256, image_sha256)
+        if row is None:
+            return None
+        return {
+            "id": str(row["id"]),
+            "memory_id": str(row["memory_id"]),
+            "image_path": row["image_path"],
+            "image_sha256": row["image_sha256"],
+            "mime_type": row["mime_type"],
+            "caption": row["caption"],
+            "created_at": row["created_at"],
+        }
+
+    async def delete_memory_image(self, memory_id: str) -> str | None:
+        """Remove the image sidecar for a memory.
+
+        Does NOT touch the parent memories row. Idempotent — no error if
+        the memory had no image row.
+
+        Args:
+            memory_id: UUID of the parent memories row.
+
+        Returns:
+            The memory_id whose image was deleted, or None if there was
+            no image row.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchval(DELETE_MEMORY_IMAGE, memory_id)
+        return str(row) if row else None
+
+    async def update_memory_image_trust(
+        self, memory_id: str, trust_score: float
+    ) -> str | None:
+        """Update the trust score on an image row (trust engine integration).
+
+        The canonical trust lives on ``memories.trust_score``; this is a
+        denormalized cache so the image RRF arm can filter without a join.
+
+        Args:
+            memory_id: UUID of the parent memories row.
+            trust_score: New trust score (0.0-1.0).
+
+        Returns:
+            The memory_id whose image trust was updated, or None if there
+            was no image row.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchval(
+                UPDATE_MEMORY_IMAGE_TRUST, memory_id, float(trust_score)
+            )
         return str(row) if row else None
 
     async def count_by_embedding_model(self) -> dict[str, int]:

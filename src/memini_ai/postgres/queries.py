@@ -652,3 +652,79 @@ INSERT INTO memories (id, text, embedding_bge_m3, source_type, content_hash, met
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id
 """
+
+# =============================================================================
+# Image Recall RRF Queries (v0.8.0)
+# =============================================================================
+#
+# The memories_image table holds CLIP image embeddings (768-dim) for
+# memories that have an associated image. All operations are FK-linked to
+# memories.id (1:1, ON DELETE CASCADE). The memories table remains the
+# source of truth — these are query helpers for the cross-modal recall
+# sidecar used by the third RRF fan-out arm (gated by
+# MEMINI_IMAGE_SEARCH_ENABLED). The table is shared with videre-mcp via
+# the memini-vision library; memini-ai owns the schema migration.
+
+# Insert an image memory row. Idempotent via ON CONFLICT (memory_id) DO
+# NOTHING — re-inserting the same memory is a no-op. The embedding must be
+# 768-dim (ViT-B/32 zero-padded or ViT-L/14 native).
+INSERT_MEMORY_IMAGE = """
+INSERT INTO memories_image (memory_id, embedding, embedding_model,
+                            image_path, image_sha256, mime_type,
+                            width, height, caption, file_size_bytes,
+                            trust_score)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (memory_id) DO NOTHING
+RETURNING id
+"""
+
+# Vector search on the memories_image table. Returns matching rows ordered
+# by cosine distance, with the source memories text/metadata joined in so
+# the caller can re-hydrate MemoryEntry objects. Optional trust filter via
+# $2 (max cosine distance) and archived exclusion on the parent memory.
+SEARCH_MEMORIES_IMAGE = """
+SELECT
+    m.id AS memory_id,
+    m.text,
+    m.source_type,
+    m.trust_score,
+    m.retrieval_count,
+    m.is_archived,
+    m.metadata,
+    mi.image_path,
+    mi.image_sha256,
+    mi.caption,
+    mi.embedding <=> $1::vector AS distance
+FROM memories_image mi
+JOIN memories m ON m.id = mi.memory_id
+WHERE mi.embedding <=> $1::vector < $2
+  AND m.is_archived = FALSE
+ORDER BY mi.embedding <=> $1::vector
+LIMIT $3
+"""
+
+# Look up an image row by its SHA-256 (for idempotent re-insertion checks
+# — videre-mcp uses this to avoid re-embedding an already-stored image).
+SEARCH_MEMORIES_IMAGE_BY_SHA256 = """
+SELECT id, memory_id, image_path, image_sha256, mime_type, caption, created_at
+FROM memories_image
+WHERE image_sha256 = $1
+"""
+
+# Delete the image sidecar for a specific memory. Idempotent — no error if
+# the memory had no image row. Returns the memory_id that was deleted (or NULL).
+DELETE_MEMORY_IMAGE = """
+DELETE FROM memories_image
+WHERE memory_id = $1
+RETURNING memory_id
+"""
+
+# Update the trust score on an image row (trust engine integration — the
+# canonical trust lives on memories.trust_score; this is a denormalized
+# cache so the image RRF arm can filter without a join).
+UPDATE_MEMORY_IMAGE_TRUST = """
+UPDATE memories_image
+SET trust_score = $2
+WHERE memory_id = $1
+RETURNING memory_id, trust_score
+"""

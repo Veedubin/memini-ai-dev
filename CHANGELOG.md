@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-13
+
+### Added
+
+- **Image Recall RRF fan-out arm** — when `MEMINI_IMAGE_SEARCH_ENABLED=true`, `query_memories` now adds a **third RRF fan-out arm** that calls `memini-vision.ImageQuery.search_by_text` (CLIP text tower over the `memories_image` table) and fuses the result with the existing 384-dim MiniLM and 1024-dim BGE-M3 ranked lists via the unchanged `reciprocal_rank_fusion()` (k=60). A memory that appears in both text and image lists gets both contributions summed — the natural boost for multi-modal agreement. The image arm is **best-effort**: any CLIP failure (model download, DB error) is caught, logged, and the text RRF proceeds with 2 lists instead of 3. **Implementation:** `_query_dual_model_rrf` renamed to `_query_multi_model_rrf` (it now handles 2 OR 3 models); the image arm is the ONLY change, guarded by `if get_config().image_search_enabled:`.
+- **`memories_image` table** — new PostgreSQL table (migration `000008_add_memories_image.sql`) holding 768-dim CLIP image embeddings for memories with associated images (screenshots, diagrams). 1:1 FK to `memories.id` with `ON DELETE CASCADE`. `vector(768)` accommodates both ViT-B/32 (zero-padded to 768) and ViT-L/14 (native 768). Shared with `videre-mcp` via the `memini-vision` library — the table is created at memini-ai startup **regardless** of whether image search is enabled, so videre-mcp can write image rows without memini-ai needing image search on. Idempotent migration (`CREATE TABLE IF NOT EXISTS` everywhere — safe to re-run).
+- **`source_type='image'`** — the `memories.source_type` CHECK constraint is extended to include `'image'` (a superset of the existing constraint; existing rows still satisfy it).
+- **5 new config fields** — `image_search_enabled` (default `false`), `image_clip_model` (`clip-ViT-B-32` or `clip-ViT-L-14`), `image_clip_device` (`auto`/`cpu`/`cuda`), `image_dir` (`~/.memini-ai/images`), `image_db_url` (empty → falls back to `db_url`). All use the `MEMINI_IMAGE_*` env var prefix. Two validators enforce valid `image_clip_model` and `image_clip_device` values.
+- **`[vision]` optional dependency** — `pyproject.toml` gains `vision = ["memini-vision>=0.1.0"]`. Users who don't install it see no change; the `memini_vision` import is lazy (only happens inside the `if image_search_enabled:` block).
+
+### Backwards Compatibility
+
+- **Text-only users see zero behavior change.** When `MEMINI_IMAGE_SEARCH_ENABLED` is unset or `false` (the default), no CLIP model loads, no image table is queried, the `memini_vision` import never happens, and `_query_multi_model_rrf` is **byte-for-byte identical** to the v0.7.9 `_query_dual_model_rrf`. Verified by re-running the existing RRF tests.
+- The `memories_image` table is created at startup even when image search is off (empty + unqueried), ensuring videre-mcp can write to it without coordination.
+
+### New Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEMINI_IMAGE_SEARCH_ENABLED` | `false` | Master gate for the image recall RRF arm. |
+| `MEMINI_IMAGE_CLIP_MODEL` | `clip-ViT-B-32` | CLIP model (`clip-ViT-B-32` or `clip-ViT-L-14`). |
+| `MEMINI_IMAGE_CLIP_DEVICE` | `auto` | Device (`auto`/`cpu`/`cuda`). |
+| `MEMINI_IMAGE_DIR` | `~/.memini-ai/images` | Filesystem directory for stored images. |
+| `MEMINI_IMAGE_DB_URL` | (empty → `MEMINI_DB_URL`) | PostgreSQL URL for the image index. |
+
+### Quality Gates
+
+- 799 tests pass, 3 skipped, 0 new failures (10 pre-existing failures from Keras 3 / tf-keras environment incompatibility, documented since v0.7.9).
+- ruff 0 errors
+- mypy: 1 pre-existing numpy stub error on Python 3.14 (not from this work)
+
+---
+
 ## [0.7.9] - 2026-07-11
 
 ### Security

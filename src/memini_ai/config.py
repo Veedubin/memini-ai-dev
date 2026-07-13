@@ -72,6 +72,24 @@ class MeminiConfig(BaseSettings):
     # How many results to fetch from each model's vector space before fusion
     rrf_top_k_per_model: int = Field(default=20, alias="RRF_TOP_K_PER_MODEL")
 
+    # Image search (v0.8.0+, shared with videre-mcp via memini-vision)
+    # When True, query_memories adds a 3rd RRF fan-out arm that calls
+    # memini-vision.ImageQuery.search_by_text to fuse CLIP image results
+    # with the existing 384 + 1024 text results. When False (the default),
+    # no CLIP model loads, no image table is queried, RRF stays 2-list,
+    # and query_memories is byte-for-byte identical to v0.7.9.
+    image_search_enabled: bool = Field(
+        default=False, alias="MEMINI_IMAGE_SEARCH_ENABLED"
+    )
+    image_clip_model: str = Field(
+        default="clip-ViT-B-32", alias="MEMINI_IMAGE_CLIP_MODEL"
+    )
+    image_clip_device: str = Field(default="auto", alias="MEMINI_IMAGE_CLIP_DEVICE")
+    image_dir: str = Field(default="~/.memini-ai/images", alias="MEMINI_IMAGE_DIR")
+    image_db_url: str = Field(
+        default="", alias="MEMINI_IMAGE_DB_URL"
+    )  # empty → falls back to db_url at runtime
+
     # Database settings
     table_name: str = "memories"
     project_id: str | None = None
@@ -446,6 +464,33 @@ class MeminiConfig(BaseSettings):
         """Clamp auto-extract interval to valid range [1, 3600] seconds."""
         val = int(v) if isinstance(v, str) else v
         return max(1, min(3600, val))
+
+    # =============================================================================
+    # Image search validators (v0.8.0)
+    # =============================================================================
+
+    @field_validator("image_clip_model", mode="before")
+    @classmethod
+    def _validate_image_clip_model(cls, v: str) -> str:
+        """Validate CLIP model is one of the two supported models."""
+        val = str(v).strip()
+        if val not in {"clip-ViT-B-32", "clip-ViT-L-14"}:
+            raise ValueError(
+                f"Invalid image_clip_model '{val}'. "
+                "Must be one of: clip-ViT-B-32, clip-ViT-L-14"
+            )
+        return val
+
+    @field_validator("image_clip_device", mode="before")
+    @classmethod
+    def _validate_image_clip_device(cls, v: str) -> str:
+        """Validate CLIP device is one of: auto, cpu, cuda."""
+        val = str(v).lower().strip()
+        if val not in {"auto", "cpu", "cuda"}:
+            raise ValueError(
+                f"Invalid image_clip_device '{val}'. Must be one of: auto, cpu, cuda"
+            )
+        return val
 
     def model_post_init(self, _context: object) -> None:
         """Apply JSON config loading after initialization."""

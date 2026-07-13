@@ -14,6 +14,7 @@ Schema Design Decisions:
 # Table name constants
 TABLE_MEMORIES = "memories"
 TABLE_MEMORIES_1024 = "memories_1024"
+TABLE_MEMORIES_IMAGE = "memories_image"
 TABLE_MEMORY_RELATIONSHIPS = "memory_relationships"
 TABLE_ENTITIES = "entities"
 TABLE_ENTITY_RELATIONSHIPS = "entity_relationships"
@@ -171,6 +172,86 @@ CREATE INDEX IF NOT EXISTS idx_memories_1024_trust ON memories_1024(trust_score)
 
 -- Index for elevation timestamp (for "recently elevated" queries)
 CREATE INDEX IF NOT EXISTS idx_memories_1024_elevated_at ON memories_1024(elevated_at DESC);
+"""
+
+# =============================================================================
+# memories_image table (v0.8.0 Image Recall RRF)
+# =============================================================================
+#
+# The memories_image table holds CLIP image embeddings (768-dim, accommodating
+# both ViT-B/32 zero-padded to 768 and ViT-L/14 native 768) for memories that
+# have an associated image (screenshots, diagrams, etc.). Each row is
+# 1:1 FK-linked to the corresponding row in the memories table, so the
+# text record is always the source of truth and the image row is a
+# cross-modal recall sidecar. The table is created at memini-ai startup
+# REGARDLESS of whether MEMINI_IMAGE_SEARCH_ENABLED is true — this lets
+# videre-mcp write image rows without memini-ai needing image search on.
+# Idempotent migration: existing memories are NOT touched. This table is
+# empty until the videre-mcp save_image_memory tool is used.
+
+# SQL for memories_image table
+SQL_CREATE_MEMORIES_IMAGE_TABLE = """
+CREATE TABLE IF NOT EXISTS memories_image (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Foreign key to the canonical memories record (source of truth).
+    -- ON DELETE CASCADE: if the source memory is hard-deleted, the image
+    -- row goes with it. 1:1 (UNIQUE) — one image per memory.
+    memory_id UUID NOT NULL UNIQUE REFERENCES memories(id) ON DELETE CASCADE,
+
+    -- 768-dim CLIP embedding vector (accommodates both ViT-B/32 zero-padded
+    -- to 768 and ViT-L/14 native 768).
+    embedding vector(768) NOT NULL,
+    embedding_model VARCHAR(100) NOT NULL DEFAULT 'placeholder-768',
+
+    -- Image metadata (filesystem-pointer storage — bytes on disk, path in DB)
+    image_path TEXT NOT NULL,
+    image_sha256 VARCHAR(64) NOT NULL,
+    mime_type VARCHAR(50) NOT NULL,
+    width INT,
+    height INT,
+    caption TEXT,
+    file_size_bytes BIGINT,
+
+    -- Mirrored trust score (denormalized cache; memories.trust_score is canonical)
+    trust_score FLOAT DEFAULT 0.5 CHECK (trust_score >= 0 AND trust_score <= 1),
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+"""
+
+# SQL for memories_image vector index (StreamingDiskANN preferred, HNSW fallback)
+SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_DISKANN = """
+CREATE INDEX IF NOT EXISTS idx_memories_image_embedding ON memories_image
+USING diskann (embedding vector_cosine_ops);
+"""
+
+SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_HNSW = """
+CREATE INDEX IF NOT EXISTS idx_memories_image_embedding ON memories_image
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+"""
+
+# SQL for memories_image secondary indexes
+SQL_CREATE_MEMORIES_IMAGE_INDEXES = """
+-- Index for joining back to memories (most queries will join on memory_id)
+CREATE INDEX IF NOT EXISTS idx_memories_image_memory_id ON memories_image(memory_id);
+
+-- Index for sha256-based idempotent re-insertion checks
+CREATE INDEX IF NOT EXISTS idx_memories_image_sha256 ON memories_image(image_sha256);
+
+-- Index for trust-based filtering
+CREATE INDEX IF NOT EXISTS idx_memories_image_trust ON memories_image(trust_score);
+
+-- Index for creation timestamp (for "recently added image" queries)
+CREATE INDEX IF NOT EXISTS idx_memories_image_created_at ON memories_image(created_at DESC);
+"""
+
+# SQL to extend memories source_type CHECK constraint to include 'image'
+SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK_IMAGE = """
+ALTER TABLE memories DROP CONSTRAINT IF EXISTS memories_source_type_check;
+ALTER TABLE memories ADD CONSTRAINT memories_source_type_check
+    CHECK (source_type IN ('session', 'file', 'web', 'boomerang', 'project', 'thought', 'image'));
 """
 
 # SQL for memory_relationships table
@@ -501,6 +582,11 @@ def get_schema_sql(use_vectorscale: bool = True) -> str:
         if use_vectorscale
         else SQL_CREATE_MEMORIES_1024_EMBEDDING_INDEX_HNSW
     )
+    memories_image_embedding_index = (
+        SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_DISKANN
+        if use_vectorscale
+        else SQL_CREATE_MEMORIES_IMAGE_EMBEDDING_INDEX_HNSW
+    )
 
     return "\n".join(
         [
@@ -513,6 +599,10 @@ def get_schema_sql(use_vectorscale: bool = True) -> str:
             SQL_CREATE_MEMORIES_1024_TABLE,
             memories_1024_embedding_index,
             SQL_CREATE_MEMORIES_1024_INDEXES,
+            # v0.8.0: Image recall RRF — must come AFTER memories (FK target)
+            SQL_CREATE_MEMORIES_IMAGE_TABLE,
+            memories_image_embedding_index,
+            SQL_CREATE_MEMORIES_IMAGE_INDEXES,
             SQL_CREATE_MEMORY_RELATIONSHIPS_TABLE,
             SQL_CREATE_MEMORY_RELATIONSHIPS_INDEXES,
             SQL_CREATE_ENTITIES_TABLE,  # References peers
@@ -535,7 +625,7 @@ def get_schema_sql(use_vectorscale: bool = True) -> str:
             # Phase 2.3: Audit Log
             SQL_CREATE_AUDIT_LOG_TABLE,
             SQL_CREATE_AUDIT_LOG_INDEXES,
-            # Update memories source_type CHECK constraint
-            SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK,
+            # Update memories source_type CHECK constraint (includes 'thought' + 'image')
+            SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK_IMAGE,
         ]
     )

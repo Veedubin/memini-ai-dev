@@ -374,8 +374,10 @@ class MemorySystem:
               collection cascade).
             * ``"auto"``: dual-model RRF — issue a 384-dim search AND a
               1024-dim search in parallel, then fuse with the RRF
-              algorithm. ``query_collections`` overrides the dual-mode
-              path (caller is in control of which collections to query).
+              algorithm. When ``MEMINI_IMAGE_SEARCH_ENABLED=true`` (v0.8.0+),
+              a third CLIP image arm is added to the RRF fusion.
+              ``query_collections`` overrides the dual-mode path (caller
+              is in control of which collections to query).
             * ``"gpu"``: 1024-dim-only search (the 384-dim store is
               ignored).
 
@@ -423,7 +425,7 @@ class MemorySystem:
 
         # No explicit collections — dispatch on mode.
         if mode == "auto":
-            return await self._query_dual_model_rrf(question, options)
+            return await self._query_multi_model_rrf(question, options)
         if mode == "gpu":
             return await self._query_gpu_1024(question, options)
 
@@ -433,18 +435,32 @@ class MemorySystem:
         # ``mode == "auto"``).
         return await self._search.query(question, options)
 
-    async def _query_dual_model_rrf(
+    async def _query_multi_model_rrf(
         self,
         question: str,
         options: SearchOptions,
     ) -> list[MemoryEntry]:
-        """Dual-model RRF query (auto mode): 384 + 1024 fused via RRF.
+        """Multi-model RRF query (auto mode): 384 + 1024 + (optional) image.
 
         Issues a 384-dim vector search and a 1024-dim vector search in
         parallel, then fuses the ranked lists using
         :func:`memini_ai.memory.rrf.reciprocal_rank_fusion`. Items that
         appear in both lists are boosted (their fused score is the sum
         of both contributions).
+
+        v0.8.0: when ``MEMINI_IMAGE_SEARCH_ENABLED=true``, a **third**
+        ranked list is added by calling
+        ``memini_vision.ImageQuery.search_by_text`` (cross-modal CLIP
+        search over the ``memories_image`` table). The three lists are
+        passed to :func:`reciprocal_rank_fusion` — it already accepts
+        variable-length inputs, so the 3-arm fusion is the same math
+        with one extra contribution term. A memory that appears in both
+        text and image lists gets both contributions summed — the
+        natural boost for multi-modal agreement.
+
+        When ``MEMINI_IMAGE_SEARCH_ENABLED=false`` (the default), the
+        image arm is skipped entirely and this method is byte-for-byte
+        identical to the v0.7.9 ``_query_dual_model_rrf`` behavior.
 
         Args:
             question: Query string.
@@ -502,6 +518,27 @@ class MemorySystem:
             [e.id for e in results_384],
             [e.id for e in results_1024],
         ]
+
+        # v0.8.0: image fan-out arm (only when enabled).
+        # When MEMINI_IMAGE_SEARCH_ENABLED is true, lazily import
+        # memini_vision and call ImageQuery.search_by_text to get a 3rd
+        # ranked list of memory_ids. The 3 lists are fused via the same
+        # reciprocal_rank_fusion() — it already accepts variable-length
+        # inputs. A memory with both a text AND image match gets both
+        # contributions summed (multi-modal agreement boost).
+        # When disabled (the default), this block is skipped entirely
+        # and the query path is byte-for-byte identical to v0.7.9.
+        image_entries: list[MemoryEntry] = []
+        if get_config().image_search_enabled:
+            try:
+                image_entries = await self._image_recall_arm(question, fetch_k)
+            except Exception:
+                # Image search is best-effort: never let a vision failure
+                # break the text query. Log and continue with text-only RRF.
+                logger.warning("image_recall_arm_failed", question=question[:80])
+        if image_entries:
+            ranked_ids.append([e.id for e in image_entries])
+
         fused_ids = rrf_with_limit(
             ranked_ids, k=self._resolved_rrf_k, limit=options.top_k
         )
@@ -514,7 +551,71 @@ class MemorySystem:
             entries_by_id[entry.id] = entry
         for entry in results_1024:
             entries_by_id.setdefault(entry.id, entry)
+        # Image arm entries carry the memories text (joined in the SQL)
+        # so they can serve as a fallback for IDs only in the image list.
+        for entry in image_entries:
+            entries_by_id.setdefault(entry.id, entry)
         return [entries_by_id[mid] for mid in fused_ids if mid in entries_by_id]
+
+    async def _image_recall_arm(
+        self,
+        question: str,
+        fetch_k: int,
+    ) -> list[MemoryEntry]:
+        """Third RRF fan-out arm: cross-modal CLIP image search (v0.8.0).
+
+        Lazily imports :mod:`memini_vision` (so text-only users who never
+        enable image search pay no import cost) and calls
+        :meth:`memini_vision.ImageQuery.search_by_text` to get a ranked
+        list of memory IDs whose associated images match the query text.
+        The results are joined back to the ``memories`` table so the
+        returned :class:`MemoryEntry` objects carry the canonical text.
+
+        This method is ONLY called when ``MEMINI_IMAGE_SEARCH_ENABLED``
+        is true. It is best-effort: any exception (CLIP model download
+        failure, DB connection error, missing table) is caught by the
+        caller and logged as a warning — the text RRF proceeds with 2
+        lists instead of 3.
+
+        Args:
+            question: Query string (encoded via the CLIP text tower).
+            fetch_k: Over-fetch limit (same as the text arms).
+
+        Returns:
+            List of :class:`MemoryEntry` from the image arm, ordered by
+            ascending cosine distance. Empty list if the image table is
+            empty or the search returns no matches.
+        """
+        # Lazy import — text-only users never pay this cost.
+        from memini_vision import ClipEmbedder, ImageIndex, ImageQuery
+
+        config = get_config()
+        # Resolve the DB URL for the image index (falls back to db_url).
+        image_db_url = config.image_db_url or config.db_url
+        embedder = ClipEmbedder(
+            model_name=config.image_clip_model, device=config.image_clip_device
+        )
+        index = ImageIndex(image_db_url)
+        query = ImageQuery(embedder, index)
+        results = await query.search_by_text(question, limit=fetch_k)
+        # Hydrate MemoryEntry objects from the memories table so the RRF
+        # re-hydration step has the canonical text. We use the existing
+        # search_image_memories path via the db if available; otherwise
+        # fall back to get_memory per result (slower but correct).
+        search_image = getattr(self._db, "search_image_memories", None)
+        if search_image is not None and asyncio.iscoroutinefunction(search_image):
+            # Re-run the search through the db helper to get joined rows.
+            # The ImageQuery results already have memory_ids; we use the
+            # db helper because it returns MemoryEntry objects directly.
+            query_vec = embedder.encode_text(question)
+            return await search_image(query_vec, limit=fetch_k)
+        # Fallback: hydrate one-by-one via get_memory (no db helper).
+        entries: list[MemoryEntry] = []
+        for r in results:
+            mem = await self._db.get_memory(r.memory_id, include_archived=False)
+            if mem is not None:
+                entries.append(mem)
+        return entries
 
     async def _query_gpu_1024(
         self,
