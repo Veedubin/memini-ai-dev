@@ -3,7 +3,21 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and this project adheres to [Semantic Versioning](https://semver.org/sem/ver/2.0.0.html).
+
+## [0.8.1] - 2026-07-13
+
+### Fixed
+
+- **CI re-trigger for memini-vision dependency** — The v0.8.0 CI run failed at "Sync dependencies" because the new `[vision]` optional dependency `memini-vision>=0.1.0` was not yet published to PyPI. This release exists to re-run the publish workflow after memini-vision v0.1.1 became available.
+
+### Notes
+
+- **No code changes from v0.8.0.** The v0.8.0 source is unchanged. This release is purely a CI re-trigger.
+- **Original v0.8.0 tag preserved** on origin as a historical record of the failed publish attempt (CI failed at `uv sync` because `memini-vision>=0.1.0` was unresolvable). v0.8.1 is the first real release.
+- **Quality gates unchanged**: 812 + 13 tests pass, ruff clean, mypy clean.
+
+---
 
 ## [0.8.0] - 2026-07-13
 
