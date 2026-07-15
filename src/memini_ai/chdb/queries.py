@@ -96,14 +96,17 @@ LIMIT {limit}
 # the row back. The database.py wrapper handles this.
 
 #: Insert a memory. Params: {id}, {text}, {embedding} (Array(Float32) or []),
-#: {source_type}, {content_hash} (or ''), {metadata} (JSON string),
+#: {source_type}, {content_hash} (or ''), {metadata} (JSON string,
+# already wrapped in single quotes by the caller),
 #: {created_at_ms} (Int64).
+#: chDB quirk: toJSONString('{}') is rejected on JSON column inserts.
+#: Pass the JSON string directly.
 INSERT_MEMORY = """
 INSERT INTO memories
     (id, text, embedding, source_type, content_hash, metadata, created_at_ms)
 VALUES
     ({id}, {text}, {embedding}::Array(Float32), {source_type},
-     {content_hash}, toJSONString({metadata}), {created_at_ms})
+     {content_hash}, {metadata}, {created_at_ms})
 """
 
 #: Insert a memory with the delta-model fields populated.
@@ -113,8 +116,8 @@ INSERT INTO memories
      supersedes_id, structured_fields, change_ratio, created_at_ms)
 VALUES
     ({id}, {text}, {embedding}::Array(Float32), {source_type},
-     {content_hash}, toJSONString({metadata}),
-     {supersedes_id}, toJSONString({structured_fields}),
+     {content_hash}, {metadata},
+     {supersedes_id}, {structured_fields},
      {change_ratio}, {created_at_ms})
 """
 
@@ -175,7 +178,7 @@ WHERE id = {id} AND is_archived = false
 #: Update a memory's metadata.
 UPDATE_MEMORY_METADATA = """
 ALTER TABLE memories
-UPDATE metadata = toJSONString({metadata}), updated_at = {now}
+UPDATE metadata = {metadata}, updated_at = {now}
 WHERE id = {id} AND is_archived = false
 """
 
@@ -297,7 +300,7 @@ INSERT INTO entities
     (id, name, entity_type, canonical_name, confidence, metadata)
 VALUES
     ({id}, {name}, {entity_type}, {canonical_name}, {confidence},
-     toJSONString({metadata}))
+     {metadata})
 """
 
 #: Upsert entity (with mention_count increment). Caller handles the
@@ -353,7 +356,7 @@ LIMIT {limit}
 #: Update an entity's metadata.
 UPDATE_ENTITY_METADATA = """
 ALTER TABLE entities
-UPDATE metadata = toJSONString({metadata}), last_seen_at = {now}
+UPDATE metadata = {metadata}, last_seen_at = {now}
 WHERE id = {id}
 """
 
