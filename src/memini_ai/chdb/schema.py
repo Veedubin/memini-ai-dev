@@ -232,6 +232,7 @@ CREATE TABLE IF NOT EXISTS entities (
     confidence Float64 DEFAULT 1.0,
     -- chDB doesn't allow Nullable(Array(T)). Empty array = no embedding.
     embedding Array(Float32),
+    metadata JSON DEFAULT '{}',
     peer_id Nullable(UUID),
     mention_count Int32 DEFAULT 1,
     first_seen_at DateTime64(9, 'UTC') DEFAULT now64(9, 'UTC'),
