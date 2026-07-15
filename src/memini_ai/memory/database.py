@@ -287,7 +287,9 @@ class VectorDatabase(ABC):
 def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
     """Factory function to create a VectorDatabase instance.
 
-    Always returns PostgresDatabase (PostgreSQL/pgvector only).
+    Selects the backend per the ``MEMINI_VECTOR_BACKEND`` env var (or
+    ``config.vector_backend``). Default is ``postgres`` for 0.9.x; will
+    become ``chdb`` in 1.0.0.
 
     Args:
         config: Optional MeminiConfig instance. If not provided, uses get_config().
@@ -298,22 +300,36 @@ def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
     if config is None:
         config = get_config()
 
-    from memini_ai.postgres import PostgresDatabase
+    backend = config.vector_backend
+    if backend == "postgres":
+        # Use config.db_url first (resolved by pydantic-settings from MEMINI_DB_URL
+        # env var), then fall back to direct os.environ check. This ensures the URL
+        # is properly resolved even when OpenCode injects environment vars through
+        # its config system rather than the OS environment of the subprocess.
+        db_url = config.db_url or os.environ.get("MEMINI_DB_URL", "")
+        if not db_url:
+            raise ValueError(
+                "MEMINI_VECTOR_BACKEND=postgres requires MEMINI_DB_URL. "
+                "Please set it to your PostgreSQL connection string, e.g., "
+                "postgresql://user:password@host:port/database"
+            )
+        from memini_ai.postgres import PostgresDatabase
 
-    # Use config.db_url first (resolved by pydantic-settings from MEMINI_DB_URL env var),
-    # then fall back to direct os.environ check. This ensures the URL is properly resolved
-    # even when OpenCode injects environment vars through its config system rather than
-    # the OS environment of the subprocess.
-    db_url = config.db_url or os.environ.get("MEMINI_DB_URL", "")
-    if not db_url:
-        raise ValueError(
-            "MEMINI_DB_URL environment variable is not set. "
-            "Please set it to your PostgreSQL connection string, e.g., "
-            "postgresql://user:password@host:port/database"
+        return PostgresDatabase(
+            db_url=db_url,
+            project_id=config.project_id,
+            sslmode=config.db_sslmode,
+            sslrootcert=config.db_sslrootcert,
         )
-    return PostgresDatabase(
-        db_url=db_url,
-        project_id=config.project_id,
-        sslmode=config.db_sslmode,
-        sslrootcert=config.db_sslrootcert,
-    )
+
+    if backend == "chdb":
+        from memini_ai.chdb import ChdbDatabase
+
+        chdb_path = os.path.expanduser(config.chdb_path)
+        return ChdbDatabase(
+            data_dir=chdb_path,
+            project_id=config.project_id,
+        )
+
+    # Should be impossible: validator restricts to {postgres, chdb}.
+    raise ValueError(f"Unknown vector backend: {backend!r}")

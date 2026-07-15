@@ -115,6 +115,28 @@ class MeminiConfig(BaseSettings):
         description="Path to CA certificate for SSL server verification",
     )
 
+    # v0.9.0: Vector backend selector. 'postgres' (default, legacy pgvector)
+    # or 'chdb' (in-process ClickHouse). Public MCP surface is identical
+    # across both backends; only the storage engine differs.
+    vector_backend: str = Field(
+        default="postgres",
+        alias="MEMINI_VECTOR_BACKEND",
+        description="Vector database backend: 'postgres' (default) or 'chdb'",
+    )
+    # v0.9.0: chDB data directory. Only used when vector_backend='chdb'.
+    # chDB writes to this directory (ClickHouse MergeTree format).
+    chdb_path: str = Field(
+        default="~/.memini-ai/data",
+        alias="MEMINI_CHDB_PATH",
+        description="chDB data directory (only used when vector_backend='chdb')",
+    )
+    # v0.9.0: chDB connection pool size. chDB is single-writer, multi-reader.
+    chdb_pool_size: int = Field(
+        default=8,
+        alias="MEMINI_CHDB_POOL_SIZE",
+        description="chDB connection pool size (default 8)",
+    )
+
     # Indexer settings
     chunk_size: int = 512
     chunk_overlap: int = 50
@@ -413,6 +435,24 @@ class MeminiConfig(BaseSettings):
                 f"Invalid db_sslmode '{val}'. Must be one of: {', '.join(sorted(valid_modes))}"
             )
         return val
+
+    @field_validator("vector_backend", mode="before")
+    @classmethod
+    def _validate_vector_backend(cls, v: str) -> str:
+        """Validate vector backend selector against supported values."""
+        val = v.lower().strip() if isinstance(v, str) else str(v).lower().strip()
+        if val not in {"postgres", "chdb"}:
+            raise ValueError(
+                f"Invalid vector_backend '{val}'. Must be one of: postgres, chdb"
+            )
+        return val
+
+    @field_validator("chdb_pool_size", mode="before")
+    @classmethod
+    def _clamp_chdb_pool_size(cls, v: int | str) -> int:
+        """Clamp chDB connection pool size to [1, 64]."""
+        val = int(v) if isinstance(v, str) else v
+        return max(1, min(64, val))
 
     @field_validator("max_memory_content_size", mode="before")
     @classmethod
