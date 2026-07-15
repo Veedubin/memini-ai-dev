@@ -106,16 +106,34 @@ class ChdbDatabase(VectorDatabase):
     # ===================================================================
 
     async def initialize(self) -> None:
-        """Initialize the database and create collections if needed.
+        """Initialize the database and create all tables + indexes.
 
-        Task 4 will: open the connection pool, run _ensure_schema() to
-        create all 15 tables, then build the HNSW indexes (when chDB
-        supports them; 0.9.0 is brute-force only).
+        Creates the 15 tables defined in :mod:`memini_ai.chdb.schema`
+        (idempotent — uses ``IF NOT EXISTS``), then creates the 35
+        skip indexes (minmax for scalar ranges, set(0) for low-cardinality
+        categories). Safe to call on every startup.
+
+        Task 4 will: open a real connection pool, validate dim, etc.
+        For 0.9.0, we use a single chDB session for the schema setup
+        and then close it; the runtime queries in Task 4 will use a
+        proper pool.
         """
-        raise NotImplementedError(
-            "ChdbDatabase.initialize() is a 0.9.0 placeholder. "
-            "Implemented in Task 4 of the chDB migration plan."
+        import chdb.session  # type: ignore[import-untyped]
+
+        from memini_ai.chdb.schema import (
+            CREATE_INDEXES_IN_ORDER,
+            CREATE_TABLES_IN_ORDER,
         )
+
+        # chDB doesn't allow multi-statement queries in a single .query()
+        # call reliably; we run each statement individually.
+        with chdb.session.Session(self._data_dir) as session:
+            for sql in CREATE_TABLES_IN_ORDER:
+                session.query(sql)
+            for sql in CREATE_INDEXES_IN_ORDER:
+                session.query(sql)
+
+        self._initialized = True
 
     async def add_memory(self, entry: Any) -> str:
         raise NotImplementedError("ChdbDatabase.add_memory — see Task 4")
