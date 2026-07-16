@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/sem/ver/2.0.0.html).
 
+## [1.0.2] - 2026-07-16
+
+### Fixed
+
+- **`memini-ai migrate` CLI command — 6 bugs fixed** in `src/memini_ai/cli.py::_migrate()`. v1.0.1 shipped the fixes in the standalone script (`scripts/migrate_external_to_embedded.py`) but the CLI command (which is what `memini-ai migrate` actually invokes) was still broken. This release brings the CLI to parity with the now-working standalone script:
+  1. **`pg_restore` resolved from the system PATH (pg18) instead of pgembed's bundled pg17 binary.** For a pg17 target (pgembed), using the system pg18 `pg_restore` can cause version-compatibility issues. The CLI now resolves `pg_restore` from `pgembed/pginstall/bin/pg_restore` (PostgreSQL 17), falling back to PATH only if pgembed is not importable. `pg_dump` continues to use the system binary (it must be >= the source server version; pgembed's pg17 `pg_dump` aborts with "server version mismatch" against a pg18 source).
+  2. **Did not pre-install `vector` + `vectorscale` extensions on the target before restore.** The dump contains `CREATE EXTENSION vector` / `CREATE EXTENSION vectorscale`; pgembed ships them but they must be `CREATE EXTENSION`'d in the target DB before `pg_restore` runs. The CLI now connects via `asyncpg` and runs `CREATE EXTENSION IF NOT EXISTS` for both after starting the embedded server.
+  3. **Did not exclude `timescaledb` + `timescaledb_toolkit` from the dump.** The source image (`timescaledb-ha:pg18`) has these installed; pgembed does not, so `pg_restore` failed with "extension timescaledb is not available". The CLI now adds `--exclude-extension=timescaledb --exclude-extension=timescaledb_toolkit` to the `pg_dump` command.
+  4. **No post-restore verification.** After restore the user had no way to know whether it actually worked. The CLI now runs a verification step that compares per-table row counts between source and target, pulls a random memory and verifies `text` + `embedding` match exactly (using the correct column name `text`, not `content`), checks that diskann indexes exist on the target, prints a clear PASS/FAIL summary, and exits 1 on mismatch. The table list is read from the live source schema (not hardcoded).
+  5. **`pg_restore` error handling treated harmless errors as fatal.** The shipped code used `check=True`, which fails on any non-zero exit. `pg_restore` returns nonzero for harmless errors (role mismatches, missing extensions, etc). The CLI now uses `check=False`, then inspects stderr for real `ERROR:` lines and only fails on those — filtering out `timescaledb`-related errors and role/ownership errors (`role "..." does not exist`, `role "..." already exists`).
+  6. **No `--dry-run` flag.** Useful for "is this going to work?" pre-flight checks. `memini-ai migrate --dry-run` now runs the dump, counts source rows, starts the embedded server, pre-installs extensions, counts target rows, and exits 0 without restoring.
+
+### Notes for users who tried the v1.0.1 standalone script
+
+- If you ran `scripts/migrate_external_to_embedded.py` directly (rather than `memini-ai migrate`), your migration worked correctly — v1.0.1 fixed the standalone script. This release fixes the CLI command so both paths now behave identically.
+- No schema changes, no new dependencies. `asyncpg` was already a dependency.
+- No version bump in this commit — the orchestrator runs `bumpversion --patch --apply` as a separate step.
+
+---
+
 ## [1.0.1] - 2026-07-16
 
 ### Fixed

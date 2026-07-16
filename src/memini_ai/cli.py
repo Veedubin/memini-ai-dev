@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -273,98 +274,46 @@ async def _stop(*, force: bool) -> None:
 
 # ── migrate ──────────────────────────────────────────────────────────────────
 
+# Tables to verify after migration (kept in sync with the standalone script
+# at ``scripts/migrate_external_to_embedded.py``). The actual verification
+# reads the live table list from the source so this is a minimum set, not a
+# hardcode — see ``_verify_migration``.
+_VERIFICATION_TABLES: tuple[str, ...] = (
+    "memories",
+    "thought_chains",
+    "thoughts",
+    "audit_log",
+    "memory_relationships",
+    "trust_adjustments",
+    "entities",
+    "entity_relationships",
+    "memory_sharing",
+    "peers",
+    "user_profiles",
+    "memories_1024",
+    "memories_image",
+)
 
-async def _migrate(*, source_url: str | None) -> None:
-    """Copy data from an external Postgres to the embedded server.
+# Extensions that the embedded pgembed target does NOT ship — must be excluded
+# from the dump so ``pg_restore`` does not fail with "extension ... not available".
+_EXCLUDED_EXTENSIONS: tuple[str, ...] = ("timescaledb", "timescaledb_toolkit")
 
-    Uses ``pg_dump`` on the source and ``pg_restore`` on the target — standard
-    Postgres tooling. Does NOT delete the source data. Auto-starts the
-    embedded server if needed.
+# Extensions that pgembed DOES ship and the dump will try to CREATE — we
+# pre-install them so the ``CREATE EXTENSION`` statements in the dump become
+# no-ops (``pg_restore --clean --if-exists`` will still try to recreate them).
+_PREINSTALL_EXTENSIONS: tuple[str, ...] = ("vector", "vectorscale")
+
+
+def _pgembed_bin_dir() -> Path:
+    """Locate the bundled pgembed ``pginstall/bin`` directory.
+
+    Falls back to PATH lookup if pgembed is not importable from this process.
     """
-    url = source_url or os.environ.get("MEMINI_DB_URL")
-    if not url:
-        print(
-            "Error: no source database. Set $MEMINI_DB_URL or pass --from <url>.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Start (or attach to) the embedded server to get the target URI.
-    from memini_ai.postgres.driver import EmbeddedPGDriver
-
-    data_dir = _resolve_data_dir()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    driver = EmbeddedPGDriver(data_dir)
-    target_uri = await driver.get_uri()
-
-    print("Migrating data")
-    print(f"  source (external): {url}")
-    print(f"  target (embedded): {target_uri}")
-
-    target_host = _pg_option(target_uri, "host")
-    target_port = _pg_option(target_uri, "port", default="5432")
-    target_db = _pg_dbname(target_uri)
-
-    dump_cmd = [
-        "pg_dump",
-        "--no-owner",
-        "--no-privileges",
-        "--format=custom",
-        f"--dbname={url}",
-    ]
-    restore_cmd = [
-        "pg_restore",
-        "--no-owner",
-        "--no-privileges",
-        "--clean",
-        "--if-exists",
-        f"--host={target_host}",
-        f"--port={target_port}",
-        f"--dbname={target_db}",
-        "--username=postgres",
-    ]
-
-    print("  running pg_dump ...")
     try:
-        dump_proc = subprocess.run(dump_cmd, capture_output=True, check=True)
-    except FileNotFoundError:
-        print("Error: pg_dump not found on PATH", file=sys.stderr)
-        await driver.shutdown()
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error: pg_dump failed (exit {e.returncode}):\n"
-            f"{e.stderr.decode(errors='replace') if e.stderr else ''}",
-            file=sys.stderr,
-        )
-        await driver.shutdown()
-        sys.exit(1)
-
-    print(f"  pg_dump produced {len(dump_proc.stdout)} bytes")
-    print("  running pg_restore ...")
-    try:
-        subprocess.run(
-            restore_cmd,
-            input=dump_proc.stdout,
-            capture_output=True,
-            check=True,
-        )
-    except FileNotFoundError:
-        print("Error: pg_restore not found on PATH", file=sys.stderr)
-        await driver.shutdown()
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        print(
-            f"Error: pg_restore failed (exit {e.returncode}):\n"
-            f"{e.stderr.decode(errors='replace') if e.stderr else ''}",
-            file=sys.stderr,
-        )
-        await driver.shutdown()
-        sys.exit(1)
-
-    print("Migration complete (source data left intact)")
-    await driver.shutdown()
+        import pgembed
+    except ImportError:
+        return Path(".")
+    return Path(pgembed.__file__).resolve().parent / "pginstall" / "bin"
 
 
 def _pg_option(uri: str, key: str, *, default: str = "") -> str:
@@ -394,6 +343,374 @@ def _pg_dbname(uri: str) -> str:
     if "/" in rest:
         rest = rest.split("/", 1)[1]
     return rest or "postgres"
+
+
+def _vectors_equal(a: object, b: object) -> bool:
+    """Compare two pgvector values (list[float] or str) for equality."""
+    if a == b:
+        return True
+    a_list = _to_float_list(a)
+    b_list = _to_float_list(b)
+    if a_list is None or b_list is None:
+        return False
+    if len(a_list) != len(b_list):
+        return False
+    return all(abs(x - y) < 1e-9 for x, y in zip(a_list, b_list, strict=True))
+
+
+def _to_float_list(v: object) -> list[float] | None:
+    if isinstance(v, list):
+        return [float(x) for x in v]
+    if isinstance(v, str):
+        s = v.strip().lstrip("[").rstrip("]")
+        if not s:
+            return []
+        try:
+            return [float(x) for x in s.split(",")]
+        except ValueError:
+            return None
+    return None
+
+
+async def _preinstall_extensions(target_uri: str) -> None:
+    """Pre-install ``vector`` + ``vectorscale`` on the target before restore."""
+    import asyncpg  # local import; only needed for migrate
+
+    conn = await asyncpg.connect(target_uri)
+    try:
+        for ext in _PREINSTALL_EXTENSIONS:
+            try:
+                await conn.execute(f'CREATE EXTENSION IF NOT EXISTS "{ext}"')
+                print(f"  pre-installed extension: {ext}")
+            except Exception as e:  # noqa: BLE001 - warn, don't abort
+                print(f"  WARNING: could not pre-install {ext}: {e}", file=sys.stderr)
+    finally:
+        await conn.close()
+
+
+async def _count_rows(db_uri: str, table: str) -> int:
+    """Return ``SELECT count(*) FROM <table>`` or -1 if the table is missing."""
+    import asyncpg
+
+    conn = await asyncpg.connect(db_uri)
+    try:
+        try:
+            return int(await conn.fetchval(f"SELECT count(*) FROM {table}"))
+        except asyncpg.UndefinedTableError:
+            return -1
+    finally:
+        await conn.close()
+
+
+async def _list_tables(db_uri: str) -> list[str]:
+    """Return the list of base tables in the public schema."""
+    import asyncpg
+
+    conn = await asyncpg.connect(db_uri)
+    try:
+        rows = await conn.fetch(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type='BASE TABLE' "
+            "ORDER BY table_name"
+        )
+        return [r["table_name"] for r in rows]
+    finally:
+        await conn.close()
+
+
+async def _verify_migration(source_url: str, target_uri: str) -> bool:
+    """Post-restore verification: row counts, spot-check, index check.
+
+    Uses the actual table list from the source (not a hardcode) and the
+    correct column name ``text`` (not ``content``).
+    """
+    import asyncpg
+
+    tables = await _list_tables(source_url)
+    if not tables:
+        tables = list(_VERIFICATION_TABLES)
+
+    src_counts: dict[str, int] = {}
+    tgt_counts: dict[str, int] = {}
+
+    src_conn = await asyncpg.connect(source_url)
+    try:
+        for t in tables:
+            try:
+                src_counts[t] = int(
+                    await src_conn.fetchval(f"SELECT count(*) FROM {t}")
+                )
+            except asyncpg.UndefinedTableError:
+                src_counts[t] = -1
+    finally:
+        await src_conn.close()
+
+    conn = await asyncpg.connect(target_uri)
+    try:
+        for t in tables:
+            try:
+                tgt_counts[t] = int(await conn.fetchval(f"SELECT count(*) FROM {t}"))
+            except asyncpg.UndefinedTableError:
+                tgt_counts[t] = -1
+
+        # Spot-check: pick a random memory and compare text + embedding exactly.
+        spot_ok = False
+        spot_detail = ""
+        try:
+            row = await conn.fetchrow(
+                "SELECT id, text, embedding FROM memories ORDER BY random() LIMIT 1"
+            )
+            if row is not None:
+                mem_id = row["id"]
+                src2 = await asyncpg.connect(source_url)
+                try:
+                    src_row = await src2.fetchrow(
+                        "SELECT text, embedding FROM memories WHERE id = $1",
+                        mem_id,
+                    )
+                finally:
+                    await src2.close()
+                if src_row is not None:
+                    text_match = row["text"] == src_row["text"]
+                    emb_match = _vectors_equal(row["embedding"], src_row["embedding"])
+                    spot_ok = text_match and emb_match
+                    spot_detail = (
+                        f"memory {mem_id}: text_match={text_match} "
+                        f"embedding_match={emb_match}"
+                    )
+                else:
+                    spot_detail = f"memory {mem_id} not found on source"
+            else:
+                spot_detail = "no memories on target to spot-check"
+        except Exception as e:  # noqa: BLE001
+            spot_detail = f"spot-check error: {e}"
+
+        # Index check: confirm diskann indexes exist on the target.
+        diskann_rows = await conn.fetch(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname='public' AND indexdef ILIKE '%USING diskann%' "
+            "ORDER BY indexname"
+        )
+        diskann_names = [r["indexname"] for r in diskann_rows]
+    finally:
+        await conn.close()
+
+    print("\n--- Verification ---")
+    all_counts_ok = True
+    for t in tables:
+        s = src_counts.get(t, -1)
+        g = tgt_counts.get(t, -1)
+        ok = s == g
+        if not ok:
+            all_counts_ok = False
+        status = "OK" if ok else "MISMATCH"
+        if s == -1:
+            status = "source-missing"
+        elif g == -1:
+            status = "target-missing"
+            all_counts_ok = False
+        print(f"  {t:24s} source={s:>6} target={g:>6}  [{status}]")
+
+    print(f"  spot-check: {'PASS' if spot_ok else 'FAIL'} ({spot_detail})")
+    print(f"  diskann indexes on target: {len(diskann_names)}")
+    for n in diskann_names:
+        print(f"    - {n}")
+
+    passed = all_counts_ok and spot_ok and len(diskann_names) > 0
+    print(f"\nVerification: {'PASS' if passed else 'FAIL'}")
+    return passed
+
+
+async def _migrate(*, source_url: str | None, dry_run: bool = False) -> None:
+    """Copy data from an external Postgres to the embedded server.
+
+    Uses ``pg_dump`` on the source and ``pg_restore`` on the target — standard
+    Postgres tooling. Does NOT delete the source data. Auto-starts the
+    embedded server if needed.
+
+    Bug fixes (parity with ``scripts/migrate_external_to_embedded.py`` v1.0.1):
+    - ``pg_dump`` resolves from the system PATH (must be >= source server
+      version; pgembed's pg17 ``pg_dump`` aborts on a pg18 source).
+    - ``pg_restore`` resolves from pgembed's bundled pg17 binaries (matches
+      the pg17 embedded target).
+    - Pre-installs ``vector`` + ``vectorscale`` on the target before restore.
+    - Excludes ``timescaledb`` + ``timescaledb_toolkit`` from the dump.
+    - ``pg_restore`` uses ``check=False`` and only fails on real ``ERROR:``
+      lines (ignoring timescaledb/role warnings).
+    - ``--dry-run`` skips the restore and just counts rows.
+    - Post-restore verification (row counts, random memory spot-check, diskann
+      index check) prints a clear PASS/FAIL summary.
+    """
+    url = source_url or os.environ.get("MEMINI_DB_URL")
+    if not url:
+        print(
+            "Error: no source database. Set $MEMINI_DB_URL or pass --from <url>.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Resolve client binaries.
+    # pg_dump: prefer SYSTEM (must be >= source server version; source is
+    #   typically pg18 while pgembed ships pg17, and pg17 pg_dump refuses
+    #   to dump a pg18 server).
+    # pg_restore: prefer PGEMBED (must match the pg17 target major version).
+    pgembed_bin_dir = _pgembed_bin_dir()
+    pg_restore_bin = pgembed_bin_dir / "pg_restore"
+    if not (pg_restore_bin.exists() and os.access(pg_restore_bin, os.X_OK)):
+        # Fall back to PATH if pgembed not importable / binary missing.
+        pg_restore_bin = Path("pg_restore")
+
+    # Start (or attach to) the embedded server to get the target URI.
+    from memini_ai.postgres.driver import EmbeddedPGDriver
+
+    data_dir = _resolve_data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    driver = EmbeddedPGDriver(data_dir)
+
+    def _stop_driver() -> None:
+        """Cooperative shutdown — request_explicit_shutdown is SYNC (do not await)."""
+        with contextlib.suppress(Exception):
+            driver.request_explicit_shutdown()
+
+    try:
+        target_uri = await driver.get_uri()
+    except (OSError, RuntimeError) as e:
+        print(f"Error: could not start embedded Postgres: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Migrating data")
+    print(f"  source (external): {url}")
+    print(f"  target (embedded): {target_uri}")
+    print("  pg_dump:           system PATH (pg_dump)")
+    print(f"  pg_restore:        {pg_restore_bin}")
+    if dry_run:
+        print("  mode:              DRY RUN (no restore)")
+
+    # Pre-install extensions on the target before restore.
+    print("  pre-installing extensions on target ...")
+    await _preinstall_extensions(target_uri)
+
+    # Count source + target rows (useful for both dry-run and real run).
+    print("  counting source rows ...")
+    source_tables = await _list_tables(url)
+    src_counts: dict[str, int] = {}
+    for t in source_tables:
+        src_counts[t] = await _count_rows(url, t)
+        print(f"    source {t}: {src_counts[t]}")
+
+    print("  counting target rows (post pre-install, pre-restore) ...")
+    for t in source_tables:
+        c = await _count_rows(target_uri, t)
+        print(f"    target {t}: {c}")
+
+    # Build the dump command. pg_dump uses the system binary (>= source version).
+    dump_cmd: list[str] = [
+        "pg_dump",
+        "--no-owner",
+        "--no-privileges",
+        "--format=custom",
+        f"--dbname={url}",
+    ]
+    for ext in _EXCLUDED_EXTENSIONS:
+        dump_cmd.append(f"--exclude-extension={ext}")
+
+    print("  running pg_dump ...")
+    try:
+        dump_proc = subprocess.run(dump_cmd, capture_output=True, check=True)
+    except FileNotFoundError:
+        print("Error: pg_dump not found on PATH", file=sys.stderr)
+        _stop_driver()
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(
+            f"Error: pg_dump failed (exit {e.returncode}):\n"
+            f"{e.stderr.decode(errors='replace') if e.stderr else ''}",
+            file=sys.stderr,
+        )
+        _stop_driver()
+        sys.exit(1)
+
+    print(f"  pg_dump produced {len(dump_proc.stdout)} bytes")
+
+    if dry_run:
+        print("\nDRY RUN: skipping restore. Source row counts printed above.")
+        print("Dry-run complete. No data was restored.")
+        _stop_driver()
+        return
+
+    # Build the restore command using pgembed's bundled pg_restore (pg17).
+    target_host = _pg_option(target_uri, "host")
+    target_port = _pg_option(target_uri, "port", default="5432")
+    target_db = _pg_dbname(target_uri)
+    restore_cmd: list[str] = [
+        str(pg_restore_bin),
+        "--no-owner",
+        "--no-privileges",
+        "--clean",
+        "--if-exists",
+        f"--host={target_host}",
+        f"--port={target_port}",
+        f"--dbname={target_db}",
+        "--username=postgres",
+    ]
+
+    print("  running pg_restore ...")
+    # pg_restore returns nonzero for harmless errors (role mismatches, missing
+    # extensions, etc). Use check=False and inspect stderr for real ERROR: lines.
+    restore_proc = subprocess.run(
+        restore_cmd,
+        input=dump_proc.stdout,
+        capture_output=True,
+        check=False,
+    )
+    stderr_text = (
+        restore_proc.stderr.decode(errors="replace") if restore_proc.stderr else ""
+    )
+
+    real_errors = [
+        line
+        for line in stderr_text.splitlines()
+        if "ERROR:" in line
+        and "timescaledb" not in line.lower()
+        and not _is_role_error(line)
+    ]
+    if real_errors:
+        print(
+            "Error: pg_restore had real errors:\n" + "\n".join(real_errors),
+            file=sys.stderr,
+        )
+        print(f"\nFull stderr:\n{stderr_text}", file=sys.stderr)
+        _stop_driver()
+        sys.exit(1)
+    if restore_proc.returncode != 0:
+        # Harmless warnings only — surface a short excerpt for transparency.
+        print(f"  pg_restore completed with warnings (rc={restore_proc.returncode})")
+        if stderr_text:
+            print(f"  warnings: {stderr_text[:500]}")
+    else:
+        print("  pg_restore completed cleanly")
+
+    print("Migration complete (source data left intact)")
+
+    # Verification step (Bug 4): row counts, spot-check, index check.
+    verified = await _verify_migration(url, target_uri)
+
+    _stop_driver()
+    if not verified:
+        print(
+            "\nMigration finished but verification FAILED — see above.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _is_role_error(line: str) -> bool:
+    """True if a pg_restore stderr line is a harmless role/ownership error."""
+    lower = line.lower()
+    return ('role "' in lower and "does not exist" in lower) or (
+        'role "' in lower and "already exists" in lower
+    )
 
 
 # ── MCP server launcher (default, no subcommand) ─────────────────────────────
@@ -471,6 +788,11 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="source_url",
         help="Source MEMINI_DB_URL (default: $MEMINI_DB_URL).",
     )
+    p_migrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dump + count source rows + count target rows, but do NOT restore.",
+    )
 
     return parser
 
@@ -487,7 +809,7 @@ def main() -> None:
     elif args.command == "stop":
         asyncio.run(_stop(force=args.force))
     elif args.command == "migrate":
-        asyncio.run(_migrate(source_url=args.source_url))
+        asyncio.run(_migrate(source_url=args.source_url, dry_run=args.dry_run))
     elif args.command is None:
         # No subcommand: run the MCP server launcher (pre-v1.0.0 behaviour).
         _run_server(args)
