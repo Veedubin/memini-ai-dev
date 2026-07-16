@@ -1,9 +1,9 @@
 # Memini-ai Context Document
 
-> **Project**: Memini-ai v0.7.6 (formerly Super-Memory-TS)
+> **Project**: Memini-ai v1.0.2 (formerly Super-Memory-TS)
 > **Meaning**: "I remember" in Latin (pronounced "meh-mee-nee")
 > **Goal**: Local-first semantic memory server, MCP-compatible, Python-based
-> **Last Updated**: 2026-07-10 (Session 40 — **v0.7.6 BGE-LARGE REMOVAL** ✅ — commit `6ff118a`, tag `v0.7.6` pushed. BGE-Large support removed; supported models reduced to MiniLM (384-dim, default) + BGE-M3 (1024-dim, optional GPU upgrade). `embedding_bge_large` column dropped from live `memini-postgres` via migration 000007 — 821 memories preserved, 819 MiniLM + 800 BGE-M3, zero data loss. 784 tests passing (was 824, -40 from removing BGE-Large tests). BGE-Large migration script kept as reference. Canonical upgrade path: MiniLM → BGE-M3.)
+> **Last Updated**: 2026-07-16 (Session 52). 9 versions released since v0.7.6: **v0.7.7** (BGE-M3 opt-in + `MEMINI_AUTO_DETECT_MODEL` + `MEMINI_STRICT_EMBEDDING_DIM` + `docs/upgrading-embeddings.md`), **v0.7.8** (comprehensive 8-area audit by boomerang-architect + boomerang-tester; 13 doc fixes including CRITICAL README `MEMINI_EMBEDDING_DIM=1024` missing; BM25 punctuation guard; step-limit 10x bump across 61 agent files; full reports at `docs/audits/v0.7.7-{audit,validation}.md`), **v0.7.9** (data-leak rule formalization in AGENTS.md after v0.7.8 19MB pg_dump near-miss), **v0.8.0** (image-recall RRF fan-out arm via `memini-vision` CLIP text tower over new `memories_image` table; backward-compatible zero-behavior-change for text-only users; design doc `docs/design/vision-memory-architecture.md` 30KB), **v0.8.1** (CI re-trigger; no code changes), **v0.8.2** (SECURITY: `detect-secrets` baseline + pre-commit hook + CI scan; came same day as Session 47 Ollama Cloud API key leak in 3 public repos), **v1.0.0 MAJOR** (embedded `pgembed` (in-process Postgres 17 + pgvector + vectorscale + pg_textsearch) as default backend, multi-process server sharing, RRF fusion across embedded + team via `RRFDatabase` wrapper, CLI `memini-ai {init,status,stop,migrate}`, 4 new env vars, design doc `docs/design/v1.0.0-embedded-pgembed-architecture.md` 76KB; **breaking: `MEMINI_VECTOR_BACKEND` must be set if `MEMINI_DB_URL` is set**), **v1.0.1 + v1.0.2** (6 bugs in `memini-ai migrate` fixed in both the standalone script and the CLI command). **DB server verified working 2026-07-16** (in-process `MCPServer.healthcheck()`: `status=pass, readbackMatch=True`; live `memini-postgres` on port 5434: 986 memories + 519 thoughts, all 13 tables present, 100% healthy). 809 tests pass (v0.7.8 baseline). ruff/mypy clean. See `CHANGELOG.md` for per-release detail and `HANDOFF.md` for session-by-session records.
 
 ---
 
@@ -236,6 +236,15 @@ For Memini-ai, we may add:
 
 | Version | Language | Notes |
 |---------|----------|-------|
+| **v1.0.2** | **Python** | **migrate CLI fix (6 bugs). 809 tests pass, ruff/mypy clean. Commit `b050806`, tag `v1.0.2` pushed.** |
+| **v1.0.1** | **Python** | **migrate script fix (6 bugs). 809 tests pass, ruff/mypy clean. Commit `63cfb8a`, tag `v1.0.1` pushed.** |
+| **v1.0.0** | **Python** | **MAJOR: Embedded pgembed backend (default), Python 3.12+, 13 tables. 809 tests pass, ruff/mypy clean. Commit `74b81cf`, tag `v1.0.0` pushed.** |
+| **v0.8.2** | **Python** | **SECURITY: detect-secrets baseline + CI scan. 812+13 tests pass, ruff/mypy clean. Commit `ed7e3ba`, tag `v0.8.2` pushed.** |
+| **v0.8.1** | **Python** | **CI re-trigger for `memini-vision` dependency (no code changes). Commit `241e471`, tag `v0.8.1` pushed.** |
+| **v0.8.0** | **Python** | **Image-Recall RRF fan-out arm, CLIP text tower, `memories_image` table. 799 tests pass, ruff/mypy clean. Commit `25eb3aa`, tag `v0.8.0` pushed.** |
+| **v0.7.9** | **Python** | **Data-leak rule followup, `.gitignore` updates, 809 tests pass. Commit `2c71c2a`, tag `v0.7.9` pushed.** |
+| **v0.7.8** | **Python** | **Audit-driven doc rewrite (13 fixes), 809 tests pass. Commit `9408a87`, tag `v0.7.8` pushed.** |
+| **v0.7.7** | **Python** | **BGE-M3 opt-in, 2 new env vars, 807 tests pass. Commit `fa8223e`, tag `v0.7.7` pushed.** |
 | **v0.7.0** | **Python** | **Dual-model RRF RELEASED (2026-06-02). 384+1024 tables, MEMINI_MODE routing (cpu/auto/gpu), RRF k=60, `elevate_memory_to_1024` MCP tool (auto-mode gated). Commit `18f37ed`, tag `v0.7.0` pushed. 763 tests passing, 83 memories preserved. 36 MCP tools total.** |
 | v0.6.0 | Python | Modular cloud LLM (factory/provider pattern), 740/740 tests, tag `v0.6.0` pushed |
 | v1.0 | Python | Original implementation (user prefers this) |
@@ -400,6 +409,98 @@ Across the **entire `/home/jcharles`** (not just MCP-Servers):
 5. Set `MEMINI_ENABLE_RRF=true` for RRF search across both columns
 
 The MiniLM column is never touched — both vectors coexist for RRF.
+
+## v0.7.7 + v0.7.8 + v0.7.9
+
+### v0.7.7: BGE-M3 Opt-In (2026-07-10)
+- **2 new env vars**: `MEMINI_AUTO_DETECT_MODEL` (default `true`; new deployments with 0 memories auto-upgrade to BGE-M3 1024-dim; existing users keep MiniLM) and `MEMINI_STRICT_EMBEDDING_DIM` (default `false`; dim mismatch logs WARNING + degrades to text-only instead of raising RuntimeError).
+- **Fixed BM25 `text_only_search` empty-corpus `ZeroDivisionError`** (3 guards in `_build_bm25_index`, `text_only_search`, `text_search_collection`).
+- **Fixed `get_sentence_embedding_dimension` deprecation warning** → `get_embedding_dimension` (sentence-transformers 3.x).
+- **Fixed 4 pre-existing test failures** via `autouse=True` `_isolate_env` fixture.
+- **`get_status` now reports**: `modelName`, `modelDimension`, `embeddingDimMismatch`, `embeddingDimExpected`, `embeddingDimActual`.
+- **New `docs/upgrading-embeddings.md`**: 4-step migration recipe + rollback + FAQ.
+- **807 tests pass** (+23 net new), ruff/mypy clean.
+- **OpenCode restart required** to load v0.7.7 code.
+- **Commit**: `fa8223e`, **tag**: `v0.7.7`.
+
+### v0.7.8: Audit-Driven Doc Rewrite (2026-07-10)
+- **8-area audit by boomerang-architect + boomerang-tester**: 13 findings (1 CRITICAL, 4 HIGH, 6 MEDIUM, 2 LOW). All 13 fixed.
+- **CRITICAL fix**: README "Enabling Multi-Model" example was missing `MEMINI_EMBEDDING_DIM=1024`, would have silently degraded to text-only.
+- **HIGH fixes**: `.env.example` missing 6 v0.7.7 env vars, README env var table missing same, `upgrading-embeddings.md` referenced non-existent `sentence-transformers[gpu]` pip extra, migration script path was wrong.
+- **2 minor code fixes**: BM25 punctuation-only query guard, `get_sentence_embedding_dimension` deprecation in migration script.
+- **Process fix**: bumped `steps: N` frontmatter 10x across all 61 agent `.md` files (50→500, 40→400, 30→300) — sub-agents hitting 50-step limits.
+- **809 tests pass**, ruff/mypy clean. 6 files changed, 1 directory moved (archives/ into memini-ai-dev/).
+- **Full reports**: `docs/audits/v0.7.7-audit.md` (225 lines, 13 findings) and `docs/audits/v0.7.7-validation.md` (135 lines, 70 probes).
+- **Commit**: `9408a87`, **tag**: `v0.7.8`.
+- **Data-leak near-miss**: 19MB memory text + 3.2MB pg_dump almost committed before being caught. Required the next session (v0.7.9) to formalize the rule.
+
+### v0.7.9: Data-Leak Rule Followup (2026-07-11)
+- **Adds critical "Never Commit Memory Data" rule to `AGENTS.md`** as follow-up to the v0.7.8 near-miss.
+- **Pre-commit inspection pattern**: `find <dir> -type f | xargs file | grep -iE "text|json|sql|archive"` and `du -sh <dir>/*` before `git add`.
+- **`.gitignore` updates**: `*.dump`, `*.jsonl`, `archives/memini-migration-backup.jsonl`, `archives/memini-migration-to-bge-large-backup.jsonl`, `archives/memini-postgres-pre-migration.dump`.
+- **`uv.lock` refresh** to match v0.7.8 `pyproject.toml`.
+- **809 tests pass**, 3 skipped, 0 failed. ruff/mypy clean.
+- **Commits**: `2c71c2a` (docs/agents rule) + `cb6fe6b` (v0.7.9 release).
+
+## v0.8.0 + v0.8.1 + v0.8.2
+
+### v0.8.0: Image-Recall RRF Fan-Out Arm (2026-07-13)
+- **Image Recall RRF fan-out arm**: when `MEMINI_IMAGE_SEARCH_ENABLED=true`, `query_memories` adds a 3rd RRF fan-out arm that calls `memini-vision.ImageQuery.search_by_text` (CLIP text tower over the `memories_image` table) and fuses with the existing 384-dim MiniLM + 1024-dim BGE-M3 via the unchanged `reciprocal_rank_fusion()` (k=60).
+- **Image arm is best-effort**: any CLIP failure is caught, logged, and text RRF proceeds with 2 lists.
+- **`_query_dual_model_rrf` renamed to `_query_multi_model_rrf`** (handles 2 OR 3 models).
+- **New `memories_image` table** (migration `000008_add_memories_image.sql`): 768-dim CLIP image embeddings, 1:1 FK to `memories.id` ON DELETE CASCADE. `vector(768)` accommodates both ViT-B/32 (zero-padded) and ViT-L/14 (native). Created at memini-ai startup REGARDLESS of whether image search enabled.
+- **`source_type='image'` added to CHECK constraint.**
+- **5 new env vars**: `MEMINI_IMAGE_SEARCH_ENABLED` (default `false`), `MEMINI_IMAGE_CLIP_MODEL` (default `clip-ViT-B-32`), `MEMINI_IMAGE_CLIP_DEVICE` (default `auto`), `MEMINI_IMAGE_DIR` (default `~/.memini-ai/images`), `MEMINI_IMAGE_DB_URL`.
+- **`[vision]` optional dep**: `vision = ["memini-vision>=0.1.0"]`. `memini_vision` import is lazy.
+- **Text-only users see ZERO behavior change. Backward compatible.**
+- **799 tests pass**, 3 skipped, 10 pre-existing Keras 3 / tf-keras env failures.
+- **ruff clean, mypy**: 1 pre-existing numpy stub error on Python 3.14.
+- **Design doc**: `docs/design/vision-memory-architecture.md` (30KB).
+- **Commits**: `25eb3aa` (design doc) + `15ad805` (v0.8.0 implementation).
+
+### v0.8.1: CI Re-Trigger (2026-07-13)
+- **Pure CI re-trigger** for `memini-vision` dependency that wasn't yet on PyPI when v0.8.0 published.
+- **No code changes from v0.8.0.** This release is purely a CI re-run.
+- **Original v0.8.0 tag preserved** on origin (failed publish attempt).
+- **Commits**: `241e471` (v0.8.1 CHANGELOG entry) + `705fc36` (test trigger) + `52e8350` (v0.8.1 release).
+
+### v0.8.2: Security (2026-07-13)
+- **SECURITY**: adds `detect-secrets` baseline + CI scan to prevent API key/secret leaks in commit history.
+- **Pre-commit hook + GitHub Actions workflow** run `detect-secrets` on every push.
+- **812 + 13 tests pass**, ruff/mypy clean.
+- **Background**: An Ollama Cloud API key was leaked in the public Git history of `boomerang-v3`, `neuralgentics`, and `memini-ai-dev` on 2026-07-13. The key appeared in `.opencode/opencode.json`, `scripts/install-boomerang.js`, `.env.example`, and `HANDOFF.md`. It was rotated, then `git-filter-repo` rewrote history to replace it with `YOUR_OLLAMA_CLOUD_API_KEY` placeholder. All 3 repos force-pushed.
+
+## v1.0.0 + v1.0.1 + v1.0.2
+
+### v1.0.0: Embedded pgembed Backend (2026-07-16)
+- **MAJOR: Embedded PostgreSQL is now the default backend.** v0.8.2 used external Postgres. The new `pgembed` driver starts an in-process Postgres 17 server on first query. No Docker required.
+- **`MEMINI_VECTOR_BACKEND` must be set explicitly** if you have `MEMINI_DB_URL` configured (v0.8.2 users will get a `RuntimeError` on startup with clear remediation).
+- **Python 3.12+ required** (was 3.11+). pgembed 0.2.0 requires Python 3.12+.
+- **`PostgresDatabase.__init__` now takes a `driver` parameter** instead of `db_url` (internal; users go through `create_database()` which is unchanged).
+- **Data dir location changed** from `~/.memini-ai/pgembed/` to `~/.local/share/memini-ai/pgembed/data` (XDG Base Directory spec).
+- **Driver pattern**: `DatabaseDriver` Protocol with `EmbeddedPGDriver` + `ExternalPGDriver` implementations.
+- **Multi-process server sharing**: 1 embedded Postgres shared by all memini-ai processes on same machine. Cooperative heartbeat (1s ping, 2s timeout, 5s drain grace).
+- **RRF fusion across embedded + team server** via `RRFDatabase` wrapper. Writes go to primary (embedded) only; reads fan out to both backends, fuse via RRF.
+- **CLI commands**: `memini-ai init`, `memini-ai status`, `memini-ai stop`, `memini-ai migrate`.
+- **4 new env vars**: `MEMINI_VECTOR_BACKEND`, `MEMINI_PGEMBED_DATA_DIR`, `MEMINI_TEAM_DB_URL`, `MEMINI_FUSION_MODE`.
+- **100% backward compatible** with v0.8.2 if `MEMINI_VECTOR_BACKEND=postgres-external` is set.
+- **Design doc**: `docs/design/v1.0.0-embedded-pgembed-architecture.md` (76KB).
+- **Commit**: `74b81cf` (feature) + `8c7b9f7` (release) + `c795931` (merge).
+
+### v1.0.1: migrate script fix (2026-07-16)
+- **6 bugs fixed** in `scripts/migrate_external_to_embedded.py`:
+  1. Used system pg_dump/pg_restore (pg18) instead of pgembed's pg17. Now: `pg_dump` from system PATH (>= source version), `pg_restore` from pgembed (matches target).
+  2. `parse_db_url` didn't extract `?host=` for Unix socket URIs (was in `.query`, not `.hostname`).
+  3. Didn't pre-install `vector`+`vectorscale` extensions on target before restore.
+  4. Didn't exclude `timescaledb`+`timescaledb_toolkit` from dump (not in pgembed).
+  5. `request_explicit_shutdown()` is sync, not async — `await` was crashing.
+  6. Spot-check column was `content` not `text`.
+- **Added `--dry-run` flag**, post-restore verification (per-table row counts, random memory spot-check, diskann index existence).
+- **Commit**: `63cfb8a` + `9b4d456` (release).
+
+### v1.0.2: migrate CLI fix (2026-07-16)
+- **6 bugs in `src/memini_ai/cli.py::_migrate()`** (same as v1.0.1 but in the CLI command, not the standalone script). CLI brought to parity with the standalone script.
+- **Commit**: `b050806` (fix) + `ad30e2c` (release).
 
 ### Next steps (Session 41+ backlog)
 1. **Restart OpenCode TUI** to load the v0.7.6 code (running TUIs have cached pre-v0.7.5 code)
