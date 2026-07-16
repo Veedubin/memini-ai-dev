@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 from memini_ai.config import MeminiConfig, get_config
@@ -287,33 +288,71 @@ class VectorDatabase(ABC):
 def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
     """Factory function to create a VectorDatabase instance.
 
-    Always returns PostgresDatabase (PostgreSQL/pgvector only).
+    v1.0.0: Supports pgembed (embedded, default) and postgres-external
+    (Docker/team server) backends.
 
-    Args:
-        config: Optional MeminiConfig instance. If not provided, uses get_config().
-
-    Returns:
-        VectorDatabase implementation instance.
+    Q4 breaking change: vector_backend always wins. v0.8.2 users with
+    MEMINI_DB_URL set must explicitly set MEMINI_VECTOR_BACKEND or run
+    'memini-ai migrate'. See design section 5.4.
     """
     if config is None:
         config = get_config()
 
+    # ── Q4: Refuse to start if v0.8.2 user with MEMINI_DB_URL set ──
+    if (
+        config.db_url or os.environ.get("MEMINI_DB_URL")
+    ) and "MEMINI_VECTOR_BACKEND" not in os.environ:
+        raise RuntimeError(
+            "memini-ai v1.0.0: MEMINI_DB_URL is set but MEMINI_VECTOR_BACKEND is not.\n"
+            "\n"
+            "v1.0.0 defaults to 'pgembed' (embedded PostgreSQL) which IGNORES MEMINI_DB_URL.\n"
+            "Your v0.8.2 setup connected to an external Postgres server via MEMINI_DB_URL.\n"
+            "\n"
+            "To keep using your external server:\n"
+            "  export MEMINI_VECTOR_BACKEND=postgres-external\n"
+            "\n"
+            "To switch to embedded mode (and copy your data):\n"
+            "  unset MEMINI_DB_URL\n"
+            "  memini-ai migrate --from='<your old MEMINI_DB_URL>'\n"
+            "\n"
+            "Set MEMINI_VECTOR_BACKEND explicitly to suppress this error."
+        )
+
+    from memini_ai.postgres.driver import (
+        DatabaseDriver,
+        EmbeddedPGDriver,
+        ExternalPGDriver,
+    )
+
+    if config.vector_backend == "pgembed":
+        data_dir = Path(config.pgembed_data_dir).expanduser()
+        driver: DatabaseDriver = EmbeddedPGDriver(data_dir)
+    elif config.vector_backend == "postgres-external":
+        db_url = config.db_url or os.environ.get("MEMINI_DB_URL", "")
+        if not db_url:
+            raise ValueError(
+                "MEMINI_VECTOR_BACKEND=postgres-external but MEMINI_DB_URL is not set. "
+                "Set MEMINI_DB_URL or switch to MEMINI_VECTOR_BACKEND=pgembed for embedded mode."
+            )
+        driver = ExternalPGDriver(db_url)
+    else:
+        raise ValueError(f"Unknown vector_backend: {config.vector_backend}")
+
     from memini_ai.postgres import PostgresDatabase
 
-    # Use config.db_url first (resolved by pydantic-settings from MEMINI_DB_URL env var),
-    # then fall back to direct os.environ check. This ensures the URL is properly resolved
-    # even when OpenCode injects environment vars through its config system rather than
-    # the OS environment of the subprocess.
-    db_url = config.db_url or os.environ.get("MEMINI_DB_URL", "")
-    if not db_url:
-        raise ValueError(
-            "MEMINI_DB_URL environment variable is not set. "
-            "Please set it to your PostgreSQL connection string, e.g., "
-            "postgresql://user:password@host:port/database"
-        )
-    return PostgresDatabase(
-        db_url=db_url,
+    db = PostgresDatabase(
+        driver=driver,
         project_id=config.project_id,
         sslmode=config.db_sslmode,
         sslrootcert=config.db_sslrootcert,
     )
+
+    # ── Optional: wrap in RRFDatabase for fusion mode ──
+    if config.fusion_mode == "rrf" and config.team_db_url:
+        from memini_ai.memory.rrf_database import RRFDatabase
+
+        team_driver = ExternalPGDriver(config.team_db_url)
+        team_db = PostgresDatabase(driver=team_driver, project_id=config.project_id)
+        db = RRFDatabase(primary=db, secondary=team_db, k=config.rrf_k)
+
+    return db

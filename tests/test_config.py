@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from memini_ai.config import MeminiConfig, _sanitize_project_id, get_config
 
@@ -350,3 +351,74 @@ class TestEmbeddingPolicyConfig:
         monkeypatch.setenv("MEMINI_AUTO_DETECT_MODEL", "false")
         config = MeminiConfig()
         assert config.auto_detect_model is False
+
+
+# ---------------------------------------------------------------------------
+# v1.0.0: Backend selection config fields (pgembed vs external Postgres)
+# ---------------------------------------------------------------------------
+
+
+class TestV1BackendConfig:
+    """Tests for v1.0.0 backend selection config fields.
+
+    Covers vector_backend, pgembed_data_dir, team_db_url, and fusion_mode
+    fields plus their validators.
+    """
+
+    # -- vector_backend tests -------------------------------------------------
+
+    def test_vector_backend_pgembed_valid(self) -> None:
+        """vector_backend='pgembed' should be accepted as the default."""
+        config = MeminiConfig()
+        assert config.vector_backend == "pgembed"
+
+    def test_vector_backend_postgres_external_valid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """vector_backend='postgres-external' should be accepted via env var."""
+        monkeypatch.setenv("MEMINI_VECTOR_BACKEND", "postgres-external")
+        config = MeminiConfig()
+        assert config.vector_backend == "postgres-external"
+
+    def test_vector_backend_invalid_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """vector_backend='chdb' should raise ValidationError."""
+        monkeypatch.setenv("MEMINI_VECTOR_BACKEND", "chdb")
+        with pytest.raises(ValidationError):
+            MeminiConfig()
+
+    # -- fusion_mode tests ----------------------------------------------------
+
+    def test_fusion_mode_none_valid(self) -> None:
+        """fusion_mode should default to 'none'."""
+        config = MeminiConfig()
+        assert config.fusion_mode == "none"
+
+    def test_fusion_mode_rrf_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """fusion_mode='rrf' should be accepted via env var."""
+        monkeypatch.setenv("MEMINI_FUSION_MODE", "rrf")
+        config = MeminiConfig()
+        assert config.fusion_mode == "rrf"
+
+    def test_fusion_mode_invalid_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """fusion_mode='condorcet' should raise ValidationError."""
+        monkeypatch.setenv("MEMINI_FUSION_MODE", "condorcet")
+        with pytest.raises(ValidationError):
+            MeminiConfig()
+
+    # -- pgembed_data_dir tests -----------------------------------------------
+
+    def test_pgembed_data_dir_default(self) -> None:
+        """pgembed_data_dir should default to ~/.local/share/memini-ai/pgembed/data."""
+        config = MeminiConfig()
+        assert config.pgembed_data_dir == "~/.local/share/memini-ai/pgembed/data"
+
+    # -- team_db_url tests ----------------------------------------------------
+
+    def test_team_db_url_default_empty(self) -> None:
+        """team_db_url should default to empty string (no team backend)."""
+        config = MeminiConfig()
+        assert config.team_db_url == ""

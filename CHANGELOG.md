@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/sem/ver/2.0.0.html).
 
+## [1.0.0] - 2026-07-16
+
+### Breaking changes
+- **Embedded PostgreSQL is now the default backend** (v0.8.2 used external Postgres). The new `pgembed` driver starts an in-process Postgres 17 server on first query.
+- **`MEMINI_VECTOR_BACKEND` must be set explicitly** if you have `MEMINI_DB_URL` configured. v0.8.2 users who set `MEMINI_DB_URL` to an external Postgres will get a `RuntimeError` on startup with clear remediation. See "Migrating from v0.8.2" below.
+- **Python 3.12+ required** (was 3.11+). pgembed 0.2.0 requires Python 3.12+.
+- **`PostgresDatabase.__init__` now takes a `driver` parameter** instead of `db_url`. This is an internal change — most users go through `create_database()` which is unchanged.
+- **Data directory location changed** from `~/.memini-ai/pgembed/` to `~/.local/share/memini-ai/pgembed/data` (XDG Base Directory spec compliant). The `server.json` state file stays in `~/.memini-ai/pgembed/`.
+
+### Added
+- **`pgembed` backend** (default): in-process PostgreSQL 17 with pgvector + vectorscale + pg_textsearch. No Docker required.
+- **`postgres-external` backend**: existing Docker/team server behavior, preserved.
+- **Driver pattern**: `DatabaseDriver` Protocol with `EmbeddedPGDriver` and `ExternalPGDriver` implementations.
+- **Multi-process server sharing**: one embedded Postgres shared by all memini-ai processes on the same machine. Cooperative heartbeat protocol (1s client ping, 2s timeout, 5s drain grace).
+- **RRF fusion across embedded + team server** via `RRFDatabase` wrapper. Writes go to primary (embedded) only; reads fan out to both backends and fuse ranked lists using Reciprocal Rank Fusion. Async dual-write to team (Q3).
+- **CLI commands**: `memini-ai init`, `memini-ai status`, `memini-ai stop`, `memini-ai migrate`.
+- **4 new env vars**: `MEMINI_VECTOR_BACKEND`, `MEMINI_PGEMBED_DATA_DIR`, `MEMINI_TEAM_DB_URL`, `MEMINI_FUSION_MODE`.
+- **`memini-ai migrate` script** to copy data from external Postgres to embedded.
+
+### Migrating from v0.8.2
+
+If you have `MEMINI_DB_URL` set to an external Postgres:
+
+1. **Easiest**: Add `export MEMINI_VECTOR_BACKEND=postgres-external` to your shell. No data migration needed; behavior identical to v0.8.2.
+2. **Switch to embedded**: `unset MEMINI_DB_URL` then `memini-ai migrate --from='<your old MEMINI_DB_URL>'`. Your data is copied to the embedded server; the source DB is untouched.
+3. **Both (RRF fusion)**: Set `MEMINI_TEAM_DB_URL` to your team server and `MEMINI_FUSION_MODE=rrf`. Embedded handles local writes; team handles shared knowledge; queries fuse both.
+
 ## [0.8.1] - 2026-07-13
 
 ### Fixed

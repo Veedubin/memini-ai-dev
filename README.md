@@ -100,6 +100,28 @@ pip install memini-ai-dev
 uvx --from memini-ai-dev memini-ai --stdio
 ```
 
+## Backend Selection
+
+v1.0.0 ships with two backends:
+
+| Backend | Use case | Data location | Vectorscale? |
+|---------|----------|---------------|--------------|
+| `pgembed` (default) | Solo user, single machine | `~/.local/share/memini-ai/pgembed/data` | ✅ (DiskANN) |
+| `postgres-external` | Team server, Docker, managed | Wherever your `MEMINI_DB_URL` points | ✅ (DiskANN) |
+
+**Switch to external mode** (v0.8.2 behavior):
+```bash
+export MEMINI_VECTOR_BACKEND=postgres-external
+export MEMINI_DB_URL=postgresql://user:pass@host:port/db
+```
+
+**Use both with RRF fusion**:
+```bash
+export MEMINI_VECTOR_BACKEND=pgembed
+export MEMINI_TEAM_DB_URL=postgresql://team-server/db
+export MEMINI_FUSION_MODE=rrf
+```
+
 ### Development Installation
 
 ```bash
@@ -126,7 +148,7 @@ Configured via environment variables or a JSON config file.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEMINI_DB_URL` | (empty) | PostgreSQL connection URL (set via `.env`, see `.env.example`) |
+| `MEMINI_DB_URL` | (empty) | PostgreSQL connection URL (set via `.env`, see `.env.example`). **Ignored if `MEMINI_VECTOR_BACKEND=pgembed`.** |
 | `MEMINI_PROJECT_ID` | auto-generated | Project identifier for isolation |
 | `MEMINI_EMBEDDING_DIM` | `384` | Embedding dimension (384 for MiniLM, 1024 for BGE-M3) |
 | `MEMINI_CHUNK_SIZE` | `512` | Chunk size for file indexing |
@@ -138,6 +160,10 @@ Configured via environment variables or a JSON config file.
 | `MEMINI_ENABLE_RRF` | `true` | Enable RRF fusion across model spaces |
 | `RRF_TOP_K_PER_MODEL` | `20` | Results per model before RRF fusion |
 | `MEMINI_ENABLED_MODELS` | `["all-MiniLM-L6-v2", "BAAI/bge-m3"]` | Models for RRF dispatch |
+| `MEMINI_VECTOR_BACKEND` | `pgembed` | Vector backend: `pgembed` (default) or `postgres-external` |
+| `MEMINI_PGEMBED_DATA_DIR` | `~/.local/share/memini-ai/pgembed/data` | Data directory for embedded Postgres |
+| `MEMINI_TEAM_DB_URL` | (empty) | Team server URL for RRF fusion |
+| `MEMINI_FUSION_MODE` | (empty) | Fusion mode: `rrf` (Reciprocal Rank Fusion) |
 | `MEMINI_WORKERS` | (cpu_count) | Number of worker threads |
 | `MEMINI_LOG_LEVEL` | `info` | Logging level (debug, info, warning, error) |
 | `MEMINI_DEVICE` | `auto` | Device for embeddings (`auto`, `cpu`, `cuda`) |

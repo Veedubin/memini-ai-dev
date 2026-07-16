@@ -6,6 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -113,6 +114,51 @@ class MeminiConfig(BaseSettings):
         default=None,
         alias="DB_SSLROOTCERT",
         description="Path to CA certificate for SSL server verification",
+    )
+
+    # ── v1.0.0: Backend selection (pgembed embedded vs external Postgres) ──
+    # When 'pgembed' (default), an embedded PostgreSQL 17 server is started
+    # in-process and uses MEMINI_PGEMBED_DATA_DIR as its data directory.
+    # When 'postgres-external', connects to an external Postgres server
+    # via MEMINI_DB_URL (Docker, team server, etc.).
+    vector_backend: Literal["pgembed", "postgres-external"] = Field(
+        default="pgembed",
+        alias="MEMINI_VECTOR_BACKEND",
+        description=(
+            "Vector database backend. 'pgembed' (default) starts an embedded "
+            "PostgreSQL 17 server in-process. 'postgres-external' connects to "
+            "an external PostgreSQL server via MEMINI_DB_URL (Docker, team server, etc.)."
+        ),
+    )
+    # Data directory for the embedded pgembed PostgreSQL server. Persistent
+    # across restarts. Default: ~/.local/share/memini-ai/pgembed/data
+    pgembed_data_dir: str = Field(
+        default="~/.local/share/memini-ai/pgembed/data",
+        alias="MEMINI_PGEMBED_DATA_DIR",
+        description=(
+            "Data directory for the embedded pgembed PostgreSQL server. "
+            "Persistent across restarts. Default: ~/.local/share/memini-ai/pgembed/data"
+        ),
+    )
+    # Optional team/shared PostgreSQL server URL for RRF fusion with
+    # embedded results. Empty string means no team backend (single-backend mode).
+    team_db_url: str = Field(
+        default="",
+        alias="MEMINI_TEAM_DB_URL",
+        description=(
+            "Optional team/shared PostgreSQL server URL for RRF fusion with "
+            "embedded results."
+        ),
+    )
+    # Fusion mode for multi-backend queries. 'none' (default) queries
+    # only the primary backend. 'rrf' fuses results from embedded + team.
+    fusion_mode: Literal["none", "rrf"] = Field(
+        default="none",
+        alias="MEMINI_FUSION_MODE",
+        description=(
+            "Fusion mode for multi-backend queries. 'none' (default) queries "
+            "only the primary backend. 'rrf' fuses results from embedded + team."
+        ),
     )
 
     # Indexer settings
@@ -464,6 +510,32 @@ class MeminiConfig(BaseSettings):
         """Clamp auto-extract interval to valid range [1, 3600] seconds."""
         val = int(v) if isinstance(v, str) else v
         return max(1, min(3600, val))
+
+    # =============================================================================
+    # v1.0.0: Backend selection validators (pgembed vs external Postgres)
+    # =============================================================================
+
+    @field_validator("vector_backend", mode="before")
+    @classmethod
+    def _validate_vector_backend(cls, v: str) -> str:
+        """Validate vector_backend is one of: pgembed, postgres-external."""
+        val = str(v).lower().strip()
+        allowed = {"pgembed", "postgres-external"}
+        if val not in allowed:
+            raise ValueError(
+                f"Invalid vector_backend '{val}'. Must be one of: pgembed, postgres-external"
+            )
+        return val
+
+    @field_validator("fusion_mode", mode="before")
+    @classmethod
+    def _validate_fusion_mode(cls, v: str) -> str:
+        """Validate fusion_mode is one of: none, rrf."""
+        val = str(v).lower().strip()
+        allowed = {"none", "rrf"}
+        if val not in allowed:
+            raise ValueError(f"Invalid fusion_mode '{val}'. Must be one of: none, rrf")
+        return val
 
     # =============================================================================
     # Image search validators (v0.8.0)

@@ -13,33 +13,19 @@ Real-DB tests. They verify:
 These tests use the same PostgresDatabase the production code uses, so
 they exercise the actual schema path. They assume the standard dev DB
 at localhost:5434 is available (matches TEST_DB_URL default).
+
+The ``pg_db`` fixture is defined in ``tests/conftest.py`` — it creates a
+``PostgresDatabase`` with an ``ExternalPGDriver`` by default, or an
+``EmbeddedPGDriver`` when parametrized with ``"pgembed"``.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
-import pytest_asyncio
 
 from memini_ai.postgres import PostgresDatabase
-
-TEST_DB_URL = os.getenv(
-    "TEST_DB_URL",
-    os.getenv(
-        "MEMINI_DB_URL", "postgresql://postgres:password@localhost:5434/postgres"
-    ),
-)
-
-
-@pytest_asyncio.fixture
-async def pg_db():
-    """Create PostgresDatabase connected to the dev DB (initializes schema)."""
-    db = PostgresDatabase(TEST_DB_URL)
-    await db.initialize()
-    yield db
-    await db.close()
 
 
 async def test_memories_1024_table_exists(pg_db: PostgresDatabase) -> None:
