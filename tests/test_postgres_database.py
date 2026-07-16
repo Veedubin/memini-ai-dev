@@ -20,25 +20,11 @@ TEST_DB_URL = os.getenv(
     "TEST_DB_URL",
     os.getenv("MEMINI_DB_URL", "postgresql://user:password@localhost:5434/postgres"),
 )
-TEST_DB_NAME = f"test_memini_{uuid.uuid4().hex[:8]}"
 
 
 # =============================================================================
 # Fixtures
 # =============================================================================
-
-
-@pytest_asyncio.fixture
-async def pg_db():
-    """Create PostgresDatabase connected to test database with transaction isolation."""
-    # Use the default postgres database for test fixture
-    # In production, you might want a separate test database
-    db_url = TEST_DB_URL
-    db = PostgresDatabase(db_url)
-
-    await db.initialize()
-    yield db
-    await db.close()
 
 
 @pytest_asyncio.fixture
@@ -686,12 +672,13 @@ class TestCreatePostgresDatabase:
     """Tests for create_postgres_database factory function."""
 
     def test_create_postgres_database_returns_instance(self):
-        """Should return PostgresDatabase instance."""
+        """Should return PostgresDatabase instance with ExternalPGDriver."""
         from memini_ai.postgres.database import create_postgres_database
+        from memini_ai.postgres.driver import ExternalPGDriver
 
         db = create_postgres_database(TEST_DB_URL)
         assert isinstance(db, PostgresDatabase)
-        assert db._db_url == TEST_DB_URL
+        assert isinstance(db._driver, ExternalPGDriver)
 
 
 # =============================================================================

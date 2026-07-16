@@ -22,25 +22,10 @@ import os
 
 import numpy as np
 import pytest
-import pytest_asyncio
 
 from memini_ai.memory.schema import MemoryEntry, MemorySourceType
 from memini_ai.model.manager import BGE_M3_MODEL_ID, MINILM_MODEL_ID
 from memini_ai.postgres.database import PostgresDatabase
-
-TEST_DB_URL = os.getenv(
-    "MEMINI_DB_URL",
-    "postgresql://postgres:password@localhost:5434/postgres",
-)
-
-
-@pytest_asyncio.fixture
-async def db():
-    """Create a PostgresDatabase and clean up test rows after."""
-    db = PostgresDatabase(TEST_DB_URL)
-    await db.initialize()
-    yield db
-    await db.close()
 
 
 def _make_vector(dim: int, seed: int = 0) -> list[float]:
@@ -119,7 +104,7 @@ class TestAddMemoryLiveDB:
 
     @pytest.mark.asyncio
     async def test_bge_m3_vector_lands_in_bge_m3_column(
-        self, db: PostgresDatabase
+        self, pg_db: PostgresDatabase
     ) -> None:
         """BGE-M3 1024-dim vector must populate embedding_bge_m3, not embedding."""
         vec = _make_vector(1024, seed=42)
@@ -130,11 +115,11 @@ class TestAddMemoryLiveDB:
             source_type=MemorySourceType.project,
             source_path="multi-model-test",
         )
-        mem_id = await db.add_memory(entry)
+        mem_id = await pg_db.add_memory(entry)
         assert mem_id is not None
 
         try:
-            async with db._pool.acquire() as conn:
+            async with pg_db._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT embedding, embedding_bge_m3, embedding_model "
                     "FROM memories WHERE id = $1",
@@ -152,12 +137,12 @@ class TestAddMemoryLiveDB:
             )
         finally:
             # Hard-delete the test row (bypasses soft-delete)
-            async with db._pool.acquire() as conn:
+            async with pg_db._pool.acquire() as conn:
                 await conn.execute("DELETE FROM memories WHERE id = $1", mem_id)
 
     @pytest.mark.asyncio
     async def test_minilm_vector_lands_in_embedding_column(
-        self, db: PostgresDatabase
+        self, pg_db: PostgresDatabase
     ) -> None:
         """MiniLM 384-dim vector must populate the default embedding column."""
         vec = _make_vector(384, seed=7)
@@ -168,11 +153,11 @@ class TestAddMemoryLiveDB:
             source_type=MemorySourceType.project,
             source_path="multi-model-test",
         )
-        mem_id = await db.add_memory(entry)
+        mem_id = await pg_db.add_memory(entry)
         assert mem_id is not None
 
         try:
-            async with db._pool.acquire() as conn:
+            async with pg_db._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT embedding, embedding_bge_m3, embedding_model "
                     "FROM memories WHERE id = $1",
@@ -185,12 +170,12 @@ class TestAddMemoryLiveDB:
             )
             assert row["embedding_bge_m3"] is None
         finally:
-            async with db._pool.acquire() as conn:
+            async with pg_db._pool.acquire() as conn:
                 await conn.execute("DELETE FROM memories WHERE id = $1", mem_id)
 
     @pytest.mark.asyncio
     async def test_no_model_defaults_to_embedding_column(
-        self, db: PostgresDatabase
+        self, pg_db: PostgresDatabase
     ) -> None:
         """When embedding_model is None, the 384-dim vector goes to embedding."""
         vec = _make_vector(384, seed=11)
@@ -199,11 +184,11 @@ class TestAddMemoryLiveDB:
             vector=vec,
             source_type=MemorySourceType.session,
         )
-        mem_id = await db.add_memory(entry)
+        mem_id = await pg_db.add_memory(entry)
         assert mem_id is not None
 
         try:
-            async with db._pool.acquire() as conn:
+            async with pg_db._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT embedding, embedding_bge_m3, embedding_model "
                     "FROM memories WHERE id = $1",
@@ -215,5 +200,5 @@ class TestAddMemoryLiveDB:
             assert row["embedding"] is not None
             assert row["embedding_bge_m3"] is None
         finally:
-            async with db._pool.acquire() as conn:
+            async with pg_db._pool.acquire() as conn:
                 await conn.execute("DELETE FROM memories WHERE id = $1", mem_id)

@@ -31,6 +31,7 @@ from memini_ai.memory.schema import (
     SearchFilter,
     SearchOptions,
 )
+from memini_ai.postgres.driver import DatabaseDriver
 from memini_ai.postgres.queries import (
     COUNT_BY_EMBEDDING_MODEL,
     COUNT_MEMORIES_1024,
@@ -105,7 +106,7 @@ class PostgresDatabase(VectorDatabase):
 
     def __init__(
         self,
-        db_url: str,
+        driver: DatabaseDriver,
         project_id: str | None = None,
         sslmode: str | None = None,
         sslrootcert: str | None = None,
@@ -113,13 +114,14 @@ class PostgresDatabase(VectorDatabase):
         """Initialize PostgresDatabase.
 
         Args:
-            db_url: PostgreSQL connection URL (postgresql://user:pass@host:port/db).
+            driver: DatabaseDriver providing the connection URI and backend lifecycle.
             project_id: Optional project ID for isolation (unused in pgvector impl).
             sslmode: PostgreSQL SSL mode override. If None, reads from config/env.
             sslrootcert: Path to CA certificate for SSL verification.
                 If None, reads from config/env.
         """
-        self._db_url = db_url
+        self._driver = driver
+        self._db_url: str | None = None  # resolved lazily in initialize()
         self._project_id = project_id
         self._pool: asyncpg.Pool | None = None
         self._initialized = False
@@ -144,6 +146,10 @@ class PostgresDatabase(VectorDatabase):
             return
 
         try:
+            # Resolve URI lazily from driver
+            if self._db_url is None:
+                self._db_url = await self._driver.get_uri()
+
             # Build pool kwargs
             pool_kwargs: dict[str, Any] = {
                 "min_size": 1,
@@ -169,6 +175,9 @@ class PostgresDatabase(VectorDatabase):
                 init=_init_conn,
                 **pool_kwargs,
             )
+
+            # Backend-specific initialization (e.g., EmbeddedPGDriver starts heartbeat)
+            await self._driver.initialize()
 
             # Initialize schema
             await self._ensure_schema()
@@ -976,6 +985,7 @@ class PostgresDatabase(VectorDatabase):
             await self._pool.close()
             self._pool = None
         self._initialized = False
+        await self._driver.shutdown()
 
     async def update_trust_fields(
         self,
@@ -1812,8 +1822,11 @@ def create_postgres_database(
     Returns:
         PostgresDatabase instance.
     """
+    from memini_ai.postgres.driver import ExternalPGDriver
+
+    driver = ExternalPGDriver(db_url)
     return PostgresDatabase(
-        db_url=db_url,
+        driver=driver,
         project_id=project_id,
         sslmode=sslmode,
         sslrootcert=sslrootcert,

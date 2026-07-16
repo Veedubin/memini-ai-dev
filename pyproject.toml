@@ -1,9 +1,9 @@
 [project]
 name = "memini-ai-dev"
 version = "0.8.2"
-description = "Local-first semantic memory server with vector search"
+description = "Local-first semantic memory server with embedded PostgreSQL/pgvector. Optional RRF fusion with shared team server."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "VeeDubin"}
@@ -34,9 +34,12 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
+    "pgembed>=0.2.0",
 ]
 
 [project.optional-dependencies]
+team = [
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -49,7 +52,7 @@ vision = [
 ]
 
 [project.scripts]
-memini-ai = "memini_ai.main:main"
+memini-ai = "memini_ai.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Veedubin/memini-ai-dev"
@@ -96,6 +99,14 @@ check_untyped_defs = true
 module = "asyncpg"
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+module = "fasteners"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pgembed"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
