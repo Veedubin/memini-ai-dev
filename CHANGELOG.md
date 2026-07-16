@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/sem/ver/2.0.0.html).
 
+## [1.0.1] - 2026-07-16
+
+### Fixed
+
+- **`memini-ai migrate` script — 6 bugs fixed** in `scripts/migrate_external_to_embedded.py` that prevented the v1.0.0 migration command from working end-to-end:
+  1. **Used system pg_dump/pg_restore (pg18) instead of pgembed's bundled pg17 binaries.** The script now resolves `pg_dump` from the system PATH (it must be >= the source server version — pgembed's pg17 `pg_dump` aborts with "server version mismatch" against a pg18 source) and `pg_restore` from the pgembed install (`pgembed/pginstall/bin/`, PostgreSQL 17) so the restore matches the pg17 embedded target. The `prefer="system"` / `prefer="pgembed"` resolution is explicit per binary.
+  2. **`parse_db_url` did not extract `?host=` query param for Unix socket URIs.** The embedded server URI is `postgresql://postgres:@/postgres?host=/path/to/data`; `urlparse()` puts `host=` in `.query`, not `.hostname`, so `pg_restore -h localhost` failed with "Connection refused". The parser now regex-extracts `?host=` and passes it as `-h` to `pg_restore`.
+  3. **Did not pre-install extensions on target before restore.** The dump contains `CREATE EXTENSION vector` / `CREATE EXTENSION vectorscale`; pgembed ships them but they must be `CREATE EXTENSION`'d in the target DB before `pg_restore` runs. The script now connects via `asyncpg` and runs `CREATE EXTENSION IF NOT EXISTS` for `vector` and `vectorscale` after starting the embedded server.
+  4. **Did not exclude timescaledb extensions from the dump.** The source image (`timescaledb-ha:pg18`) has `timescaledb` + `timescaledb_toolkit` installed; pgembed does not. `pg_restore` failed with "extension timescaledb is not available". The script now adds `--exclude-extension=timescaledb --exclude-extension=timescaledb_toolkit` to the `pg_dump` command.
+  5. **`request_explicit_shutdown()` is sync, not async.** `EmbeddedPGDriver.request_explicit_shutdown()` is a plain `def`, so `await driver.request_explicit_shutdown()` would crash with `TypeError: object NoneType can't be used in 'await' expression`. The script now calls it WITHOUT `await`, before `await driver.shutdown()`, to ensure the embedded server actually stops at the end of the migration.
+  6. **Spot-check column was `text` not `content`.** The `memories` table column is `text`; any verification query using `content` failed with `UndefinedColumnError`. The new verification step counts rows per table, pulls a random memory and compares `text` + `embedding` exactly between source and target, and confirms the diskann indexes exist on the target.
+
+### Added
+
+- **`--dry-run` flag** for `memini-ai migrate`: runs the dump, counts source rows, starts the embedded server, pre-installs extensions, counts target rows, then exits WITHOUT restoring. Useful for "is this going to work?" pre-flight checks. The dump file is left on disk for inspection.
+- **Post-restore verification step**: per-table row-count comparison (source vs target), random memory spot-check (`text` + `embedding` exact match), and diskann index existence check on the target. Prints a clear PASS/FAIL summary and exits with code 2 if verification fails (0 on success).
+- **Better error messages**: embedded server start failure prints the actual exception; `pg_restore` stderr is filtered for real `ERROR:` lines (timescaledb/extension warnings are ignored) before deciding to fail; dump file size and restore duration are printed.
+- **PGPASSWORD via subprocess env** instead of relying on `~/.pgpass`; cleaner output with KB + seconds metrics.
+
+### Notes
+
+- No code changes outside `scripts/migrate_external_to_embedded.py` and `CHANGELOG.md`. No new dependencies (stdlib + `asyncpg` which was already a dependency). `ruff check` and `ast.parse` clean.
+- **No version bump in this commit** — the orchestrator will run `bumpversion --patch --apply` as a separate step per the release discipline in `AGENTS.md`.
+
+---
+
 ## [1.0.0] - 2026-07-16
 
 ### Breaking changes
