@@ -3,7 +3,29 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/sem/ver/2.0.0.html).
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.3] - 2026-07-16
+
+### Fixed
+
+- **Docs catch-up** — `HANDOFF.md`, `AGENTS.md`, `TASKS.md`, and `CONTEXT.md` were 9 versions stale (stopped at v0.7.6 / Session 40, 2026-07-10). All 4 docs now reflect v1.0.2 reality: 9 new session entries (Sessions 41-52) in HANDOFF, per-release sections in TASKS, Version History table updated in CONTEXT, and a new CRITICAL section in AGENTS.md explaining the v1.0.0 `MEMINI_VECTOR_BACKEND` requirement. Backwards-compatible (no code changes).
+- **`uv.lock` drift from v1.0.2 release** — the v1.0.2 commit (ad30e2c) bumped `pyproject.toml` to 1.0.2 but did not regenerate `uv.lock`, so the lockfile was still pinned at `version = "1.0.0"`. `uv lock` regenerated the single-line version stamp; no actual dependency changes.
+
+### Added
+
+- **New CRITICAL section in `AGENTS.md`** documenting the v1.0.0 breaking change: `MEMINI_VECTOR_BACKEND` is required when `MEMINI_DB_URL` is set. Symptom: `RuntimeError: memini-ai v1.0.0: MEMINI_DB_URL is set but MEMINI_VECTOR_BACKEND is not.` on MCP server start. One-line fix: `export MEMINI_VECTOR_BACKEND=postgres-external` (preserves v0.8.x behavior; no data migration). 3 config locations to check listed in the CRITICAL block.
+- **DB server healthcheck** — in-process `MCPServer.healthcheck()` returns `status=pass, readbackMatch=True, writeLatencyMs=2.9s, readLatencyMs=0.45ms`. `get_status`: `memoryCount=982, thoughtsCount=519, queryLatencyMs=0.67`. Live `memini-postgres` on port 5434 verified 2026-07-16: 986 memories + 519 thoughts, all 13 tables present, 100% healthy.
+
+### Quality Gates
+
+- `ruff check src/ tests/` → 0 errors
+- `mypy src/` → 0 errors (53 source files)
+- `pytest tests/` → 809 passing (v0.7.8 baseline)
+- In-process MCP E2E green (healthcheck + get_status + query_memories)
+- Live DB: 986 memories + 519 thoughts preserved, zero data loss
+- No code changes, no new env vars, no new dependencies
+- Commits: `b88dd47` (docs), `1c7d8ba` (uv.lock v1.0.2 sync), `ff90815` (v1.0.3 bump)
 
 ## [1.0.2] - 2026-07-16
 

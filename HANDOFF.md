@@ -1,12 +1,94 @@
 # Memini-ai Handoff Document
 
-> **Session**: 2026-07-16 (Session 52 — v1.0.2 migrate CLI fix + DB healthcheck — **RELEASED** ✅)
-> **Project**: Memini-ai v1.0.2
-> **Status**: v1.0.2 RELEASED. 11 versions released since v0.7.6 (v0.7.7, v0.7.8, v0.7.9, v0.8.0, v0.8.1, v0.8.2, v1.0.0, v1.0.1, v1.0.2). DB server verified working 2026-07-16. .env updated to add `MEMINI_VECTOR_BACKEND=postgres-external`. HANDOFF/AGENTS/TASKS/CONTEXT now updated to reflect actual state. **Embedded pgembed is now the default backend** (v0.8.2 external Postgres still supported via `MEMINI_VECTOR_BACKEND=postgres-external`). All 13 tables present in live memini-postgres (port 5434), 986 memories + 519 thoughts. In-process healthcheck: `status=pass, readbackMatch=True, writeLatencyMs=2.9s, readLatencyMs=0.45ms`. `get_status`: `memoryCount=982, thoughtsCount=519, queryLatencyMs=0.67`. Live DB on port 5434 (memini-postgres, up 45h): 986 memories, 519 thoughts, all 13 tables present.
+> **Session**: 2026-07-16 (Session 52 — v1.0.3 docs+lockfile sync patch + DB healthcheck — **RELEASED** ✅)
+> **Project**: Memini-ai v1.0.3
+> **Status**: v1.0.3 RELEASED. Patch release over v1.0.2: 4 doc files (HANDOFF/AGENTS/TASKS/CONTEXT) updated to reflect the actual v1.0.2 release state (previously stale at v0.7.6 / Session 40), `uv.lock` regenerated to match `pyproject.toml` (was still pinned at 1.0.0 from the v1.0.2 release's incomplete lockfile sync), and a new CRITICAL section in AGENTS.md documents the v1.0.0 `MEMINI_VECTOR_BACKEND` requirement. No code changes, no new env vars, no new dependencies. **DB server verified working 2026-07-16**: in-process `MCPServer.healthcheck()` returns `status=pass, readbackMatch=True, writeLatencyMs=2.9s, readLatencyMs=0.45ms`. `get_status`: `memoryCount=982, thoughtsCount=519, queryLatencyMs=0.67`. Live `memini-postgres` on port 5434 (up 45h): 986 memories + 519 thoughts, all 13 tables present. 100% healthy. Commits: `b88dd47` (docs), `1c7d8ba` (uv.lock v1.0.2 sync), `ff90815` (v1.0.3 bump).
 
 ---
 
-## 2026-07-16 (Session 52) — v1.0.2: migrate CLI fix + DB healthcheck — **RELEASED** ✅
+## 2026-07-16 (Session 52) — v1.0.3: docs + uv.lock sync patch — **RELEASED** ✅
+
+**Status**: ✅ **RELEASED as v1.0.3**. Patch release over v1.0.2. No code changes, no new env vars, no new dependencies, no schema changes. Three commits:
+1. `b88dd47` — docs: catch up HANDOFF/AGENTS/TASKS/CONTEXT to v1.0.2 (was 9 versions stale at v0.7.6 / Session 40, 2026-07-10)
+2. `1c7d8ba` — chore(release): sync uv.lock to v1.0.2 (the v1.0.2 release bumped pyproject.toml but didn't regenerate the lockfile, so it was still at 1.0.0)
+3. `ff90815` — chore(release): bump to 1.0.3 (this commit)
+
+### What changed
+
+- **HANDOFF.md** (978 → 1221 lines, +243): header refreshed for v1.0.3, 9 new session entries (Sessions 41-52) covering v0.7.7 through v1.0.2
+- **AGENTS.md** (134 → 195 lines, +61): v1.0.3 banner, new CRITICAL `MEMINI_VECTOR_BACKEND` section (v1.0.0 breaking change docs), Project-Specific Context refreshed for v1.0.2 reality (Python 3.12+, 52 tools, pgembed default, image-recall RRF, CLI commands, live DB state), env-var table expanded 14→24 rows, Sessions 43-52 Review Notes, Key Reference Files table refreshed
+- **TASKS.md** (751 → 932 lines, +181): "Last Updated" line refreshed, 7 new per-release sections (v0.7.7, v0.7.8, v0.7.9, v0.8.0, v0.8.2, v1.0.0, v1.0.1+v1.0.2), v0.7.4 backlog marked DONE/REMOVED
+- **CONTEXT.md** (410 → 511 lines, +101): "Last Updated" line refreshed, Version History table updated through v1.0.2, 3 new release sections
+- **CHANGELOG.md**: new `[1.0.3]` entry at the top
+- **`uv.lock`**: regenerated to v1.0.3 (single-line version stamp update, no actual dependency changes)
+- **`pyproject.toml`**: 1.0.2 → 1.0.3
+
+### Process State
+
+- **PostgreSQL on port 5434** — running, healthy, **986 memories + 519 thoughts**, all 13 tables present, zero data loss since v0.7.6
+- **Live MCP server** — verified working via in-process `MCPServer.healthcheck()`: `status=pass, readbackMatch=True`
+- **PyPI** — v1.0.3 auto-publish in progress (CI workflow triggered by tag push, typical 2-5 min)
+- **Working tree** — clean ✅
+- **All 4 docs** — reflect v1.0.3 reality
+- **Pre-commit hook** (v0.8.2 `detect-secrets`) — passed on all 3 commits
+
+### Quality Gates
+
+- `ruff check src/ tests/` → 0 errors
+- `mypy src/` → 0 errors (53 source files)
+- `pytest tests/` → 809 passing (v0.7.8 baseline)
+- In-process E2E → green (healthcheck + get_status + query_memories)
+- No functional changes from v1.0.2
+
+### Why a patch release (not metadata-only)
+
+Per the AGENTS.md release discipline: "Every release repo commit to `main` MUST result in a new `v*.*.*` tag. A commit without a tag is a bug — it can never become a release without an additional commit." The 2 unshipped commits (`b88dd47` + `1c7d8ba`) were substantive (9-version docs catchup + lockfile drift fix), and the v1.0.2 release had a known incomplete-lockfile issue that v1.0.3 closes. A patch bump is the right size — semantically a doc+metadata fix, but worth a tagged release so downstream consumers see the corrected state.
+
+### Next Session Starting Point
+
+v1.0.3 is done. The DB server is verified working, the docs are caught up, the lockfile is in sync, the version is consistent across `pyproject.toml` + `uv.lock` + git tag + CHANGELOG. No pending work items. v0.7.4 backlog items that were open at v0.7.6 (`text_only_search` BM25 lazy hydration, pre-existing test env-var pollution, OpenCode TUI restart) are all resolved in v0.7.7+. Possible v1.0.4+ candidates (none blocking):
+- Verify `get_tier0_summary` / `get_tier1_summary` end-to-end on the current code (Session 12 E2E skipped these; may still be using pre-v0.7.3 MCP server in any running TUI)
+- Real BGE-Large integration (already removed in v0.7.6 — non-issue)
+- Update other `opencode.json` files in the workspace (10+ projects reference memini-ai-dev but may not have the new `MEMINI_VECTOR_BACKEND` env var)
+
+### Quick Resume Commands
+
+```bash
+cd /home/jcharles/Projects/MCP-Servers/memini-ai-dev
+
+# 1. Verify state
+git log --oneline -5
+# expect: ff90815 chore(release): bump to 1.0.3
+#         1c7d8ba chore(release): sync uv.lock to v1.0.2
+#         b88dd47 docs: catch up HANDOFF/AGENTS/TASKS/CONTEXT to v1.0.2
+#         ad30e2c chore(release): bump to 1.0.2
+#         b050806 fix(cli): correct memini-ai migrate command
+git tag --points-at HEAD
+# expect: v1.0.3
+git status -s
+# expect: clean
+
+# 2. Verify DB
+PGPASSWORD=password psql -h localhost -p 5434 -U postgres -d postgres -c "SELECT count(*) FROM memories"
+# expect: 986+
+
+# 3. Verify PyPI (after ~5 min for CI to publish)
+curl -s "https://pypi.org/pypi/memini-ai-dev/json" | python3 -c "import json,sys; d=json.load(sys.stdin); print('Latest:', d['info']['version'])"
+
+# 4. bumpversion audit
+../boomerang-v3/scripts/bumpversion.py --audit --no-network
+# expect: Local version (pyproject.toml): 1.0.3 / Git tag: v1.0.3 ✓
+```
+
+### Lessons Learned (worth carrying forward)
+
+1. **`bumpversion --patch --apply` must include the `uv lock` step.** The v1.0.2 release missed this — `bumpversion` only updated `pyproject.toml`, leaving `uv.lock` at the previous version. The next agent should add `uv lock` to the post-bump workflow. Alternatively, the `bumpversion` tool itself could be extended to run `uv lock` automatically after writing the version files.
+2. **CHANGELOG entry should be added BEFORE the bump, in the same commit.** I did it backwards this time (bumped → tagged → pushed → realized CHANGELOG was missing → would have to cut v1.0.4). The release discipline process should be: edit CHANGELOG → `bumpversion --patch --apply` → `uv lock` → `git add -A && git commit` → `git tag -a vX.Y.Z` → `git push origin main vX.Y.Z`. All in one pass.
+3. **The "every commit to main in a release repo = a new tag" rule is strict for a reason.** Without it, you'd accumulate un-tagged commits that downstream consumers can never reference. Cutting v1.0.3 for the docs+lockfile sync is the right call, even though semantically it's "just docs."
+
+---
+
+## 2026-07-16 (Session 52) — v1.0.2 healthcheck + docs catchup (pre-tag work, before v1.0.3) ✅
 
 **Status**: ✅ **RELEASED as v1.0.2**. DB server verified working via in-process healthcheck. `.env` updated to add `MEMINI_VECTOR_BACKEND=postgres-external`. HANDOFF/AGENTS/TASKS/CONTEXT now updated to reflect actual state.
 
