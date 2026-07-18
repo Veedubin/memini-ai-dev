@@ -765,9 +765,95 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser(
-        "init", help="Initialize the embedded Postgres data dir and start the server."
+    p_init = subparsers.add_parser(
+        "init", help="Initialize memini-ai (embedded DB + opencode config)."
     )
+    p_init.add_argument(
+        "--homedir",
+        action="store_true",
+        help="Install global config to ~/.config/opencode/opencode.json",
+    )
+    p_init.add_argument(
+        "--project",
+        action="store_true",
+        help="Install project config to ./.opencode/opencode.json",
+    )
+    p_init.add_argument(
+        "--target",
+        type=str,
+        default=None,
+        help="Override target directory",
+    )
+    p_init.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip all interactive prompts, use defaults",
+    )
+    p_init.add_argument(
+        "--embedded",
+        action="store_true",
+        help="Use built-in database (pgembed)",
+    )
+    p_init.add_argument(
+        "--team",
+        action="store_true",
+        help="Use team PostgreSQL server",
+    )
+    p_init.add_argument(
+        "--cpu-embed",
+        action="store_true",
+        help="Use CPU embedding (384-dim MiniLM)",
+    )
+    p_init.add_argument(
+        "--auto-embed",
+        action="store_true",
+        help="Use Auto embedding mode (recommended)",
+    )
+    p_init.add_argument(
+        "--gpu-embed",
+        action="store_true",
+        help="Use GPU embedding (1024-dim BGE-M3)",
+    )
+    p_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing config without backup prompt",
+    )
+    p_init.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be done, don't write",
+    )
+    p_init.add_argument(
+        "--no-image-search",
+        action="store_true",
+        help="Disable image search",
+    )
+    p_init.add_argument(
+        "--no-features",
+        action="store_true",
+        help="Disable all optional features",
+    )
+
+    p_update = subparsers.add_parser(
+        "update", help="Update memini-ai-dev config to the latest version."
+    )
+    p_update.add_argument(
+        "--check",
+        action="store_true",
+        help="Only check for updates, don't apply",
+    )
+    p_update.add_argument(
+        "--force",
+        action="store_true",
+        help="Apply update even if versions match",
+    )
+    p_update.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would change, don't write",
+    )
+
     subparsers.add_parser(
         "status", help="Show embedded server status (never starts the server)."
     )
@@ -803,7 +889,19 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "init":
-        asyncio.run(_init())
+        if args.homedir or args.project:
+            # New installer flow
+            from memini_ai.installer import run_install
+
+            mode = "homedir" if args.homedir else "project"
+            sys.exit(run_install(mode, args))
+        else:
+            # Backward compatible: just start the embedded DB
+            asyncio.run(_init())
+    elif args.command == "update":
+        from memini_ai.installer import run_update
+
+        sys.exit(run_update(args))
     elif args.command == "status":
         asyncio.run(_status())
     elif args.command == "stop":
