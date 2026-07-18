@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-07-18
+
+### Fixed
+
+- **opencode MCP launch: command path must be absolute (the real reason v1.2.1 didn't work)** — Session 53's v1.2.1 release fixed the pgembed bootstrap but missed the actual symptom the user hit. v1.2.1's `init` wrote `command: ["uvx", "--from", "memini-ai-dev", "memini-ai"]` into `~/.config/opencode/opencode.json`. That command depends on `uvx` being in `$PATH` at MCP-spawn time. But opencode spawns MCP servers with a clean non-interactive environment, which on most distros (Ubuntu/Debian/Fedora) does NOT include `/home/<user>/.local/bin` in `$PATH` (only login shells do). The MCP server therefore fails instantly with "uvx: command not found" and is never started. Every subsequent call to a memini-ai tool returns "tool not available" — the symptom looks like "embedded server doesn't come up or connect", because there is no server. New helper `_resolve_memini_command()` in `installer.py` resolves the launch command at install time using `shutil.which("uvx")` and falls back to `<home>/.local/bin/memini-ai`, writing ABSOLUTE paths into the opencode.json command array. Both `init` and `update` use the resolver. The MCP server now starts regardless of the user's shell PATH.
+
 ## [1.2.1] - 2026-07-18
 
 ### Fixed

@@ -757,3 +757,151 @@ def test_build_admin_dsn_disable() -> None:
     }
     dsn = build_admin_dsn(creds)
     assert "?sslmode=" not in dsn
+
+
+# ── _resolve_memini_command (Session 53/54 bugfix) ───────────────────────────
+#
+# Bug: opencode spawns MCP servers with a non-interactive env that does NOT
+# include ``/home/<user>/.local/bin`` on most distros.  Bare
+# ``["uvx", ...]`` in the opencode.json command array therefore fails with
+# "uvx: command not found" and the MCP server never starts.  Fix: resolve
+# uvx / memini-ai to absolute paths at install time.
+
+
+def test_resolve_memini_command_uses_uvx_when_on_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """shutil.which('uvx') returns a path → that absolute path is used."""
+    fake_uvx = tmp_path / "uvx"
+    fake_uvx.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_uvx.chmod(0o755)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: str(fake_uvx) if name == "uvx" else None
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    from memini_ai.installer import _resolve_memini_command
+
+    cmd = _resolve_memini_command()
+    assert cmd[0] == str(fake_uvx)
+    assert "--from" in cmd
+    assert "memini-ai-dev" in cmd
+    assert "memini-ai" in cmd
+    # Must be absolute, not bare "uvx"
+    assert Path(cmd[0]).is_absolute()
+
+
+def test_resolve_memini_command_falls_back_to_local_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No uvx on PATH + ~/.local/bin/memini-ai exists → use the local install.
+
+    This is the test-bunty case: opencode spawns with PATH=/usr/bin:/bin
+    (no .local/bin), and the only entry point is the local uv-tool install.
+    """
+    home = tmp_path / "home"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    local_memini = local_bin / "memini-ai"
+    local_memini.write_text("#!/bin/sh\n", encoding="utf-8")
+    local_memini.chmod(0o755)
+
+    # shutil.which returns None for everything (simulates PATH without uvx)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    from memini_ai.installer import _resolve_memini_command
+
+    cmd = _resolve_memini_command()
+    assert cmd == [str(local_memini)]
+    # Absolute path (no PATH lookup needed at MCP spawn time)
+    assert Path(cmd[0]).is_absolute()
+
+
+def test_resolve_memini_command_falls_back_to_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No uvx + no local install + no memini_ai.cli module → print warning,
+    fall back to bare 'uvx' command.
+
+    We simulate "no memini_ai.cli" by hiding the import via ``sys.modules``
+    so the dev-checkout fallback path raises ImportError.
+    """
+    home = tmp_path / "empty-home"
+    home.mkdir()
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    # Hide memini_ai.cli so the import in the fallback branch raises.
+    import sys as _sys
+
+    saved = _sys.modules.pop("memini_ai.cli", None)
+    # Make ``import memini_ai.cli`` raise even if re-imported
+    import builtins as _bi
+
+    real_import = _bi.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "memini_ai.cli" or name.startswith("memini_ai.cli"):
+            raise ImportError(f"hidden by test: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(_bi, "__import__", fake_import)
+
+    from memini_ai.installer import _resolve_memini_command
+
+    cmd = _resolve_memini_command()
+    assert cmd == ["uvx", "--from", "memini-ai-dev", "memini-ai"]
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "uvx" in captured.out
+
+    # restore
+    if saved is not None:
+        _sys.modules["memini_ai.cli"] = saved
+
+
+def test_build_mcp_block_uses_absolute_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: opencode.json mcp.memini-ai-dev.command must be absolute.
+
+    The whole point of the Session 53/54 fix: bare 'uvx' in the command
+    array fails at MCP spawn time because opencode uses a non-interactive
+    PATH that excludes ~/.local/bin.
+    """
+    from memini_ai.installer import _build_mcp_block, _default_config
+
+    fake_uvx = tmp_path / "uvx"
+    fake_uvx.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_uvx.chmod(0o755)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: str(fake_uvx) if name == "uvx" else None
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    block = _build_mcp_block(_default_config())
+    cmd = block["memini-ai-dev"]["command"]
+    assert Path(cmd[0]).is_absolute(), f"command[0] must be absolute, got {cmd[0]!r}"
+    assert cmd[0] != "uvx", "bare 'uvx' would fail at MCP spawn time"
+
+
+def test_build_homedir_opencode_json_mcp_command_is_absolute(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end: the opencode.json written by `init` has absolute paths."""
+    from memini_ai.installer import _default_config, build_homedir_opencode_json
+
+    fake_uvx = tmp_path / "uvx"
+    fake_uvx.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_uvx.chmod(0o755)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: str(fake_uvx) if name == "uvx" else None
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+    cfg = _default_config()
+    data = build_homedir_opencode_json(cfg)
+    cmd = data["mcp"]["memini-ai-dev"]["command"]
+    assert Path(cmd[0]).is_absolute(), f"command[0] must be absolute, got {cmd[0]!r}"

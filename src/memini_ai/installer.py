@@ -1114,12 +1114,18 @@ def _build_mcp_env(config: InstallConfig) -> dict[str, str]:
 
 
 def _build_mcp_block(config: InstallConfig) -> dict[str, object]:
-    """Build the ``mcp.memini-ai-dev`` entry (shared by homedir + project)."""
+    """Build the ``mcp.memini-ai-dev`` entry (shared by homedir + project).
+
+    The ``command`` array uses ABSOLUTE paths (resolved at install time)
+    so opencode can launch the MCP server without depending on the user's
+    shell PATH.  See ``_resolve_memini_command()`` for the resolution order
+    and the Session 53/54 bug this works around.
+    """
     return {
         "memini-ai-dev": {
             "type": "local",
             "enabled": True,
-            "command": ["uvx", "--from", "memini-ai-dev", "memini-ai"],
+            "command": _resolve_memini_command(),
             "env": _build_mcp_env(config),
         }
     }
@@ -1254,15 +1260,79 @@ def write_state_file(
     print(f"  ✓ Wrote state file {state_path}")
 
 
+# ── Absolute-path resolution for the MCP launch command ────────────────────
+#
+# Background (Session 53/54 bugfix): opencode spawns MCP servers with a clean
+# non-interactive environment, which on most distros (Ubuntu/Debian/Fedora)
+# does NOT include ``/home/<user>/.local/bin`` in ``$PATH``.  The bare
+# ``["uvx", ...]`` command therefore fails instantly with
+# "uvx: command not found" and the MCP server is never even started — every
+# subsequent call to a memini-ai tool returns "tool not available".
+#
+# Fix: resolve ``uvx`` and ``memini-ai`` to their absolute paths at install
+# time (when the shell PATH is full and reliable) and write those absolute
+# paths into the ``opencode.json`` ``mcp.memini-ai-dev.command`` array.
+# Falls back gracefully when neither is on PATH.
+
+
+def _resolve_memini_command() -> list[str]:
+    """Return the absolute-path command array to launch memini-ai.
+
+    Resolution order:
+    1. ``shutil.which("uvx")`` — use that with ``--from memini-ai-dev memini-ai``
+       (always pulls the latest from PyPI, no local clone required).
+    2. ``<home>/.local/bin/memini-ai`` — the local uv-tool install (what
+       ``uv tool install memini-ai-dev`` or ``uvx --from memini-ai-dev memini-ai``
+       leaves behind). Fast, no re-download per opencode restart.
+    3. The entry point of the currently-running Python — useful when the
+       installer itself is running out of a dev checkout (``pip install -e``).
+    4. Bare ``["uvx", ...]`` as a last resort, plus a printed warning.
+
+    The home directory is evaluated on every call (not at module import)
+    so tests that monkeypatch ``Path.home()`` work correctly.
+    """
+    uvx_path = shutil.which("uvx")
+    if uvx_path:
+        return [uvx_path, "--from", "memini-ai-dev", "memini-ai"]
+
+    local_memini = Path.home() / ".local" / "bin" / "memini-ai"
+    if local_memini.exists() and os.access(local_memini, os.X_OK):
+        return [str(local_memini)]
+
+    # Fall back to the running interpreter's memini-ai entry point.
+    try:
+        # Side-effect import: just need to know the module is importable, so
+        # we can run ``python -m memini_ai.cli``.  noqa because we don't
+        # reference any symbol — we just need the import to not crash.
+        import memini_ai.cli  # noqa: F401, PLC0415  (intentional late import)
+
+        # /.../site-packages/memini_ai/cli.py  →  invoke via the same Python
+        runner = sys.executable
+        return [runner, "-m", "memini_ai.cli"]
+    except Exception:  # pragma: no cover — only hit if even the dev checkout is broken
+        pass
+
+    print(
+        "  ⚠ WARNING: could not find 'uvx' on PATH or 'memini-ai' in "
+        f"{Path.home() / '.local' / 'bin'}. The MCP server will use bare "
+        "'uvx' which may fail if /home/<user>/.local/bin is not in the "
+        "opencode spawn PATH."
+    )
+    return ["uvx", "--from", "memini-ai-dev", "memini-ai"]
+
+
 # ── Package pre-download ────────────────────────────────────────────────────
 
 
 def pre_download_package(dry_run: bool) -> PreDownloadResult:
-    """Run ``uvx --from memini-ai-dev memini-ai --help`` to warm the uvx cache.
+    """Run the resolved memini-ai launch command with ``--help`` to warm any
+    download/cache.  The first MCP server start will then be fast.
 
-    The first MCP server start will then be fast (no download).
+    Uses ``_resolve_memini_command()`` so we exercise the SAME command array
+    opencode will use (not a bare ``uvx`` that may not be on opencode's PATH).
     """
-    cmd = ["uvx", "--from", "memini-ai-dev", "memini-ai", "--help"]
+    base_cmd = _resolve_memini_command()
+    cmd = [*base_cmd, "--help"]
     if dry_run:
         print(f"  [dry-run] Would run: {' '.join(cmd)}")
         return PreDownloadResult(success=True, output="[dry-run skipped]", error=None)
