@@ -54,6 +54,14 @@ async def _init() -> None:
 
     Idempotent: re-running on an already-initialised data dir just prints the
     URI and exits 0.
+
+    Session 53: also writes the postgresql.conf dynamic_library_path line
+    and restarts the postmaster so subsequent MCP launches (e.g. from
+    opencode) attach to a server that can find the bundled pgvector/
+    vectorscale .so files. Without this restart, the schema's
+    ``CREATE EXTENSION IF NOT EXISTS vector;`` would fail with
+    "unknown type: public.vector" on the first tool call (the
+    postmaster would still be running with the OLD config).
     """
     data_dir = _resolve_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -63,6 +71,19 @@ async def _init() -> None:
 
     driver = EmbeddedPGDriver(data_dir)
     uri = await driver.get_uri()
+    # Configure dynamic_library_path and restart the postmaster so
+    # it picks up the new config. This is a no-op on subsequent
+    # invocations (the config is already in place, the postmaster
+    # is already running with it).
+    try:
+        new_uri = await driver.restart_server_for_new_config()
+        if new_uri != uri:
+            uri = new_uri
+    except Exception as e:  # noqa: BLE001 - best-effort; original server still works
+        print(
+            f"Warning: post-config restart failed ({e}); server may need manual restart",
+            file=__import__("sys").stderr,
+        )
     # Leave the server running: init is a "bring it up and report" command,
     # not a one-shot query. We intentionally do NOT call driver.shutdown().
     print("Embedded PostgreSQL started")

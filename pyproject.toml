@@ -1,6 +1,6 @@
 [project]
 name = "memini-ai-dev"
-version = "1.2.0"
+version = "1.2.1"
 description = "Local-first semantic memory server with embedded PostgreSQL/pgvector. Optional RRF fusion with shared team server."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -38,8 +38,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-team = [
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

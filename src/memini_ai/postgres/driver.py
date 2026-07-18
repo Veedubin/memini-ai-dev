@@ -30,10 +30,15 @@ from memini_ai.utils.logger import logger
 
 try:
     import pgembed
+    from pgembed import (
+        EXTENSION_POSTGRES_LIB_PATH,  # noqa: F401 - used in _write_postgres_config
+    )
 except (
     ImportError
 ) as _pgembed_import_err:  # pragma: no cover - exercised via smoke test
     _PGEMBED_IMPORT_ERROR: ImportError | None = _pgembed_import_err
+    pgembed = None  # type: ignore[assignment]
+    EXTENSION_POSTGRES_LIB_PATH = None  # type: ignore[assignment]
 else:
     _PGEMBED_IMPORT_ERROR = None
 
@@ -236,8 +241,38 @@ class EmbeddedPGDriver:
         return uri
 
     async def _start_new_server(self) -> str:
-        """Boot a fresh pgembed server (first client on this machine)."""
+        """Boot a fresh pgembed server (first client on this machine).
+
+        Self-bootstrapping for fresh VMs / first-time users:
+
+        1. Ensures the data dir parent exists (pgembed's get_server() raises
+           "Parent directory of pgdata does not exist" otherwise — this is
+           the common cause of the opencode 30s MCP startup timeout on a
+           truly fresh install where the user has never run
+           ``memini-ai init``).
+        2. Writes the dynamic_library_path to ``postgresql.auto.conf`` so
+           the bundled ``vector.so`` / ``vectorscale.so`` can be loaded
+           by ``CREATE EXTENSION``. Without this, the schema SQL's
+           ``CREATE EXTENSION IF NOT EXISTS vector;`` fails with
+           "unknown type: public.vector" and the database layer's
+           3-retry loop (1+2+4s) pushes past opencode's 30s startup
+           timeout. We use ``ALTER SYSTEM`` via psql... actually no,
+           pgembed's bundled psql segfaults on Python 3.13/3.14. So we
+           edit ``postgresql.auto.conf`` directly (the file pgembed
+           leaves alone between restarts). This is idempotent: re-running
+           just overwrites the same lines.
+        3. Starts the embedded server via ``pgembed.get_server``.
+        4. Writes the initial state, registers this client, starts heartbeat.
+
+        The schema creation step (in PostgresDatabase._ensure_schema) will
+        then succeed on the first ``CREATE EXTENSION IF NOT EXISTS vector;``
+        because the dynamic_library_path is set BEFORE the server starts.
+        """
         _require_pgembed()
+        # Step 1: ensure parent directory exists. This is the single biggest
+        # failure mode on fresh VMs — without it, every opencode launch
+        # retries 3x with backoff before giving up.
+        self._data_dir.mkdir(parents=True, exist_ok=True)
         self._write_initial_state()
         try:
             self._server = pgembed.get_server(str(self._data_dir), cleanup_mode=None)
@@ -245,11 +280,136 @@ class EmbeddedPGDriver:
             self._write_state_dead()
             raise RuntimeError(f"Failed to start embedded Postgres: {e}") from e
         self._postmaster_pid = self._server.get_pid()
+        # Step 2: edit postgresql.conf to set dynamic_library_path so
+        # the bundled pgvector/vectorscale .so files can be loaded by
+        # CREATE EXTENSION. We do this AFTER get_server (which runs
+        # initdb on first call) so the config file exists.
+        #
+        # Why postgresql.conf (not auto.conf): auto.conf is only read
+        # on ALTER SYSTEM or SIGHUP, NOT on a fresh server start. We
+        # tried auto.conf first and the second launch still failed.
+        #
+        # Best-effort: write failure is logged but doesn't prevent
+        # the server from starting. The next time this is called, the
+        # write will be retried.
+        try:
+            self._write_postgres_config()
+        except OSError as e:  # pragma: no cover - filesystem edge case
+            logger.warning(
+                "pgembed_postgres_config_write_failed",
+                path=str(self._data_dir / "postgresql.conf"),
+                error=str(e),
+                hint="CREATE EXTENSION may fail; check filesystem permissions",
+            )
         uri: str = self._server.get_uri()
         self._uri = uri  # set before _register_client so state.json records the uri
         self._register_client()
         self._start_heartbeat()
         return uri
+
+    async def restart_server_for_new_config(self) -> str:
+        """Stop the running postmaster, re-attach.
+
+        Used by the installer / ``memini-ai init`` to pick up changes
+        to ``postgresql.conf`` (e.g. ``dynamic_library_path``). pgembed
+        starts the postmaster once and the only way to re-read the
+        config file is to stop the postmaster process and start a
+        new one. ``pgembed.get_server(cleanup_mode='stop')`` makes
+        the OLD process tear down on cleanup; then a fresh
+        ``get_server(cleanup_mode=None)`` reattaches (which restarts
+        the postmaster because no other client holds it).
+
+        Idempotent: safe to call when the server is already stopped
+        (just returns the existing URI).
+        """
+        if not self.is_ready():
+            # Server not running — just (re)start it.
+            self._uri = None
+            self._server = None
+            self._state_file.unlink(missing_ok=True)
+            return await self.get_uri()
+
+        # Server is running. We need to: (1) stop the postmaster,
+        # (2) reattach. pgembed has no clean "restart" API, so we
+        # call the underlying pgembed.get_server with cleanup_mode='stop'
+        # to force the postmaster down, then call again with
+        # cleanup_mode=None to spin up a new one.
+        import pgembed as _pgembed  # local import — only used here
+
+        self._postmaster_pid = None
+        self._state_file.unlink(missing_ok=True)
+
+        # Force-stop: the next get_server() call (below) will spin
+        # up a fresh postmaster that reads the current postgresql.conf
+        # (with our dynamic_library_path line).
+        try:
+            stop_server = _pgembed.get_server(str(self._data_dir), cleanup_mode="stop")
+            stop_server.cleanup()
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+        self._server = None
+        self._uri = None
+
+        # Re-attach / fresh-start.
+        return await self.get_uri()
+
+    def _write_postgres_config(self) -> None:
+        """Edit ``postgresql.conf`` so the bundled pgvector/vectorscale
+        ``.so`` files can be loaded by ``CREATE EXTENSION``.
+
+        Idempotent: re-running replaces the same line (no duplicates, no
+        file bloat).
+
+        Why ``postgresql.conf`` (not ``postgresql.auto.conf``):
+        - pgembed creates ``postgresql.conf`` via initdb and never
+          touches it again. Safe to edit.
+        - ``postgresql.auto.conf`` is only read on ``ALTER SYSTEM`` or
+          SIGHUP, NOT on a fresh server start. So writing to auto.conf
+          would not help on the very first ever launch (we tried this
+          and the second launch still failed with "unknown type:
+          public.vector").
+        - The schema's ``CREATE EXTENSION IF NOT EXISTS vector;`` runs
+          during the first server start, so the config MUST be in
+          ``postgresql.conf`` to be picked up.
+
+        Default ``dynamic_library_path`` in stock PostgreSQL is
+        ``'$libdir'`` (the postgres install's lib/postgresql dir). The
+        pgembed install ships the .so files at
+        ``<site-packages>/pgembed/pginstall/lib/postgresql/*.so``, which
+        is NOT on the default search path, so CREATE EXTENSION fails
+        with "could not access file '$libdir/vector'".
+
+        We append the bundled extension path BEFORE the default ``$libdir``
+        so it takes precedence (and the bundled .so files are loaded
+        instead of anything that might be on the system path).
+        """
+        if EXTENSION_POSTGRES_LIB_PATH is None:
+            return  # pgembed not importable; can't configure
+        if not (self._data_dir / "PG_VERSION").exists():
+            # First-ever init: data dir is empty, postgresql.conf
+            # doesn't exist yet. initdb will create it. Skip and let
+            # the next call (after initdb) configure it.
+            return
+        conf = self._data_dir / "postgresql.conf"
+        ext_path = str(EXTENSION_POSTGRES_LIB_PATH).replace("'", "''")
+        desired_line = f"dynamic_library_path = '$libdir:{ext_path}'\n"
+        try:
+            existing = conf.read_text()
+        except OSError:
+            existing = ""
+        # Drop any prior dynamic_library_path lines we wrote, then
+        # append. Idempotent.
+        new_lines = [
+            ln
+            for ln in existing.splitlines(keepends=True)
+            if not ln.lstrip().startswith("dynamic_library_path")
+        ]
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] = new_lines[-1] + "\n"
+        new_lines.append(desired_line)
+        new_content = "".join(new_lines)
+        if new_content != existing:
+            conf.write_text(new_content)
 
     def _cleanup_stale_state(self) -> None:
         """Remove a dead server.json so the next client can start fresh."""

@@ -1269,3 +1269,223 @@ class TestEdgeCases:
 
             uri = await driver.get_uri()
             assert uri == "postgresql://postgres:@/postgres?host=/tmp/draining"
+
+    # ── Fresh-VM bootstrap (Session 53 — opencode 30s timeout fix) ──────
+
+    async def test_start_new_server_creates_parent_data_dir(
+        self, tmp_path: Path, state_dir: Path
+    ) -> None:
+        """_start_new_server() must mkdir(parents=True) the data dir.
+
+        Regression test for Session 53: on fresh VMs, the data dir parent
+        doesn't exist, pgembed.get_server() raises
+        "Parent directory of pgdata does not exist", the database layer
+        retries 3x with backoff (1+2+4s = 7s), and the opencode MCP startup
+        timeout (30s) fires before the user sees any tool work.
+
+        The fix is in EmbeddedPGDriver._start_new_server — it now ensures
+        the data dir parent exists before calling pgembed.get_server().
+        """
+        # Point the driver at a NESTED data dir that does NOT exist yet.
+        # tmp_path is created by pytest, but the nested "a/b/c/data" path
+        # is fresh — mirrors ~/.local/share/memini-ai/pgembed/data on a
+        # never-used VM.
+        nested_data_dir = tmp_path / "fresh" / "deep" / "data"
+        assert not nested_data_dir.exists(), "precondition: nested dir must not exist"
+
+        fresh_driver = EmbeddedPGDriver(data_dir=nested_data_dir, state_dir=state_dir)
+
+        with (
+            patch("memini_ai.postgres.driver._require_pgembed"),
+            patch("memini_ai.postgres.driver.pgembed", create=True) as mock_pgembed,
+        ):
+            mock_server = MagicMock()
+            mock_server.get_uri.return_value = (
+                f"postgresql://postgres:@/postgres?host={nested_data_dir}"
+            )
+            mock_server.get_pid.return_value = 12345
+            mock_pgembed.get_server.return_value = mock_server
+
+            await fresh_driver._start_new_server()
+
+            # The parent chain (fresh/deep) AND the data dir itself must
+            # now exist.
+            assert nested_data_dir.exists(), "data dir was not created"
+            assert nested_data_dir.is_dir(), "data dir is not a directory"
+            assert (tmp_path / "fresh").exists()
+            assert (tmp_path / "fresh" / "deep").exists()
+
+    async def test_start_new_server_writes_postgres_config(
+        self, driver: EmbeddedPGDriver
+    ) -> None:
+        """_start_new_server() must write postgresql.conf with dynamic_library_path.
+
+        Regression test for Session 53: pgembed's bundled vector.so is
+        present in the wheel at ``<site-packages>/pgembed/pginstall/lib/postgresql/``
+        but the stock postgres ``dynamic_library_path`` is just ``'$libdir'``
+        (the install's own lib dir), so ``CREATE EXTENSION vector;`` fails
+        with "could not access file '$libdir/vector'".
+
+        The fix writes the pgembed extension lib path to
+        ``postgresql.conf`` so the bundled .so files are found on
+        the NEXT server start (which is the next opencode launch after
+        this one). The schema CREATE EXTENSION on the very first ever
+        launch will fail (config not yet loaded) but will succeed on
+        the second launch.
+
+        Why postgresql.conf (not auto.conf): auto.conf is only read on
+        ALTER SYSTEM or SIGHUP, NOT on a fresh server start. We tried
+        auto.conf first and the second launch still failed.
+        """
+        from pathlib import Path
+
+        mock_ext_lib = Path("/fake/site-packages/pgembed/pginstall/lib/postgresql")
+        with (
+            patch("memini_ai.postgres.driver._require_pgembed"),
+            patch("memini_ai.postgres.driver.pgembed", create=True) as mock_pgembed,
+            patch(
+                "memini_ai.postgres.driver.EXTENSION_POSTGRES_LIB_PATH",
+                mock_ext_lib,
+            ),
+        ):
+            mock_server = MagicMock()
+            mock_server.get_uri.return_value = (
+                "postgresql://postgres:@/postgres?host=/tmp/test"
+            )
+            mock_server.get_pid.return_value = 12345
+            mock_pgembed.get_server.return_value = mock_server
+
+            # Pretend initdb has run (postgresql.conf exists)
+            (driver._data_dir / "PG_VERSION").write_text("17\n")
+            (driver._data_dir / "postgresql.conf").write_text(
+                "# base config\nport = 5432\n"
+            )
+
+            await driver._start_new_server()
+
+            # postgresql.conf must have the dynamic_library_path line
+            conf = driver._data_dir / "postgresql.conf"
+            assert conf.exists()
+            content = conf.read_text()
+            assert "dynamic_library_path" in content, (
+                f"dynamic_library_path not set in postgresql.conf; got: {content!r}"
+            )
+            # Must reference the pgembed extension lib path (where
+            # vector.so / vectorscale.so live).
+            assert "pgembed/pginstall/lib/postgresql" in content, (
+                f"dynamic_library_path doesn't reference pgembed ext lib; "
+                f"got: {content!r}"
+            )
+            # server.create_extension must NOT be called (it would segfault
+            # via psql on Python 3.13/3.14). The schema SQL handles the
+            # CREATE EXTENSION itself once dynamic_library_path is set.
+            mock_server.create_extension.assert_not_called()
+
+    async def test_start_new_server_continues_if_postgres_config_write_fails(
+        self, driver: EmbeddedPGDriver
+    ) -> None:
+        """If postgresql.conf write fails, _start_new_server() should NOT crash.
+
+        The dynamic_library_path setup is best-effort: if we can't write
+        the config (e.g. read-only filesystem, permissions issue), we
+        should let the server still start so the user sees the regular
+        "unknown type: public.vector" error and can fix permissions
+        and re-init. The original failure mode was a hard crash on
+        first launch — this is strictly better.
+        """
+        with (
+            patch("memini_ai.postgres.driver._require_pgembed"),
+            patch("memini_ai.postgres.driver.pgembed", create=True) as mock_pgembed,
+        ):
+            mock_server = MagicMock()
+            mock_server.get_uri.return_value = (
+                "postgresql://postgres:@/postgres?host=/tmp/test"
+            )
+            mock_server.get_pid.return_value = 12345
+            mock_pgembed.get_server.return_value = mock_server
+
+            with patch.object(
+                driver,
+                "_write_postgres_config",
+                side_effect=OSError("read-only filesystem"),
+            ):
+                # Should NOT raise — write failure is best-effort.
+                uri = await driver._start_new_server()
+                assert uri.startswith("postgresql://")
+
+    async def test_postgres_config_write_is_idempotent(
+        self, driver: EmbeddedPGDriver
+    ) -> None:
+        """Repeated _write_postgres_config() calls must not duplicate the line.
+
+        If a user re-inits, the postgresql.conf should have exactly
+        one ``dynamic_library_path`` line (the freshest one), not many
+        duplicates from previous inits.
+        """
+        from pathlib import Path
+
+        mock_ext_lib = Path("/fake/site-packages/pgembed/pginstall/lib/postgresql")
+        with (
+            patch("memini_ai.postgres.driver._require_pgembed"),
+            patch("memini_ai.postgres.driver.pgembed", create=True) as mock_pgembed,
+            patch(
+                "memini_ai.postgres.driver.EXTENSION_POSTGRES_LIB_PATH",
+                mock_ext_lib,
+            ),
+        ):
+            mock_server = MagicMock()
+            mock_server.get_uri.return_value = (
+                "postgresql://postgres:@/postgres?host=/tmp/test"
+            )
+            mock_server.get_pid.return_value = 12345
+            mock_pgembed.get_server.return_value = mock_server
+
+            # Pretend initdb has run
+            (driver._data_dir / "PG_VERSION").write_text("17\n")
+            (driver._data_dir / "postgresql.conf").write_text("port = 5432\n")
+
+            # Run _write_postgres_config three times
+            driver._write_postgres_config()
+            driver._write_postgres_config()
+            driver._write_postgres_config()
+
+            content = (driver._data_dir / "postgresql.conf").read_text()
+            dlp_lines = [
+                ln
+                for ln in content.splitlines()
+                if ln.lstrip().startswith("dynamic_library_path")
+            ]
+            assert len(dlp_lines) == 1, (
+                f"expected exactly 1 dynamic_library_path line, got {len(dlp_lines)}: "
+                f"{dlp_lines}"
+            )
+
+    async def test_postgres_config_write_skips_first_init(
+        self, driver: EmbeddedPGDriver
+    ) -> None:
+        """_write_postgres_config() must NOT write on the first ever init.
+
+        On the very first launch, postgresql.conf doesn't exist yet
+        (it gets created by initdb during pgembed.get_server). Writing
+        to a non-existent file would create the data directory and
+        confuse initdb. So we skip — the next call (after initdb)
+        does the actual write.
+        """
+        from pathlib import Path
+
+        mock_ext_lib = Path("/fake/site-packages/pgembed/pginstall/lib/postgresql")
+        with (
+            patch("memini_ai.postgres.driver._require_pgembed"),
+            patch("memini_ai.postgres.driver.pgembed", create=True),
+            patch(
+                "memini_ai.postgres.driver.EXTENSION_POSTGRES_LIB_PATH",
+                mock_ext_lib,
+            ),
+        ):
+            # No PG_VERSION — first init state
+            assert not (driver._data_dir / "PG_VERSION").exists()
+
+            driver._write_postgres_config()
+
+            # postgresql.conf must NOT exist (skipped)
+            assert not (driver._data_dir / "postgresql.conf").exists()

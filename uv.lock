@@ -1107,7 +1107,7 @@ wheels = [
 
 [[package]]
 name = "memini-ai-dev"
-version = "1.1.0"
+version = "1.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1165,7 +1165,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.30.0" },
     { name = "watchdog", specifier = ">=4.0" },
 ]
-provides-extras = ["team", "dev", "vision"]
+provides-extras = ["dev", "vision"]
 
 [[package]]
 name = "memini-vision"

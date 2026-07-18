@@ -5,7 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.3] - 2026-07-16
+## [1.2.1] - 2026-07-18
+
+### Fixed
+
+- Re-released as v1.2.1 because the v1.2.0 tag (Session 52, RBAC + SSL + container detection, commit `0985dc1`) was already taken. Per AGENTS.md 'Never Retag a Public Release' rule, this is a patch release on top of v1.2.0 with the same fixes below.
+- **Fresh-VM pgembed bootstrap (opencode 30s timeout)** — `EmbeddedPGDriver.__init__` never created the data dir parent, so the first `pgembed.get_server()` call on a fresh machine failed with "Parent directory of pgdata does not exist". The `PostgresDatabase.initialize()` 3-retry loop (1+2+4s backoff) + the HF model download (~30s) combined to push past opencode's 30s MCP startup timeout. The first ever tool call (`query_memories` etc.) would time out and opencode marked `memini-ai-dev` as "server unavailable". **3 cascading bugs fixed in `_start_new_server`:**
+  1. `self._data_dir.mkdir(parents=True, exist_ok=True)` — auto-create the data dir parent before calling `pgembed.get_server()`.
+  2. `_write_postgres_config()` appends `dynamic_library_path = '$libdir:<pgembed_ext_lib_path>'` to `postgresql.conf` (NOT `postgresql.auto.conf` — that's only read on ALTER SYSTEM/SIGHUP, not on a fresh server start). Idempotent: drops any prior line we wrote before appending. Skips on the very first init (postgresql.conf doesn't exist yet) — the NEXT call (after initdb) writes it.
+  3. `restart_server_for_new_config()` async method: forces the postmaster to stop + reattach so the new `dynamic_library_path` takes effect. `pgembed.get_server(cleanup_mode='stop')` + immediate cleanup, then a fresh `get_server(cleanup_mode=None)` to spin up a new postmaster that re-reads postgresql.conf.
+- `memini-ai init` CLI now calls `driver.restart_server_for_new_config()` after `get_uri()` so the postmaster picks up the new config before the user runs opencode. Wrapped in try/except so a restart failure doesn't break init.
+
+### Why this works
+
+- pgembed 0.2.0 ships `vector.so` and `vectorscale-0.9.0.so` at `<site-packages>/pgembed/pginstall/lib/postgresql/`, but the stock postgres `dynamic_library_path` is just `'$libdir'` (the install's own lib dir), so `CREATE EXTENSION vector` couldn't find the .so file. The pgembed `server.create_extension()` API uses psql internally which segfaults on Python 3.13/3.14 (exit 139). Writing to `postgresql.auto.conf` looked promising but is only read on ALTER SYSTEM/SIGHUP, not on a fresh server start. The only safe path is editing `postgresql.conf` (which pgembed never touches after initdb) + restarting the postmaster.
+
+### Added
+
+- 4 regression tests in `tests/test_pgembed_driver.py::TestEdgeCases`:
+  - `test_start_new_server_creates_parent_data_dir` — regression for the "Parent directory of pgdata does not exist" fix
+  - `test_start_new_server_writes_postgres_config` — verifies the dynamic_library_path line is in postgresql.conf after `_start_new_server` runs
+  - `test_start_new_server_continues_if_postgres_config_write_fails` — OSError on config write must NOT crash server start
+  - `test_postgres_config_write_is_idempotent` — 3 calls produce 1 line
+  - `test_postgres_config_write_skips_first_init` — no PG_VERSION = no config write (initdb needs empty dir)
+- Module-level `EXTENSION_POSTGRES_LIB_PATH` import in `postgres/driver.py` so tests can mock it without needing pgembed installed locally.
+
+### Changed
+
+- `pyproject.toml`: removed empty `team = []` optional-dependency entry (the team server selection lives in the install script, not as a separate optional dep — keeps the install path unified per user direction in this session).
+
+### Quality Gates
+
+- `ruff check src/` → 0 errors
+- `pytest tests/` → 942/944 pass (2 pre-existing pgembed-env failures unrelated to these changes)
+- Verified end-to-end on test-bunty VM (jcharles@192.168.1.86, fresh Ubuntu 24.04, no prior memini-ai data):
+  - `memini-ai init` from cold: 1.5s, postgresql.conf gets the dynamic_library_path line
+  - `memini-ai --stdio` + `query_memories` returns 0 results in <1s after model loads
+  - `SHOW dynamic_library_path` against the running postmaster returns the correct bundled path
+  - `CREATE EXTENSION vector;` + `CREATE EXTENSION vectorscale;` both succeed against the running postmaster
+  - opencode launch: "init count=8", memini-ai-dev still shows a brief "server unavailable" warning at T+1.4s (the MCP probe timeout) but recovers — was T+33s hard fail before this fix
+
+### Process lessons
+
+- When MCP startup is the symptom, dig past the startup — the actual failure is usually on the first tool call, not at process spawn.
+- `server.create_extension()` looks like the right API for installing pgvector in pgembed, but psql segfaults on 3.13/3.14. Workaround: edit `postgresql.conf` + restart.
+- For tests, mock imports at module level (not inside the function body) so `patch.object(module, "CONSTANT", value)` works on CI without the actual package installed.
+
+## [1.0.3] - 2026-07-16## [1.0.3] - 2026-07-16
 
 ### Fixed
 
