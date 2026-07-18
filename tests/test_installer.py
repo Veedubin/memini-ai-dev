@@ -15,15 +15,22 @@ import pytest
 
 from memini_ai.installer import (
     BackupResult,
+    ContainerRuntime,
+    ContainerRuntimeResult,
     InstallConfig,
     SysDepsResult,
+    build_admin_dsn,
     build_homedir_opencode_json,
     build_project_opencode_json,
+    check_container_runtime,
     check_system_deps,
     compute_file_sha256,
+    generate_password,
     get_homedir_config_path,
     get_project_config_path,
+    read_admin_credentials,
     run_prompts,
+    sanitize_project_name,
     write_config_with_backup,
     write_state_file,
 )
@@ -99,6 +106,13 @@ def _make_config(**overrides: object) -> InstallConfig:
         "team_database": None,
         "team_user": None,
         "team_password": None,
+        "team_sslmode": "prefer",
+        "team_new_db": False,
+        "team_admin_user": None,
+        "team_admin_password": None,
+        "project_user": None,
+        "project_password": None,
+        "project_name": None,
         "embedding": "auto",
         "image_search": True,
         "trust_engine": True,
@@ -161,6 +175,7 @@ def test_build_homedir_opencode_json_team() -> None:
         team_database="memini",
         team_user="alice",
         team_password="s3cret",
+        team_sslmode="require",
     )
     result = build_homedir_opencode_json(config)
     mcp = result["mcp"]
@@ -174,6 +189,49 @@ def test_build_homedir_opencode_json_team() -> None:
     assert "alice" in env["MEMINI_DB_URL"]
     assert "s3cret" in env["MEMINI_DB_URL"]
     assert "pg.example.com" in env["MEMINI_DB_URL"]
+    # SSL mode appended (unless "disable").
+    assert "?sslmode=require" in env["MEMINI_DB_URL"]
+
+
+def test_build_homedir_opencode_json_team_ssl_disable() -> None:
+    """team backend with sslmode=disable → no ?sslmode= in DSN."""
+    config = _make_config(
+        backend="team",
+        team_host="pg.example.com",
+        team_port="5432",
+        team_database="memini",
+        team_user="alice",
+        team_password="s3cret",
+        team_sslmode="disable",
+    )
+    result = build_homedir_opencode_json(config)
+    env = result["mcp"]["memini-ai-dev"]["env"]
+    assert isinstance(env, dict)
+    assert "?sslmode=" not in env["MEMINI_DB_URL"]
+
+
+def test_build_homedir_opencode_json_team_rbac() -> None:
+    """team backend with project_user set → {env:...} references (no inline creds)."""
+    config = _make_config(
+        backend="team",
+        team_host="localhost",
+        team_port="5432",
+        team_database="memini",
+        project_user="foo-bar-123",
+        project_password="generated-pw",
+        project_name="foo-bar-123",
+    )
+    result = build_homedir_opencode_json(config)
+    env = result["mcp"]["memini-ai-dev"]["env"]
+    assert isinstance(env, dict)
+    # No inline credentials in opencode.json — secrets stay in .env.
+    assert "generated-pw" not in env["MEMINI_DB_URL"]
+    assert env["MEMINI_DB_URL"] == (
+        "postgresql://{env:MEMINI_PROJECT_USER}:{env:MEMINI_PROJECT_PASSWORD}"
+        "@{env:MEMINI_DB_HOST}:{env:MEMINI_DB_PORT}/{env:MEMINI_DB_NAME}"
+        "?sslmode={env:MEMINI_DB_SSLMODE}"
+    )
+    assert env["MEMINI_PEER_ID"] == "foo-bar-123"
 
 
 def test_build_homedir_opencode_json_gpu() -> None:
@@ -390,11 +448,22 @@ def test_run_prompts_embedded_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_run_prompts_no_features_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """--no-features → all features False."""
-    # We need to mock input() for the embedding prompt (which is still asked)
-    monkeypatch.setattr("builtins.input", lambda prompt="": "2")
+    """--no-features → all features False (pgembed backend, no team prompts)."""
+
+    # Mock input: "1" for backend (pgembed), "2" for embedding (auto), "" for yes/no.
+    def _mock_input(prompt: str = "") -> str:
+        if "Enter 1 or 2" in prompt:
+            return "1"  # pgembed backend — avoid team flow entirely
+        if "Enter 1, 2, or 3" in prompt:
+            return "2"  # auto embedding
+        if "[Y/n]" in prompt or "[y/N]" in prompt:
+            return ""  # accept default
+        return ""
+
+    monkeypatch.setattr("builtins.input", _mock_input)
     flags = _make_namespace(no_features=True)
     config = run_prompts(flags)
+    assert config.backend == "pgembed"
     assert config.image_search is False
     assert config.trust_engine is False
     assert config.knowledge_graph is False
@@ -451,3 +520,240 @@ def test_compute_file_sha256(tmp_path: Path) -> None:
     path.write_bytes(content)
     expected = hashlib.sha256(content).hexdigest()
     assert compute_file_sha256(path) == expected
+
+
+# ── sanitize_project_name ─────────────────────────────────────────────────────
+
+
+def test_sanitize_project_name_basic() -> None:
+    """Underscores → hyphens, non-alnum stripped, collapses + trims."""
+    assert sanitize_project_name("foo_bar_123") == "foo-bar-123"
+
+
+def test_sanitize_project_name_special_chars() -> None:
+    """Special chars stripped, multiple hyphens collapsed."""
+    # "My Project!" → no underscores, space + ! stripped → "MyProject"
+    assert sanitize_project_name("My Project!") == "MyProject"
+    assert sanitize_project_name("a__b---c") == "a-b-c"
+    # Explicit hyphens in input are preserved.
+    assert sanitize_project_name("My-Project!") == "My-Project"
+
+
+def test_sanitize_project_name_empty() -> None:
+    """Empty after sanitization → default 'memini-project'."""
+    assert sanitize_project_name("___") == "memini-project"
+    assert sanitize_project_name("!!!") == "memini-project"
+    assert sanitize_project_name("") == "memini-project"
+
+
+def test_sanitize_project_name_truncates_63() -> None:
+    """Names longer than 63 chars are truncated."""
+    long_name = "a" * 100
+    result = sanitize_project_name(long_name)
+    assert len(result) == 63
+    assert result == "a" * 63
+
+
+def test_sanitize_project_name_strips_hyphens() -> None:
+    """Leading/trailing hyphens stripped."""
+    assert sanitize_project_name("-foo-bar-") == "foo-bar"
+
+
+# ── generate_password ─────────────────────────────────────────────────────────
+
+
+def test_generate_password_length_and_charset() -> None:
+    """Generated password is 43 chars, URL-safe base64 charset."""
+    pw = generate_password()
+    assert len(pw) == 43
+    # URL-safe base64 charset: A-Z a-z 0-9 - _
+    import re
+
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", pw) is not None
+
+
+def test_generate_password_unique() -> None:
+    """Two calls produce different passwords (extremely high entropy)."""
+    pw1 = generate_password()
+    pw2 = generate_password()
+    assert pw1 != pw2
+
+
+# ── check_container_runtime ───────────────────────────────────────────────────
+
+
+def test_check_container_runtime_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No runtimes on PATH → has_any=False, all present=False."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    def _run_quiet_none(cmd: list[str], timeout: float = 5.0) -> bool:
+        return False
+
+    import memini_ai.installer as inst
+
+    monkeypatch.setattr(inst, "_run_quiet", _run_quiet_none)
+    result = check_container_runtime()
+    assert isinstance(result, ContainerRuntimeResult)
+    assert result.has_any is False
+    assert len(result.runtimes) == 3
+    for rt in result.runtimes:
+        assert isinstance(rt, ContainerRuntime)
+        assert rt.present is False
+        assert rt.compose_command == ""
+
+
+def test_check_container_runtime_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """docker on PATH + `docker compose version` works -> present, compose_command set."""
+    import memini_ai.installer as inst
+
+    def _which(name: str) -> str | None:
+        return "/usr/bin/docker" if name == "docker" else None
+
+    def _run_quiet(cmd: list[str], timeout: float = 5.0) -> bool:
+        return cmd == ["docker", "compose", "version"]
+
+    monkeypatch.setattr(shutil, "which", _which)
+    monkeypatch.setattr(inst, "_run_quiet", _run_quiet)
+    result = check_container_runtime()
+    assert isinstance(result, ContainerRuntimeResult)
+    assert result.has_any is True
+    docker = [rt for rt in result.runtimes if rt.name == "docker"]
+    assert len(docker) == 1
+    assert docker[0].present is True
+    assert docker[0].compose_command == "docker compose"
+    podman = [rt for rt in result.runtimes if rt.name == "podman"]
+    assert podman[0].present is False
+
+
+def test_check_container_runtime_podman(monkeypatch: pytest.MonkeyPatch) -> None:
+    """podman on PATH + `podman compose version` works → present, compose_command set."""
+    import memini_ai.installer as inst
+
+    def _which(name: str) -> str | None:
+        return "/usr/bin/podman" if name == "podman" else None
+
+    def _run_quiet(cmd: list[str], timeout: float = 5.0) -> bool:
+        return cmd == ["podman", "compose", "version"]
+
+    monkeypatch.setattr(shutil, "which", _which)
+    monkeypatch.setattr(inst, "_run_quiet", _run_quiet)
+    result = check_container_runtime()
+    assert isinstance(result, ContainerRuntimeResult)
+    assert result.has_any is True
+    podman = [rt for rt in result.runtimes if rt.name == "podman"]
+    assert len(podman) == 1
+    assert podman[0].present is True
+    assert podman[0].compose_command == "podman compose"
+    docker = [rt for rt in result.runtimes if rt.name == "docker"]
+    assert docker[0].present is False
+
+
+# ── check_system_deps (team backend) ─────────────────────────────────────────
+
+
+def test_check_system_deps_team_no_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """team backend + no container runtime → all_present=False (soft fail)."""
+    import memini_ai.installer as inst
+
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+
+    def _run_quiet_none(cmd: list[str], timeout: float = 5.0) -> bool:
+        return False
+
+    monkeypatch.setattr(inst, "_run_quiet", _run_quiet_none)
+    result = check_system_deps(backend="team")
+    assert isinstance(result, SysDepsResult)
+    # uv + python present, but no runtime → all_present=False
+    assert result.all_present is False
+    uv_dep = [d for d in result.deps if d.name == "uv"]
+    assert uv_dep[0].present is True
+    podman_dep = [d for d in result.deps if d.name == "podman"]
+    assert len(podman_dep) == 1
+    assert podman_dep[0].present is False
+
+
+def test_check_system_deps_team_with_podman(monkeypatch: pytest.MonkeyPatch) -> None:
+    """team backend + podman on PATH → all_present=True."""
+    import memini_ai.installer as inst
+
+    def _which(name: str) -> str | None:
+        if name == "uv":
+            return "/usr/bin/uv"
+        if name == "podman":
+            return "/usr/bin/podman"
+        return None
+
+    def _run_quiet(cmd: list[str], timeout: float = 5.0) -> bool:
+        return cmd == ["podman", "compose", "version"]
+
+    monkeypatch.setattr(shutil, "which", _which)
+    monkeypatch.setattr(inst, "_run_quiet", _run_quiet)
+    result = check_system_deps(backend="team")
+    assert isinstance(result, SysDepsResult)
+    assert result.all_present is True
+
+
+# ── read_admin_credentials + build_admin_dsn ──────────────────────────────────
+
+
+def test_read_admin_credentials_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No .env in homedir → None."""
+    monkeypatch.setattr(Path, "home", lambda: Path("/nonexistent-home-12345"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert read_admin_credentials() is None
+
+
+def test_read_admin_credentials_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Valid .env with admin creds → dict parsed."""
+    # get_homedir_config_path() returns tmp_path/.config/opencode on Linux.
+    config_dir = tmp_path / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
+    (config_dir / ".env").write_text(
+        "# comment\n"
+        "MEMINI_ADMIN_USER=memini_admin\n"
+        "MEMINI_ADMIN_PASSWORD=s3cret-pw\n"
+        "MEMINI_DB_HOST=localhost\n"
+        "MEMINI_DB_PORT=5432\n"
+        "MEMINI_DB_NAME=memini\n"
+        "MEMINI_DB_SSLMODE=require\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    creds = read_admin_credentials()
+    assert creds is not None
+    assert creds["MEMINI_ADMIN_USER"] == "memini_admin"
+    assert creds["MEMINI_ADMIN_PASSWORD"] == "s3cret-pw"
+    assert creds["MEMINI_DB_SSLMODE"] == "require"
+
+
+def test_build_admin_dsn() -> None:
+    """Build admin DSN from creds dict, includes sslmode when not disable."""
+    creds = {
+        "MEMINI_ADMIN_USER": "memini_admin",
+        "MEMINI_ADMIN_PASSWORD": "pw",
+        "MEMINI_DB_HOST": "db.host",
+        "MEMINI_DB_PORT": "5432",
+        "MEMINI_DB_NAME": "memini",
+        "MEMINI_DB_SSLMODE": "require",
+    }
+    dsn = build_admin_dsn(creds)
+    assert dsn == "postgresql://memini_admin:pw@db.host:5432/memini?sslmode=require"
+
+
+def test_build_admin_dsn_disable() -> None:
+    """sslmode=disable → no ?sslmode= in DSN."""
+    creds = {
+        "MEMINI_ADMIN_USER": "memini_admin",
+        "MEMINI_ADMIN_PASSWORD": "pw",
+        "MEMINI_DB_HOST": "db.host",
+        "MEMINI_DB_PORT": "5432",
+        "MEMINI_DB_NAME": "memini",
+        "MEMINI_DB_SSLMODE": "disable",
+    }
+    dsn = build_admin_dsn(creds)
+    assert "?sslmode=" not in dsn

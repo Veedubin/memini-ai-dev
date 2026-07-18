@@ -10,6 +10,29 @@ Query Categories:
 - Trust Engine: Trust score updates and decay operations
 """
 
+from __future__ import annotations
+
+
+def peer_filter_clause(peer_id: str | None, param_index: int) -> tuple[str, str | None]:
+    """Build a SQL clause for peer_id filtering.
+
+    Returns (clause, value). When peer_id is None, returns ("", None) — no filtering
+    (open-by-default mode). When peer_id is set, returns a clause that matches rows
+    with that peer_id OR NULL peer_id, plus the peer_id value to bind at param_index.
+
+    Args:
+        peer_id: The peer identifier to filter on. None disables filtering.
+        param_index: The 1-based asyncpg parameter index for the peer_id value.
+
+    Returns:
+        Tuple of (sql_clause, peer_id_value). The clause begins with "AND " when
+        filtering is active, or is empty when no filtering is needed.
+    """
+    if peer_id is None:
+        return "", None
+    return f"AND (peer_id = ${param_index}::uuid OR peer_id IS NULL)", peer_id
+
+
 # =============================================================================
 # Vector Search Queries
 # =============================================================================
@@ -41,16 +64,16 @@ LIMIT $2
 # =============================================================================
 
 INSERT_MEMORY = """
-INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata, created_at_ms)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata, created_at_ms, peer_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid)
 RETURNING id
 """
 
 # Delta Model: Insert memory with delta fields
 INSERT_MEMORY_DELTA = """
 INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata,
-                     supersedes_id, structured_fields, change_ratio, created_at_ms)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     supersedes_id, structured_fields, change_ratio, created_at_ms, peer_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid)
 RETURNING id
 """
 
@@ -638,8 +661,8 @@ WHERE is_archived = FALSE
 # Insert memory with embedding_model tracking
 INSERT_MEMORY_WITH_MODEL = """
 INSERT INTO memories (id, text, embedding, source_type, content_hash, metadata,
-                      created_at_ms, embedding_model)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                      created_at_ms, embedding_model, peer_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::uuid)
 RETURNING id
 """
 
@@ -648,8 +671,8 @@ RETURNING id
 # embedding_bge_m3 column instead of the default embedding (384-dim).
 INSERT_MEMORY_BGE_M3 = """
 INSERT INTO memories (id, text, embedding_bge_m3, source_type, content_hash, metadata,
-                      created_at_ms, embedding_model)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                      created_at_ms, embedding_model, peer_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::uuid)
 RETURNING id
 """
 

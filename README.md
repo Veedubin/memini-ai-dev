@@ -100,6 +100,101 @@ pip install memini-ai-dev
 uvx --from memini-ai-dev memini-ai --stdio
 ```
 
+## RBAC — Per-Project Users
+
+### Overview
+memini-ai-dev supports per-project PostgreSQL users with auto-generated passwords. By default, all users have read/write/edit access to all memories (open access). Per-project isolation is opt-in via `MEMINI_PEER_ENFORCEMENT=true`.
+
+### New Team DB Setup (`memini-ai init --homedir --team --new-db`)
+- Creates a `memini_admin` role with a generated password
+- Creates a `memini` database with `pgvector` and `vectorscale` extensions
+- Writes admin credentials to `~/.config/opencode/.env` (chmod 600)
+- The password is printed once during install and never shown again
+
+### Project User Setup (`memini-ai init --project --team`)
+- Reads admin credentials from the homedir `.env`
+- Derives a postgres-safe role name from the directory (e.g., `foo_bar_123/` → `foo-bar-123`)
+- Creates a project role with CRUD permissions (no superuser)
+- Writes project credentials to `./.env` (chmod 600)
+- `opencode.json` uses `{env:...}` syntax — secrets are never committed to git
+
+### Default: Open Access
+- By default, `MEMINI_PEER_ENFORCEMENT=false` — all users see all memories
+- `peer_id` is written on all inserts (for tagging) but does NOT filter reads
+- This preserves backward compatibility — existing setups work unchanged
+
+### Opt-in Lockdown
+- Set `MEMINI_PEER_ENFORCEMENT=true` and `MEMINI_PEER_ID=<project-name>` in `.env`
+- Queries filter to only show memories with matching `peer_id` (or `NULL` peer_id = visible to all)
+- Lockdown is per-project, per-device — you choose which projects are isolated
+
+### User Management
+```bash
+memini-ai user add --name <name> [--admin]    # Add a user
+memini-ai user list                            # List all users
+memini-ai user remove --name <name>            # Drop a user
+```
+
+### The .env File Pattern
+- **Homedir `.env** (`~/.config/opencode/.env`): admin credentials
+- **Project `.env** (`./.env`): project credentials
+- `opencode.json` references via `{env:MEMINI_PROJECT_USER}` etc.
+- Never put passwords in `opencode.json` (it may be committed to git)
+- `.env` files are chmod 600
+
+## SSL/TLS Database Connections
+
+### Overview
+memini-ai-dev supports SSL/TLS for PostgreSQL team server connections.
+
+### SSL Modes (during `memini-ai init --team`)
+- `prefer` (default) — use SSL if available, fall back to plain
+- `require` — always use SSL, reject non-SSL connections
+- `verify-ca` — verify server certificate (CA)
+- `verify-full` — verify server certificate (CA + hostname)
+- `disable` — never use SSL
+
+### Configuration
+The SSL mode is stored in `.env` as `MEMINI_DB_SSLMODE` and appended to the connection URL as `?sslmode={mode}`.
+
+### For Production
+Use `verify-full` with a proper CA certificate. The PostgreSQL server must be configured with `ssl = on` and a valid certificate.
+
+## Container Runtime Detection
+
+### Overview
+When using team server mode, memini-ai-dev can detect and help install container runtimes.
+
+### Supported Runtimes
+- **Podman** (recommended) — rootless, daemonless, no security surface. `podman-docker` makes docker commands work transparently.
+- **Docker** — industry standard, most tutorials assume it. Requires a background daemon.
+- **Containerd** — lightweight, for CI/headless.
+
+### Auto-Install
+If no container runtime is found during team server setup, the installer offers to install one:
+```
+No container runtime found. Which would you like to install?
+
+  1. Podman (recommended)
+     Rootless and daemonless — no background service needed.
+     More secure: containers run as your user, not root.
+     Works with docker commands via podman-docker.
+
+  2. Docker
+     The industry standard — most tutorials assume it.
+     Requires a background daemon (dockerd).
+
+  3. Skip — I'll install it myself
+
+  Enter 1, 2, or 3 [1]:
+```
+
+### podman-docker
+When podman is installed, `podman-docker` is also installed so `docker` commands work with podman's rootless backend.
+
+### pgembed Mode
+Container runtimes are NOT needed for pgembed (embedded PostgreSQL). The detection only runs for team server mode.
+
 ## Backend Selection
 
 v1.0.0 ships with two backends:

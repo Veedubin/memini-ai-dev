@@ -132,6 +132,12 @@ class PostgresDatabase(VectorDatabase):
         self._sslrootcert = sslrootcert or config.db_sslrootcert
         self._dimension = config.embedding_dim
 
+        # Peer RBAC (v1.2.0+): default OFF — all memories visible to all users.
+        # When enforcement is on AND peer_id is set, queries filter by peer_id.
+        # peer_id is always written on inserts for tagging when set.
+        self._peer_enforcement = config.peer_enforcement
+        self._peer_id = config.peer_id
+
     async def initialize(self) -> None:
         """Initialize the database connection and create schema if needed.
 
@@ -244,6 +250,20 @@ class PostgresDatabase(VectorDatabase):
             ctx.verify_mode = ssl.CERT_REQUIRED
 
         return ctx
+
+    @property
+    def _enforce_peer_filter(self) -> bool:
+        """Whether peer_id filtering is active for queries.
+
+        True only when peer_enforcement is on AND a peer_id is configured.
+        When False (default), all memories are visible (open-by-default).
+        """
+        return self._peer_enforcement and self._peer_id is not None
+
+    @property
+    def _effective_peer_id(self) -> str | None:
+        """The peer_id used for read filtering, or None when filtering is off."""
+        return self._peer_id if self._enforce_peer_filter else None
 
     async def _detect_vectorscale(self) -> bool:
         """Check if pgvectorscale extension is available in the database.
@@ -360,6 +380,12 @@ class PostgresDatabase(VectorDatabase):
         record["created_at_ms"] = entry.created_at_ms
         record["embedding_model"] = entry.embedding_model
 
+        # Peer tagging (v1.2.0+): always write peer_id on inserts for tagging.
+        # Precedence: entry.peer_id (explicit) > instance default (config.peer_id).
+        # When both are None, peer_id is NULL (visible to all).
+        # Use getattr for safety: some unit tests bypass __init__ via __new__.
+        record["peer_id"] = entry.peer_id or getattr(self, "_peer_id", None)
+
         return record
 
     def _row_to_memory(
@@ -455,6 +481,7 @@ class PostgresDatabase(VectorDatabase):
                     record["structured_fields"],
                     record["change_ratio"],
                     record["created_at_ms"],
+                    record["peer_id"],
                 )
             elif target_column == "embedding_bge_m3":
                 # BGE-M3 (1024-dim) → write to embedding_bge_m3 column
@@ -468,6 +495,7 @@ class PostgresDatabase(VectorDatabase):
                     json.dumps(record["metadata"]),
                     record["created_at_ms"],
                     record["embedding_model"],
+                    record["peer_id"],
                 )
             elif record.get("embedding_model") is not None:
                 # MiniLM with embedding_model tracking → INSERT_MEMORY_WITH_MODEL
@@ -481,6 +509,7 @@ class PostgresDatabase(VectorDatabase):
                     json.dumps(record["metadata"]),
                     record["created_at_ms"],
                     record["embedding_model"],
+                    record["peer_id"],
                 )
             else:
                 # Legacy: no embedding_model, 384-dim embedding column
@@ -493,6 +522,7 @@ class PostgresDatabase(VectorDatabase):
                     record["content_hash"],
                     json.dumps(record["metadata"]),
                     record["created_at_ms"],
+                    record["peer_id"],
                 )
 
         return str(memory_id)
@@ -529,6 +559,7 @@ class PostgresDatabase(VectorDatabase):
                     record["content_hash"],
                     json.dumps(record["metadata"]),
                     record["created_at_ms"],
+                    record["peer_id"],
                 )
 
         return entries
@@ -550,11 +581,31 @@ class PostgresDatabase(VectorDatabase):
         await self.initialize()
         pool = await self._get_pool()
 
+        peer_id = self._effective_peer_id
+
         async with pool.acquire() as conn:
             if include_archived:
-                row = await conn.fetchrow(GET_MEMORY_BY_ID_INCLUDE_ARCHIVED, memory_id)
+                if peer_id is not None:
+                    sql = (
+                        GET_MEMORY_BY_ID_INCLUDE_ARCHIVED.rstrip().rstrip(";")
+                        + " AND (peer_id = $2::uuid OR peer_id IS NULL)"
+                    )
+                    row = await conn.fetchrow(sql, memory_id, peer_id)
+                else:
+                    row = await conn.fetchrow(
+                        GET_MEMORY_BY_ID_INCLUDE_ARCHIVED, memory_id
+                    )
             else:
-                row = await conn.fetchrow(GET_MEMORY_BY_ID, memory_id, include_archived)
+                if peer_id is not None:
+                    sql = (
+                        GET_MEMORY_BY_ID.rstrip().rstrip(";")
+                        + " AND (peer_id = $3::uuid OR peer_id IS NULL)"
+                    )
+                    row = await conn.fetchrow(sql, memory_id, include_archived, peer_id)
+                else:
+                    row = await conn.fetchrow(
+                        GET_MEMORY_BY_ID, memory_id, include_archived
+                    )
             if row is None:
                 return None
 
@@ -611,8 +662,17 @@ class PostgresDatabase(VectorDatabase):
         await self.initialize()
         pool = await self._get_pool()
 
+        peer_id = self._effective_peer_id
+
         async with pool.acquire() as conn:
-            await conn.execute(DELETE_MEMORY, memory_id)
+            if peer_id is not None:
+                sql = (
+                    DELETE_MEMORY.rstrip().rstrip(";")
+                    + " AND (peer_id = $2::uuid OR peer_id IS NULL)"
+                )
+                await conn.execute(sql, memory_id, peer_id)
+            else:
+                await conn.execute(DELETE_MEMORY, memory_id)
 
     async def delete_by_source_path(
         self,
@@ -683,6 +743,8 @@ class PostgresDatabase(VectorDatabase):
         # Convert similarity threshold to distance threshold: 1 - similarity = distance
         distance_threshold = 1.0 - options.threshold
 
+        peer_id = self._effective_peer_id
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # When exact_search is True, disable the approximate DiskANN
@@ -691,12 +753,25 @@ class PostgresDatabase(VectorDatabase):
                 if options.exact_search:
                     await conn.execute("SET LOCAL enable_indexscan = off")
 
-                rows = await conn.fetch(
-                    SEARCH_MEMORIES_VECTOR,
-                    query_vector,
-                    distance_threshold,
-                    options.top_k,
-                )
+                if peer_id is not None:
+                    sql = (
+                        SEARCH_MEMORIES_VECTOR.rstrip().rstrip(";")
+                        + " AND (peer_id = $4::uuid OR peer_id IS NULL)"
+                    )
+                    rows = await conn.fetch(
+                        sql,
+                        query_vector,
+                        distance_threshold,
+                        options.top_k,
+                        peer_id,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        SEARCH_MEMORIES_VECTOR,
+                        query_vector,
+                        distance_threshold,
+                        options.top_k,
+                    )
 
             results = []
             for row in rows:
@@ -748,6 +823,8 @@ class PostgresDatabase(VectorDatabase):
         top_k_per_model = max(options.top_k * 2, config.rrf_top_k_per_model)
         distance_threshold = 1.0 - options.threshold
 
+        peer_id = self._effective_peer_id
+
         # Collect ranked results from each model space
         # model_name -> list of (memory_id, row, distance)
         per_model_results: dict[str, list[tuple[str, asyncpg.Record, float]]] = {}
@@ -761,12 +838,25 @@ class PostgresDatabase(VectorDatabase):
                 if sql is None:
                     continue
                 try:
-                    rows = await conn.fetch(
-                        sql,
-                        query_vec,
-                        distance_threshold,
-                        top_k_per_model,
-                    )
+                    if peer_id is not None:
+                        sql_filtered = (
+                            sql.rstrip().rstrip(";")
+                            + " AND (peer_id = $4::uuid OR peer_id IS NULL)"
+                        )
+                        rows = await conn.fetch(
+                            sql_filtered,
+                            query_vec,
+                            distance_threshold,
+                            top_k_per_model,
+                            peer_id,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            sql,
+                            query_vec,
+                            distance_threshold,
+                            top_k_per_model,
+                        )
                 except Exception:
                     # Column might not exist or vector is wrong dim — skip
                     continue
@@ -855,6 +945,11 @@ class PostgresDatabase(VectorDatabase):
             if filter.since:
                 query += f" AND created_at >= ${len(params) + 1}"
                 params.append(filter.since)
+
+        peer_id = self._effective_peer_id
+        if peer_id is not None:
+            query += f" AND (peer_id = ${len(params) + 1}::uuid OR peer_id IS NULL)"
+            params.append(peer_id)
 
         query += " ORDER BY created_at DESC LIMIT 100"
 

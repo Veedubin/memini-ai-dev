@@ -239,6 +239,19 @@ class MeminiConfig(BaseSettings):
         default=True, alias="MULTI_PEER_GUEST_SHARING"
     )
 
+    # RBAC / peer isolation (v1.2.0+)
+    # When True AND peer_id is set, query_memories filters results to only
+    # show memories belonging to the current peer (or with NULL peer_id).
+    # When False (default), all memories are visible to all users — open by
+    # default, lockdown is opt-in. peer_id is always written on inserts for
+    # tagging when set, regardless of enforcement.
+    peer_enforcement: bool = Field(default=False, alias="MEMINI_PEER_ENFORCEMENT")
+    # The peer identifier for this instance/project. When enforcement is on,
+    # only memories with this peer_id (or NULL peer_id) are returned.
+    # When enforcement is off, this is used for tagging writes but does not
+    # filter reads.
+    peer_id: str | None = Field(default=None, alias="MEMINI_PEER_ID")
+
     # Phase 4D: Dialectic settings
     dialectic_enabled: bool = Field(default=False, alias="DIALECTIC_ENABLED")
     dialectic_llm_provider: str = Field(
