@@ -6,6 +6,8 @@ long-running process per machine, a strict separation between storage and
 reasoning layers, and opt-in advanced features so a solo install never pays
 for capabilities it does not use.
 
+For version history and release notes, see [CHANGELOG.md](CHANGELOG.md).
+
 ## Components
 
 ### FastMCP server (`server.py`)
@@ -137,26 +139,55 @@ a regular memory so semantic search surfaces them naturally.
 ## Memory lifecycle
 
 <!-- mermaid: memory-lifecycle -->
-
 ```mermaid
-flowchart LR
-    A[Agent writes\nadd_memory] --> B[Embedding\nMiniLM 384 / BGE-M3 1024]
-    B --> C[PostgreSQL\nmemories table]
-    C --> D{Trust engine\non?}
-    D -- yes --> E[Trust 0.5\n+signals adjust]
-    D -- no --> F[Trust stays 0.5]
-    E --> G[Query path\nRRF fuses 384 + 1024]
-    F --> G
-    G --> H[Tiered loader\nL0 / L1 / L2 summaries]
-    H --> I[Agent reads\nquery_memories]
-    E --> J{Decay on?}
-    J -- yes --> K[Temporal decay\nlowers trust]
-    K --> L{Below 0.2?}
-    L -- yes --> M[Archived]
-    L -- no --> E
-    E --> N{Above 0.8?}
-    N -- yes --> O[Promoted to L1]
-    N -- no --> E
+flowchart TD
+    subgraph Write["Write Path: add_memory"]
+        W1["Agent calls<br/>add_memory"]
+        W2["Dedup check<br/>content hash"]
+        W3["Embed text<br/>MiniLM 384-dim<br/>(default)"]
+        W3B["Optional: BGE-M3<br/>1024-dim"]
+        W4["Insert into<br/>PostgreSQL/pgvector<br/>memories table"]
+        W5["Extract entities<br/>→ Knowledge Graph"]
+        W6["Trust = 0.5<br/>initial score"]
+    end
+
+    subgraph Read["Read Path: query_memories"]
+        R1["Agent calls<br/>query_memories"]
+        R2["Embed query<br/>same model"]
+        R3["Vector search<br/>pgvector cosine"]
+        R4["BM25 text search<br/>keyword match"]
+        R5["RRF k=60 fusion<br/>384 + 1024 lists"]
+        R6["Trust filter<br/>+ rank"]
+        R7["Return results<br/>to agent"]
+    end
+
+    subgraph Background["Background Engines"]
+        B1["Trust Engine<br/>signals adjust score<br/>agent_used: +0.05<br/>user_confirmed: +0.10<br/>agent_ignored: -0.05<br/>user_corrected: -0.15"]
+        B2["Decay Engine<br/>temporal trust decay<br/>sticky memories"]
+        B3["Consolidation<br/>merge similar<br/>memory pairs"]
+        B4["Tiered Loader<br/>L0: ~100 tokens<br/>L1: ~2K tokens<br/>L2: full context"]
+        B5["KG Entity Extraction<br/>named entities<br/>typed relationships"]
+    end
+
+    W1 --> W2 --> W3
+    W3 --> W3B
+    W3B --> W4
+    W4 --> W5
+    W4 --> W6
+    W6 --> B1
+    B1 --> B2
+    B2 --> B3
+    B3 --> B4
+    W5 --> B5
+
+    R1 --> R2 --> R3
+    R2 --> R4
+    R3 --> R5
+    R4 --> R5
+    R5 --> R6 --> R7
+
+    B4 -->|"injects at session start"| R1
+    B5 -->|"enriches"| R7
 ```
 
 ## Python API
