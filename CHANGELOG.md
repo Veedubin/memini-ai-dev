@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-07-21
+- **Docs**: ecosystem diagram in the README now shows memini-ai as the first-class MCP (registered in opencode.json) vs brokered servers.
+
 ## [1.2.3] - 2026-07-21
 - **Docs**: mkdocs-material site + gh-pages deploy workflow (https://veedubin.github.io/memini-ai-dev/).
 - **Docs**: memory-lifecycle mermaid diagram in docs/architecture.md; pruned stray memory_report*.md files; DESIGN-thought-chains.md moved into docs/design/.
