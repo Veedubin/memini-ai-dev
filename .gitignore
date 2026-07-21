@@ -34,3 +34,6 @@ archives/memini-postgres-pre-migration.dump
 
 # Audit / session dumps (may contain private reasoning)
 docs/audits/*.private.md
+
+# mkdocs build output
+site/

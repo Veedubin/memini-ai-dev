@@ -1,0 +1,117 @@
+site_name: memini-ai
+site_description: Local-first semantic memory server - vector search, trust scoring, tiered loading, knowledge graph; fully MCP-compatible
+site_url: https://veedubin.github.io/memini-ai-dev/
+repo_url: https://github.com/Veedubin/memini-ai-dev
+repo_name: Veedubin/memini-ai-dev
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+      minify_js: true
+      minify_css: true
+      htmlmin_opts:
+        remove_comments: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Configuration: configuration.md
+  - MCP Tools: mcp-tools.md
+  - Architecture: architecture.md
+  - Upgrading Embeddings: upgrading-embeddings.md
+  - Design:
+      - Thought Chains: design/thought-chains.md
+      - Dual-Model RRF: design/dual-model-rrf-architecture.md
+      - Embedded pgembed (v1.0.0): design/v1.0.0-embedded-pgembed-architecture.md
+      - Vision Memory (v0.8.0): design/vision-memory-architecture.md
+  - Changelog: changelog.md
+  - Archive:
+      - "v0.7.7 Audit": audits/v0.7.7-audit.md
+      - "v0.7.7 Validation": audits/v0.7.7-validation.md
+      - "pgvector Migration Plan": pgvector_migration.md
+      - "Reality Check": reality_check.md
+      - "Research: Memory Providers Cross-Verification": research/memory_providers_cross_verification.md
+      - "Research: Memory Providers Dim 01": research/memory_providers_dim01.md
+      - "Research: Memory Providers Dim 02": research/memory_providers_dim02.md
+      - "Research: Memory Providers Dim 03": research/memory_providers_dim03.md
+      - "Research: Memory Providers Dim 04": research/memory_providers_dim04.md
+      - "Research: Memory Providers Insight": research/memory_providers_insight.md
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Veedubin/memini-ai-dev
+      name: memini-ai-dev on GitHub
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/memini-ai-dev/
+      name: memini-ai-dev on PyPI
