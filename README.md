@@ -32,16 +32,19 @@ embedded PostgreSQL (no Docker) or an external Postgres + pgvector server.
 flowchart LR
     U[User] -->|prompt| OC[OpenCode TUI]
     OC -->|task| ORCH["Neuralgentics Orchestrator<br/>12 personas + routing matrix"]
-    ORCH -->|query / save| MEM[("memini-ai<br/>trust-weighted memory<br/>PostgreSQL + pgvector")]
+    ORCH -->|query / save| MEM[("memini-ai<br/>FIRST-CLASS MCP<br/>registered directly in opencode.json")]
+    MEM --> PG[("PostgreSQL + pgvector<br/>trust-weighted memory")]
     ORCH -->|dispatch| AG["Specialist sub-agents<br/>coder · architect · tester · writer"]
-    AG -->|"tool calls"| BRK["Neuralgentics Broker<br/>catalog · access control · audit"]
-    BRK --> MCP["MCP Servers<br/>searxng · github · videre · ssh"]
+    AG -->|"long-tail tool calls"| BRK["Neuralgentics Broker<br/>catalog · access control · audit"]
+    BRK --> MCP["Brokered MCP servers<br/>searxng · github · videre · ssh<br/>behind the broker · on demand"]
     AG -->|outbound HTTP| GW["Neuralgentics Gateway<br/>egress policy + audit"]
     GW --> NET["Internet / LLM APIs"]
     MEM --> WEB["Neuralgentics Web<br/>dashboards"]
     GW --> WEB
     BRK --> WEB
 ```
+memini-ai is a **first-class** MCP server — registered directly in `opencode.json` and always loaded. Every other MCP server sits **behind the broker**: catalog-advertised, access-controlled, and brokered on demand, which keeps long-tail tool schemas out of every prompt.
+
 
 See the [memory lifecycle diagram](https://veedubin.github.io/memini-ai-dev/architecture/)
 for details.
