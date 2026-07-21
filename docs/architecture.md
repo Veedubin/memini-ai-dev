@@ -6,7 +6,7 @@ long-running process per machine, a strict separation between storage and
 reasoning layers, and opt-in advanced features so a solo install never pays
 for capabilities it does not use.
 
-For version history and release notes, see [CHANGELOG.md](CHANGELOG.md).
+For version history and release notes, see [CHANGELOG.md](changelog.md).
 
 ## Components
 
