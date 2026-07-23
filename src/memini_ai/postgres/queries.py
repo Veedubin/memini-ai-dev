@@ -751,3 +751,51 @@ SET trust_score = $2
 WHERE memory_id = $1
 RETURNING memory_id, trust_score
 """
+
+# =============================================================================
+# Kanban Cards Queries (GitHub triage poller integration)
+# =============================================================================
+#
+# Plain Postgres rows — NO pgvector column. Cards are structured data
+# (issue/PR metadata + wrapped prompt text). The wrapped text is separately
+# embedded as a memory (source_type='github') via add_memory; the optional
+# memory_id FK links the card to that embedded memory.
+#
+# Idempotent re-polls: ON CONFLICT (repo, number, item_type) DO NOTHING +
+# RETURNING so the caller can tell whether the row was newly inserted or
+# already existed (RETURNING yields the row on insert, NULL on conflict).
+
+# Insert a kanban card. Idempotent via ON CONFLICT (repo, number, item_type)
+# DO NOTHING — re-polling the same issue/PR is a no-op. RETURNING yields the
+# full row on insert, or NULL on conflict (caller re-fetches by card_id).
+KANBAN_INSERT_CARD = """
+INSERT INTO kanban_cards (card_id, repo, number, item_type, status, url,
+                           title, author, wrapped_text, draft, memory_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid)
+ON CONFLICT (repo, number, item_type) DO NOTHING
+RETURNING card_id, repo, number, item_type, status, url, title, author,
+          wrapped_text, draft, memory_id, created_at, updated_at
+"""
+
+# Select a single card by its card_id (e.g. 'T-GH-001').
+KANBAN_GET_CARD_BY_ID = """
+SELECT card_id, repo, number, item_type, status, url, title, author,
+       wrapped_text, draft, memory_id, created_at, updated_at
+FROM kanban_cards
+WHERE card_id = $1
+"""
+
+# Update a card's status (kanban move). Bumps updated_at. Returns the full
+# updated row so the caller can confirm the new state.
+KANBAN_MOVE_CARD = """
+UPDATE kanban_cards
+SET status = $2, updated_at = NOW()
+WHERE card_id = $1
+RETURNING card_id, repo, number, item_type, status, url, title, author,
+          wrapped_text, draft, memory_id, created_at, updated_at
+"""
+
+# Count all kanban cards (for get_status observability).
+KANBAN_COUNT_CARDS = """
+SELECT count(*) AS total FROM kanban_cards
+"""

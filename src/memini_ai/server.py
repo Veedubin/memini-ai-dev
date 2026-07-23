@@ -161,6 +161,11 @@ class MCPServer:
         self._mcp.add_tool(self.get_security_summary)
         # v0.7.0: Dual-model RRF
         self._mcp.add_tool(self.elevate_memory_to_1024)
+        # Kanban cards (GitHub triage poller integration)
+        self._mcp.add_tool(self.kanban_add_card)
+        self._mcp.add_tool(self.kanban_move_card)
+        self._mcp.add_tool(self.kanban_list_cards)
+        self._mcp.add_tool(self.kanban_get_card)
 
     def _setup_signal_handlers(self) -> None:
         """Set up SIGINT/SIGTERM handlers."""
@@ -403,7 +408,7 @@ class MCPServer:
                 "success": False,
                 "id": "",
                 "message": str(e),
-                "error": "rate_limit_exceeded",
+                "error": f"rate_limit_exceeded: {e}",
             }
 
         # Phase 2.1: Content size validation
@@ -419,7 +424,7 @@ class MCPServer:
                 "success": False,
                 "id": "",
                 "message": str(e),
-                "error": "content_too_large",
+                "error": f"content_too_large: {e}",
             }
 
         # Phase 2.1: Content sanitization
@@ -476,8 +481,17 @@ class MCPServer:
                     error=str(e),
                 )
                 verified = None
+                # Preserve the readback exception for the error response
+                _readback_exc = e
+            else:
+                _readback_exc = None
 
             if verified is None:
+                readback_detail = (
+                    f" (readback error: {_readback_exc})"
+                    if _readback_exc is not None
+                    else ""
+                )
                 logger.error(
                     "add_memory_post_write_readback_failed",
                     memory_id=memory_id,
@@ -485,8 +499,8 @@ class MCPServer:
                 return {
                     "success": False,
                     "id": memory_id,
-                    "message": "Write succeeded but read-back failed",
-                    "error": "post_write_readback_failed",
+                    "message": f"Write succeeded but read-back failed{readback_detail}",
+                    "error": f"post_write_readback_failed{readback_detail}",
                 }
 
             # Phase 2.3: Audit log for memory mutation
@@ -512,13 +526,18 @@ class MCPServer:
             }
         except TimeoutError:
             logger.error("add_memory_timeout", content_length=len(content))
-            return {"success": False, "id": "", "message": "Operation timed out"}
+            return {
+                "success": False,
+                "id": "",
+                "message": "Operation timed out",
+                "error": "Operation timed out",
+            }
         except ValueError as e:
             # Duplicate content
-            return {"success": False, "id": "", "message": str(e)}
+            return {"success": False, "id": "", "message": str(e), "error": str(e)}
         except Exception as e:
             logger.error("add_memory_error", error=str(e))
-            return {"success": False, "id": "", "message": str(e)}
+            return {"success": False, "id": "", "message": str(e), "error": str(e)}
 
     # =========================================================================
     # TOOL: search_project
@@ -810,6 +829,7 @@ class MCPServer:
         # Best-effort row counts for observability (v0.7.3).
         memory_count = 0
         thoughts_count = 0
+        kanban_count = 0
         query_latency_ms: float | None = None
         if memory_ready and self._memory_system is not None:
             try:
@@ -834,6 +854,21 @@ class MCPServer:
                         )
                     except Exception:
                         thoughts_count = 0
+                # count_kanban_cards is best-effort — only supported on
+                # PostgresDatabase (the kanban_cards table is created at
+                # startup via _ensure_schema).
+                count_kanban_fn = getattr(
+                    self._memory_system._db, "count_kanban_cards", None
+                )
+                if count_kanban_fn is not None and asyncio.iscoroutinefunction(
+                    count_kanban_fn
+                ):
+                    try:
+                        kanban_count = await asyncio.wait_for(
+                            count_kanban_fn(), timeout=OPERATION_TIMEOUT
+                        )
+                    except Exception:
+                        kanban_count = 0
                 query_latency_ms = round((time.monotonic() - t0) * 1000.0, 2)
             except Exception as e:
                 logger.warning(
@@ -842,6 +877,7 @@ class MCPServer:
                 )
                 memory_count = 0
                 thoughts_count = 0
+                kanban_count = 0
 
         # Check model (always ready if we got here)
         model_ready = True
@@ -930,6 +966,7 @@ class MCPServer:
             "thoughtChainsReady": thought_chains_ready,
             "memoryCount": memory_count,
             "thoughtsCount": thoughts_count,
+            "kanbanCardCount": kanban_count,
             "queryLatencyMs": query_latency_ms,
             "modelName": model_name,
             "modelDimension": model_dimension,
@@ -1930,6 +1967,222 @@ class MCPServer:
             logger.error(
                 "elevate_memory_to_1024_error", memory_id=memory_id, error=str(e)
             )
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # TOOL: kanban_add_card / kanban_move_card / kanban_list_cards / kanban_get_card
+    # (GitHub triage poller integration)
+    # =========================================================================
+    #
+    # Kanban cards are plain Postgres rows (NO pgvector). The wrapped
+    # issue/PR text is separately embedded as a memory (source_type='github')
+    # via add_memory; the optional memory_id FK links the card to that
+    # embedded memory. These tools let the triage poller and agents
+    # create, move, list, and inspect cards.
+
+    async def kanban_add_card(
+        self,
+        card_id: str,
+        repo: str,
+        number: int,
+        item_type: str,
+        url: str,
+        title: str,
+        author: str | None = None,
+        wrapped_text: str | None = None,
+        draft: bool = False,
+        memory_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a kanban card for a GitHub issue/PR (idempotent on re-poll).
+
+        Uses ON CONFLICT (repo, number, item_type) DO NOTHING so re-polling
+        the same issue/PR is a no-op. Returns the created card (or the
+        existing card on conflict).
+
+        Args:
+            card_id: Stable card identifier (e.g. 'T-GH-001').
+            repo: GitHub repo name (e.g. 'memini-ai-dev').
+            number: GitHub issue/PR number.
+            item_type: One of 'bug', 'feature', 'question', 'docs', 'pr', 'triage'.
+            url: Full GitHub URL of the issue/PR.
+            title: Issue/PR title.
+            author: GitHub login of the author (optional).
+            wrapped_text: Prompt-wrapped card body (optional).
+            draft: True for PR drafts (default False).
+            memory_id: UUID of the linked embedded memory (optional).
+
+        Returns:
+            Dictionary with the card fields and an ``inserted`` boolean
+            (True if newly inserted, False if already existed).
+        """
+        try:
+            if self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            db = self._memory_system._db
+            if not hasattr(db, "add_kanban_card"):
+                return {
+                    "success": False,
+                    "error": "Underlying database does not support kanban cards",
+                }
+
+            result: dict[str, Any] = await asyncio.wait_for(
+                db.add_kanban_card(
+                    card_id=card_id,
+                    repo=repo,
+                    number=number,
+                    item_type=item_type,
+                    url=url,
+                    title=title,
+                    author=author,
+                    wrapped_text=wrapped_text,
+                    draft=draft,
+                    memory_id=memory_id,
+                ),
+                timeout=OPERATION_TIMEOUT,
+            )
+            result["success"] = True
+            return result
+        except TimeoutError:
+            logger.error("kanban_add_card_timeout", card_id=card_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("kanban_add_card_error", card_id=card_id, error=str(e))
+            return {"success": False, "error": str(e)}
+
+    async def kanban_move_card(
+        self,
+        card_id: str,
+        status: str,
+    ) -> dict[str, Any]:
+        """Move a kanban card to a new status.
+
+        Args:
+            card_id: Card identifier (e.g. 'T-GH-001').
+            status: New status — one of 'triage', 'todo', 'ready',
+                'running', 'blocked', 'done', 'archived'.
+
+        Returns:
+            Dictionary with the updated card fields, or an error if the
+            card was not found or the status was invalid.
+        """
+        try:
+            if self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            db = self._memory_system._db
+            if not hasattr(db, "move_kanban_card"):
+                return {
+                    "success": False,
+                    "error": "Underlying database does not support kanban cards",
+                }
+
+            result: dict[str, Any] | None = await asyncio.wait_for(
+                db.move_kanban_card(card_id, status),
+                timeout=OPERATION_TIMEOUT,
+            )
+            if result is None:
+                return {
+                    "success": False,
+                    "error": f"Card {card_id!r} not found",
+                }
+            result["success"] = True
+            return result
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except TimeoutError:
+            logger.error("kanban_move_card_timeout", card_id=card_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("kanban_move_card_error", card_id=card_id, error=str(e))
+            return {"success": False, "error": str(e)}
+
+    async def kanban_list_cards(
+        self,
+        status: str | None = None,
+        repo: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """List kanban cards with optional status/repo filters.
+
+        Args:
+            status: Optional status filter (triage|todo|ready|running|blocked|done|archived).
+            repo: Optional repo filter (e.g. 'memini-ai-dev').
+            limit: Max results (default 100).
+
+        Returns:
+            Dictionary with a ``cards`` list of card dicts and ``count``.
+        """
+        try:
+            if self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            db = self._memory_system._db
+            if not hasattr(db, "list_kanban_cards"):
+                return {
+                    "success": False,
+                    "error": "Underlying database does not support kanban cards",
+                }
+
+            cards: list[dict[str, Any]] = await asyncio.wait_for(
+                db.list_kanban_cards(status=status, repo=repo, limit=limit),
+                timeout=OPERATION_TIMEOUT,
+            )
+            return {"success": True, "cards": cards, "count": len(cards)}
+        except TimeoutError:
+            logger.error("kanban_list_cards_timeout")
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("kanban_list_cards_error", error=str(e))
+            return {"success": False, "error": str(e)}
+
+    async def kanban_get_card(
+        self,
+        card_id: str,
+    ) -> dict[str, Any]:
+        """Get a single kanban card by its card_id.
+
+        Args:
+            card_id: Card identifier (e.g. 'T-GH-001').
+
+        Returns:
+            Dictionary with the card fields, or a not-found error.
+        """
+        try:
+            if self._memory_system is None:
+                self._memory_system = await asyncio.wait_for(
+                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                )
+
+            db = self._memory_system._db
+            if not hasattr(db, "get_kanban_card"):
+                return {
+                    "success": False,
+                    "error": "Underlying database does not support kanban cards",
+                }
+
+            result: dict[str, Any] | None = await asyncio.wait_for(
+                db.get_kanban_card(card_id),
+                timeout=OPERATION_TIMEOUT,
+            )
+            if result is None:
+                return {
+                    "success": False,
+                    "error": f"Card {card_id!r} not found",
+                }
+            result["success"] = True
+            return result
+        except TimeoutError:
+            logger.error("kanban_get_card_timeout", card_id=card_id)
+            return {"success": False, "error": "Operation timed out"}
+        except Exception as e:
+            logger.error("kanban_get_card_error", card_id=card_id, error=str(e))
             return {"success": False, "error": str(e)}
 
     # =========================================================================
@@ -2953,10 +3206,10 @@ class MCPServer:
             )
         except TimeoutError:
             logger.error("add_thought_timeout")
-            return {"error": "Operation timed out"}
+            return {"success": False, "error": "Operation timed out"}
         except Exception as e:
             logger.error("add_thought_error", error=str(e))
-            return {"error": str(e)}
+            return {"success": False, "error": str(e)}
 
     # =========================================================================
     # TOOL: start_thought_chain (Phase 5 - Thought Chains)
@@ -2989,10 +3242,10 @@ class MCPServer:
             )
         except TimeoutError:
             logger.error("start_thought_chain_timeout")
-            return {"error": "Operation timed out"}
+            return {"success": False, "error": "Operation timed out"}
         except Exception as e:
             logger.error("start_thought_chain_error", error=str(e))
-            return {"error": str(e)}
+            return {"success": False, "error": str(e)}
 
     # =========================================================================
     # TOOL: get_thought_chain (Phase 5 - Thought Chains)
@@ -3018,10 +3271,10 @@ class MCPServer:
             )
         except TimeoutError:
             logger.error("get_thought_chain_timeout", chain_id=chain_id)
-            return {"error": "Operation timed out"}
+            return {"success": False, "error": "Operation timed out"}
         except Exception as e:
             logger.error("get_thought_chain_error", error=str(e), chain_id=chain_id)
-            return {"error": str(e)}
+            return {"success": False, "error": str(e)}
 
     # =========================================================================
     # TOOL: get_related_chains (Phase 5 - Thought Chains)
@@ -3053,10 +3306,15 @@ class MCPServer:
             )
         except TimeoutError:
             logger.error("get_related_chains_timeout", query=query)
-            return {"count": 0, "chains": [], "error": "Operation timed out"}
+            return {
+                "success": False,
+                "count": 0,
+                "chains": [],
+                "error": "Operation timed out",
+            }
         except Exception as e:
             logger.error("get_related_chains_error", error=str(e), query=query)
-            return {"count": 0, "chains": [], "error": str(e)}
+            return {"success": False, "count": 0, "chains": [], "error": str(e)}
 
     # =========================================================================
     # TOOL: revise_thought (Phase 5 - Thought Chains)

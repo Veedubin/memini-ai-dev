@@ -22,6 +22,8 @@ class MemorySourceType(StrEnum):
     boomerang = "boomerang"
     project = "project"
     thought = "thought"
+    image = "image"
+    github = "github"
 
 
 class TrustLevel(StrEnum):

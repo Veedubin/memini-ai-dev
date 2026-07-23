@@ -59,6 +59,10 @@ from memini_ai.postgres.queries import (
     INSERT_MEMORY_DELTA,
     INSERT_MEMORY_IMAGE,
     INSERT_MEMORY_WITH_MODEL,
+    KANBAN_COUNT_CARDS,
+    KANBAN_GET_CARD_BY_ID,
+    KANBAN_INSERT_CARD,
+    KANBAN_MOVE_CARD,
     SEARCH_MEMORIES_1024_VECTOR,
     SEARCH_MEMORIES_BGE_M3,
     SEARCH_MEMORIES_IMAGE,
@@ -81,6 +85,14 @@ from memini_ai.utils.logger import logger
 
 if TYPE_CHECKING:
     pass
+
+
+# Valid status values for kanban cards (mirrors the DB CHECK constraint).
+# Used by move_kanban_card for pre-flight validation so the caller gets a
+# clear error before hitting the DB.
+KANBAN_VALID_STATUSES = frozenset(
+    {"triage", "todo", "ready", "running", "blocked", "done", "archived"}
+)
 
 
 class PostgresDatabase(VectorDatabase):
@@ -1898,6 +1910,238 @@ class PostgresDatabase(VectorDatabase):
             "bge_m3_count": int(row["bge_m3_count"]),
             "model_tracked_count": int(row["model_tracked_count"]),
         }
+
+    # =========================================================================
+    # Kanban Cards (GitHub triage poller integration)
+    # =========================================================================
+    #
+    # Plain Postgres rows — NO pgvector. Cards are structured data. The
+    # optional memory_id FK links a card to the embedded memory holding the
+    # wrapped issue/PR text (source_type='github'). All methods return plain
+    # dicts (matching the get_memory_1024_by_memory_id pattern) so callers
+    # don't need a pydantic model.
+
+    def _row_to_kanban_card(self, row: asyncpg.Record) -> dict[str, Any]:
+        """Convert a kanban_cards row to a plain dict.
+
+        Datetimes are returned as-is (asyncpg returns timezone-aware
+        datetime objects); memory_id is normalized to a string or None.
+        """
+        memory_id = row["memory_id"]
+        return {
+            "card_id": row["card_id"],
+            "repo": row["repo"],
+            "number": int(row["number"]),
+            "item_type": row["item_type"],
+            "status": row["status"],
+            "url": row["url"],
+            "title": row["title"],
+            "author": row["author"],
+            "wrapped_text": row["wrapped_text"],
+            "draft": bool(row["draft"]),
+            "memory_id": str(memory_id) if memory_id is not None else None,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    async def add_kanban_card(
+        self,
+        card_id: str,
+        repo: str,
+        number: int,
+        item_type: str,
+        url: str,
+        title: str,
+        author: str | None = None,
+        wrapped_text: str | None = None,
+        draft: bool = False,
+        memory_id: str | None = None,
+        status: str = "triage",
+    ) -> dict[str, Any]:
+        """Insert a kanban card (idempotent on re-poll).
+
+        Uses ON CONFLICT (repo, number, item_type) DO NOTHING so re-polling
+        the same GitHub issue/PR is a no-op. When the insert is a no-op
+        (conflict), the existing card is re-fetched by card_id and returned
+        so the caller always gets the current state of the card.
+
+        Args:
+            card_id: Stable card identifier (e.g. 'T-GH-001').
+            repo: GitHub repo name (e.g. 'memini-ai-dev').
+            number: GitHub issue/PR number.
+            item_type: One of bug|feature|question|docs|pr|triage.
+            url: Full GitHub URL of the issue/PR.
+            title: Issue/PR title.
+            author: GitHub login of the author (optional).
+            wrapped_text: Prompt-wrapped card body (optional).
+            draft: True for PR drafts (default False).
+            memory_id: UUID of the linked embedded memory (optional).
+            status: Initial kanban status (default 'triage').
+
+        Returns:
+            Dict with the card fields plus an ``inserted`` boolean
+            (True if newly inserted, False if already existed).
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                KANBAN_INSERT_CARD,
+                card_id,
+                repo,
+                int(number),
+                item_type,
+                status,
+                url,
+                title,
+                author,
+                wrapped_text,
+                draft,
+                memory_id,
+            )
+
+        if row is not None:
+            card = self._row_to_kanban_card(row)
+            card["inserted"] = True
+            return card
+
+        # Conflict — re-poll of an existing card. Fetch the existing row.
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow(KANBAN_GET_CARD_BY_ID, card_id)
+        if existing is None:
+            # Edge case: conflict was on (repo, number, item_type) but a
+            # DIFFERENT card_id. Re-fetch by the natural key.
+            async with pool.acquire() as conn:
+                existing = await conn.fetchrow(
+                    """
+                    SELECT card_id, repo, number, item_type, status, url, title,
+                           author, wrapped_text, draft, memory_id, created_at,
+                           updated_at
+                    FROM kanban_cards
+                    WHERE repo = $1 AND number = $2 AND item_type = $3
+                    """,
+                    repo,
+                    int(number),
+                    item_type,
+                )
+        if existing is None:
+            return {
+                "card_id": card_id,
+                "inserted": False,
+                "error": "card exists under a different card_id and could not be re-fetched",
+            }
+        card = self._row_to_kanban_card(existing)
+        card["inserted"] = False
+        return card
+
+    async def move_kanban_card(
+        self, card_id: str, new_status: str
+    ) -> dict[str, Any] | None:
+        """Update a card's kanban status.
+
+        Args:
+            card_id: Card identifier.
+            new_status: One of triage|todo|ready|running|blocked|done|archived.
+
+        Returns:
+            Updated card dict, or None if the card was not found.
+        """
+        if new_status not in KANBAN_VALID_STATUSES:
+            raise ValueError(
+                f"Invalid kanban status {new_status!r}. "
+                f"Must be one of: {sorted(KANBAN_VALID_STATUSES)}"
+            )
+
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(KANBAN_MOVE_CARD, card_id, new_status)
+
+        if row is None:
+            return None
+        return self._row_to_kanban_card(row)
+
+    async def list_kanban_cards(
+        self,
+        status: str | None = None,
+        repo: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List kanban cards with optional status/repo filters.
+
+        Results are ordered by created_at ASC (oldest first) so the poller
+        and UIs see cards in insertion order.
+
+        Args:
+            status: Optional status filter.
+            repo: Optional repo filter.
+            limit: Max results (default 100).
+
+        Returns:
+            List of card dicts.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        query = """
+            SELECT card_id, repo, number, item_type, status, url, title, author,
+                   wrapped_text, draft, memory_id, created_at, updated_at
+            FROM kanban_cards
+        """
+        params: list[Any] = []
+        where_parts: list[str] = []
+
+        if status is not None:
+            where_parts.append(f"status = ${len(params) + 1}")
+            params.append(status)
+        if repo is not None:
+            where_parts.append(f"repo = ${len(params) + 1}")
+            params.append(repo)
+
+        if where_parts:
+            query += " WHERE " + " AND ".join(where_parts)
+
+        query += f" ORDER BY created_at ASC LIMIT ${len(params) + 1}"
+        params.append(int(limit))
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+
+        return [self._row_to_kanban_card(row) for row in rows]
+
+    async def get_kanban_card(self, card_id: str) -> dict[str, Any] | None:
+        """Get a single kanban card by its card_id.
+
+        Args:
+            card_id: Card identifier (e.g. 'T-GH-001').
+
+        Returns:
+            Card dict, or None if not found.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(KANBAN_GET_CARD_BY_ID, card_id)
+
+        if row is None:
+            return None
+        return self._row_to_kanban_card(row)
+
+    async def count_kanban_cards(self) -> int:
+        """Count total kanban cards (for get_status observability).
+
+        Returns:
+            Total number of kanban cards.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(KANBAN_COUNT_CARDS)
+        return int(row["total"]) if row else 0
 
 
 def create_postgres_database(

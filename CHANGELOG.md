@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-22
+- **Feature: Kanban** — New `kanban_cards` table (plain Postgres rows, no pgvector column) + 4 MCP tools: `kanban_add_card`, `kanban_move_card`, `kanban_list_cards`, `kanban_get_card`. `get_status` now reports `kanbanCardCount`. 7 valid statuses (`triage`, `todo`, `ready`, `running`, `blocked`, `done`, `archived`); unique constraint on `(repo, external_id)` makes the `add` operation idempotent. Backed by a dedicated `DatabaseKanbanMixin` (`add_kanban_card`, `move_kanban_card`, `list_kanban_cards`, `get_kanban_card`, `count_kanban_cards`).
+- **Fix: `sourceType='github'` silently rejected** — The `memories_source_type_check` CHECK constraint previously did not list `github`, so any `add_memory` call from the GitHub triage poller failed with a constraint violation. `MemorySourceType` enum now includes both `github` and `image` (the latter was already accepted at the DB layer but missing from the enum). For new deployments, `_ensure_schema()` auto-extends the constraint at startup. **For existing deployments, run migration `000009_add_github_source_type.sql` once on the live database** (idempotent `DROP IF EXISTS` + `ADD`; the new constraint is a strict superset of the old one, so all existing rows still satisfy it).
+- **Improvement: Fail-loud error propagation** — All 14 write-tool wrappers in `server.py` now return `{"success": False, "error": "<real str(e)>"}` on DB failure instead of silently swallowing exceptions. Kanban write tools use a dedicated `_kanban_db_error()` formatter for richer messages (e.g. invalid status, not found).
+- **Tests**: 24 new tests in `tests/test_kanban.py` covering schema constants, source-type enum, kanban tool wrappers, and `get_status.kanbanCardCount` (11 DB-dependent tests are skipped on the default CI runner; they pass against a live `memini-postgres` instance).
+
 ## [1.2.4] - 2026-07-21
 - **Docs**: ecosystem diagram in the README now shows memini-ai as the first-class MCP (registered in opencode.json) vs brokered servers.
 

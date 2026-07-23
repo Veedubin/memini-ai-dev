@@ -25,6 +25,7 @@ TABLE_TRUST_ADJUSTMENTS = "trust_adjustments"
 TABLE_THOUGHT_CHAINS = "thought_chains"
 TABLE_THOUGHTS = "thoughts"
 TABLE_AUDIT_LOG = "audit_log"
+TABLE_KANBAN_CARDS = "kanban_cards"
 
 # SQL for creating all extensions
 # pgvector is required; vectorscale is optional (fall back to HNSW if unavailable)
@@ -247,11 +248,11 @@ CREATE INDEX IF NOT EXISTS idx_memories_image_trust ON memories_image(trust_scor
 CREATE INDEX IF NOT EXISTS idx_memories_image_created_at ON memories_image(created_at DESC);
 """
 
-# SQL to extend memories source_type CHECK constraint to include 'image'
+# SQL to extend memories source_type CHECK constraint to include 'image' + 'github'
 SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK_IMAGE = """
 ALTER TABLE memories DROP CONSTRAINT IF EXISTS memories_source_type_check;
 ALTER TABLE memories ADD CONSTRAINT memories_source_type_check
-    CHECK (source_type IN ('session', 'file', 'web', 'boomerang', 'project', 'thought', 'image'));
+    CHECK (source_type IN ('session', 'file', 'web', 'boomerang', 'project', 'thought', 'image', 'github'));
 """
 
 # SQL for memory_relationships table
@@ -542,11 +543,55 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_session_id ON audit_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created_at_brin ON audit_log USING BRIN(created_at);
 """
 
-# SQL to update memories source_type CHECK constraint to include 'thought'
+# SQL to update memories source_type CHECK constraint to include 'thought' + 'image' + 'github'
 SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK = """
 ALTER TABLE memories DROP CONSTRAINT IF EXISTS memories_source_type_check;
 ALTER TABLE memories ADD CONSTRAINT memories_source_type_check
-    CHECK (source_type IN ('session', 'file', 'web', 'boomerang', 'project', 'thought'));
+    CHECK (source_type IN ('session', 'file', 'web', 'boomerang', 'project', 'thought', 'image', 'github'));
+"""
+
+# =============================================================================
+# kanban_cards table (GitHub triage poller integration)
+# =============================================================================
+#
+# Plain Postgres rows — NO pgvector column. Cards are structured data
+# (issue/PR metadata + wrapped prompt text), not embeddings. The wrapped
+# issue/PR text is separately embedded as a memory (source_type='github')
+# via add_memory; the optional memory_id FK links the card to that
+# embedded memory (ticket ↔ issue ↔ memory linkage).
+#
+# Created at memini-ai startup (idempotent IF NOT EXISTS). The GitHub
+# triage poller (scripts/gh-triage-poller.py) inserts cards here on each
+# poll. ON CONFLICT (repo, number, item_type) DO NOTHING makes re-polls
+# idempotent.
+
+SQL_CREATE_KANBAN_CARDS_TABLE = """
+CREATE TABLE IF NOT EXISTS kanban_cards (
+    card_id      TEXT PRIMARY KEY,
+    repo         TEXT NOT NULL,
+    number       INTEGER NOT NULL,
+    item_type    TEXT NOT NULL CHECK (
+        item_type IN ('bug', 'feature', 'question', 'docs', 'pr', 'triage')
+    ),
+    status       TEXT NOT NULL DEFAULT 'triage' CHECK (
+        status IN ('triage', 'todo', 'ready', 'running', 'blocked', 'done', 'archived')
+    ),
+    url          TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    author       TEXT,
+    wrapped_text TEXT,
+    draft        BOOLEAN DEFAULT FALSE,
+    memory_id    UUID REFERENCES memories(id) ON DELETE SET NULL,
+    created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    UNIQUE (repo, number, item_type)
+);
+"""
+
+SQL_CREATE_KANBAN_CARDS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_kanban_cards_status ON kanban_cards (status);
+CREATE INDEX IF NOT EXISTS idx_kanban_cards_repo ON kanban_cards (repo);
+CREATE INDEX IF NOT EXISTS idx_kanban_cards_created ON kanban_cards (created_at);
 """
 
 
@@ -625,7 +670,10 @@ def get_schema_sql(use_vectorscale: bool = True) -> str:
             # Phase 2.3: Audit Log
             SQL_CREATE_AUDIT_LOG_TABLE,
             SQL_CREATE_AUDIT_LOG_INDEXES,
-            # Update memories source_type CHECK constraint (includes 'thought' + 'image')
+            # GitHub triage poller: kanban cards (plain rows, FK to memories)
+            SQL_CREATE_KANBAN_CARDS_TABLE,
+            SQL_CREATE_KANBAN_CARDS_INDEXES,
+            # Update memories source_type CHECK constraint (includes 'thought' + 'image' + 'github')
             SQL_UPDATE_MEMORIES_SOURCE_TYPE_CHECK_IMAGE,
         ]
     )

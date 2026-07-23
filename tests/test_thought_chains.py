@@ -201,7 +201,16 @@ class TestMemorySourceType:
 
     def test_all_source_types(self):
         """Test all source types are present."""
-        expected = {"session", "file", "web", "boomerang", "project", "thought"}
+        expected = {
+            "session",
+            "file",
+            "web",
+            "boomerang",
+            "project",
+            "thought",
+            "image",
+            "github",
+        }
         actual = {e.value for e in MemorySourceType}
         assert expected == actual
 
