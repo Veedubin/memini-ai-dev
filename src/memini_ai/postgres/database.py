@@ -95,6 +95,36 @@ KANBAN_VALID_STATUSES = frozenset(
 )
 
 
+def _to_float_list(v: Any) -> list[float]:
+    """Normalize a vector value from the database to ``list[float]``.
+
+    Handles all representations that pgvector/asyncpg may return across
+    versions:
+
+    * **pgvector ≥ 0.5.0**: ``Vector`` object (not iterable; has
+      ``to_list()``).
+    * **pgvector < 0.5.0**: ``list[float]`` (directly iterable).
+    * **String format**: ``'[1,2,3]'`` (pgvector text representation,
+      returned when no binary codec is registered).
+    * **numpy.ndarray**: has ``.tolist()``.
+    * **list / tuple / array.array**: directly iterable via ``list()``.
+    """
+    if v is None:
+        return []  # caller should check None before calling
+    # pgvector Vector (0.5.0+) — not iterable but has to_list()
+    if hasattr(v, "to_list") and not isinstance(v, (list, tuple)):
+        return [float(x) for x in v.to_list()]
+    # numpy ndarray
+    if hasattr(v, "tolist") and not isinstance(v, (list, tuple)):
+        return [float(x) for x in v.tolist()]
+    # String format '[1,2,3]'
+    if isinstance(v, str):
+        parsed = json.loads(v)
+        return [float(x) for x in parsed]
+    # list, tuple, array.array, or any iterable
+    return [float(x) for x in v]
+
+
 class PostgresDatabase(VectorDatabase):
     """PostgreSQL/pgvector implementation of VectorDatabase.
 
@@ -406,16 +436,11 @@ class PostgresDatabase(VectorDatabase):
         score: float | None = None,
     ) -> MemoryEntry:
         """Convert database row to MemoryEntry."""
-        # Parse vector from string format if needed (pgvector returns string '[0.1, 0.2, ...]')
+        # Normalize the embedding to list[float]. pgvector 0.5.0+ returns a
+        # Vector object (not iterable); older versions return list or str.
+        # _to_float_list handles all representations transparently.
         embedding = row["embedding"]
-        if embedding is not None:
-            if isinstance(embedding, str):
-                # Parse string format '[0.1, 0.2, ...]' to list
-                vector = json.loads(embedding)
-            else:
-                vector = list(embedding)
-        else:
-            vector = None
+        vector = _to_float_list(embedding) if embedding is not None else None
 
         data = {
             "id": str(row["id"]),
@@ -1548,10 +1573,8 @@ class PostgresDatabase(VectorDatabase):
         if row is None:
             return None
         embedding = row["embedding"]
-        if isinstance(embedding, str):
-            embedding = json.loads(embedding)
-        elif embedding is not None:
-            embedding = list(embedding)
+        if embedding is not None:
+            embedding = _to_float_list(embedding)
         return {
             "id": str(row["id"]),
             "memory_id": str(row["memory_id"]),

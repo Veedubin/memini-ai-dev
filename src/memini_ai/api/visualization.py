@@ -9,6 +9,7 @@ Provides REST endpoints for:
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -18,26 +19,33 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from memini_ai.api.d3_template import generate_live_html
-from memini_ai.config import get_config
-from memini_ai.postgres.database import PostgresDatabase
+from memini_ai.memory.database import create_database
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage application lifecycle - init and cleanup."""
-    # Startup: Initialize PostgreSQL connection
-    config = get_config()
-    if config.db_url:
-        app.state.db = PostgresDatabase(config.db_url)
+    """Manage application lifecycle - init and cleanup.
+
+    Uses ``create_database()`` so the visualization API works in both
+    pgembed (embedded PostgreSQL) and postgres-external modes. Previously
+    this checked ``config.db_url`` directly, which was empty in pgembed
+    mode — causing every endpoint to return "Set MEMINI_DB_URL" even
+    though the embedded DB was running.
+    """
+    # Startup: Initialize database via the factory (handles pgembed +
+    # postgres-external transparently).
+    try:
+        app.state.db = create_database()
         await app.state.db.initialize()
-    else:
+    except Exception:
         app.state.db = None
 
     yield
 
-    # Shutdown: Close PostgreSQL connection
+    # Shutdown: Close database connection
     if app.state.db:
-        await app.state.db.close()
+        with contextlib.suppress(Exception):
+            await app.state.db.close()
 
 
 def create_app() -> FastAPI:
@@ -76,7 +84,7 @@ def create_app() -> FastAPI:
         if not app.state.db:
             raise HTTPException(
                 status_code=503,
-                detail="PostgreSQL not configured. Set MEMINI_DB_URL environment variable.",
+                detail="Database not configured. Check MEMINI_VECTOR_BACKEND and MEMINI_DB_URL settings.",
             )
 
         try:
@@ -97,7 +105,7 @@ def create_app() -> FastAPI:
         if not app.state.db:
             raise HTTPException(
                 status_code=503,
-                detail="PostgreSQL not configured. Set MEMINI_DB_URL environment variable.",
+                detail="Database not configured. Check MEMINI_VECTOR_BACKEND and MEMINI_DB_URL settings.",
             )
 
         try:
@@ -124,7 +132,7 @@ def create_app() -> FastAPI:
         if not app.state.db:
             raise HTTPException(
                 status_code=503,
-                detail="PostgreSQL not configured. Set MEMINI_DB_URL environment variable.",
+                detail="Database not configured. Check MEMINI_VECTOR_BACKEND and MEMINI_DB_URL settings.",
             )
 
         try:
