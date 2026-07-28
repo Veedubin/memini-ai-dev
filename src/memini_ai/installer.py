@@ -65,6 +65,9 @@ class InstallConfig:
     team_user: str | None
     team_password: str | None
     team_sslmode: str  # "prefer", "require", "verify-ca", "verify-full", "disable"
+    team_sslrootcert: (
+        str | None
+    )  # path to PEM CA cert (only when verify-ca/verify-full)
     team_new_db: bool  # True → admin/bootstrap flow, False → existing DB
     team_admin_user: str | None  # admin role (RBAC bootstrap)
     team_admin_password: str | None  # admin password (RBAC bootstrap)
@@ -477,6 +480,7 @@ async def create_admin_and_db(
     *,
     db_name: str = _DEFAULT_DB_NAME,
     sslmode: str = "prefer",
+    sslrootcert: str | None = None,
 ) -> str:
     """Create the ``memini_admin`` role + DB + extensions + schema.
 
@@ -488,8 +492,14 @@ async def create_admin_and_db(
     """
     import asyncpg
 
-    super_dsn = f"postgresql://postgres:{superuser_password}@{host}:{port}/postgres" + (
-        f"?sslmode={sslmode}" if sslmode != "disable" else ""
+    super_dsn = build_team_dsn(
+        host,
+        str(port),
+        "postgres",
+        "postgres",
+        superuser_password,
+        sslmode=sslmode,
+        sslrootcert=sslrootcert,
     )
     conn = await asyncpg.connect(super_dsn)
     try:
@@ -509,9 +519,14 @@ async def create_admin_and_db(
     finally:
         await conn.close()
 
-    admin_dsn = (
-        f"postgresql://{_ADMIN_ROLE}:{admin_password}@{host}:{port}/{db_name}"
-        + (f"?sslmode={sslmode}" if sslmode != "disable" else "")
+    admin_dsn = build_team_dsn(
+        host,
+        str(port),
+        db_name,
+        _ADMIN_ROLE,
+        admin_password,
+        sslmode=sslmode,
+        sslrootcert=sslrootcert,
     )
     conn = await asyncpg.connect(admin_dsn)
     try:
@@ -625,6 +640,7 @@ def write_admin_env(
     *,
     db_name: str = _DEFAULT_DB_NAME,
     sslmode: str = "prefer",
+    sslrootcert: str | None = None,
 ) -> None:
     """Write admin credentials to ``config_dir/.env`` with chmod 600.
 
@@ -642,6 +658,8 @@ def write_admin_env(
         f"MEMINI_DB_NAME={db_name}\n"
         f"MEMINI_DB_SSLMODE={sslmode}\n"
     )
+    if sslrootcert:
+        content += f"DB_SSLROOTCERT={sslrootcert}\n"
     _write_env_file(env_path, content)
     print(f"  ✓ Wrote {env_path} (admin credentials, chmod 600)")
 
@@ -655,6 +673,7 @@ def write_project_env(
     db_name: str,
     *,
     sslmode: str = "prefer",
+    sslrootcert: str | None = None,
 ) -> None:
     """Write project credentials to ``config_dir/.env`` with chmod 600.
 
@@ -673,6 +692,8 @@ def write_project_env(
         f"MEMINI_DB_SSLMODE={sslmode}\n"
         f"MEMINI_PEER_ID={role_name}\n"
     )
+    if sslrootcert:
+        content += f"DB_SSLROOTCERT={sslrootcert}\n"
     _write_env_file(env_path, content)
     print(f"  ✓ Wrote {env_path} (project credentials, chmod 600)")
 
@@ -682,8 +703,8 @@ def read_admin_credentials() -> dict[str, str] | None:
 
     Returns a dict with keys ``MEMINI_ADMIN_USER``, ``MEMINI_ADMIN_PASSWORD``,
     ``MEMINI_DB_HOST``, ``MEMINI_DB_PORT``, ``MEMINI_DB_NAME``,
-    ``MEMINI_DB_SSLMODE`` (if present), or ``None`` if the file is missing
-    or doesn't contain admin credentials.
+    ``MEMINI_DB_SSLMODE`` (if present), ``DB_SSLROOTCERT`` (if present), or
+    ``None`` if the file is missing or doesn't contain admin credentials.
     """
     homedir = get_homedir_config_path()
     env_path = homedir / ".env"
@@ -703,7 +724,9 @@ def read_admin_credentials() -> dict[str, str] | None:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
-        if key.startswith("MEMINI_"):
+        # MEMINI_* keys + DB_SSLROOTCERT (the config.py alias for the CA path,
+        # written by write_admin_env when sslrootcert is provided).
+        if key.startswith("MEMINI_") or key == "DB_SSLROOTCERT":
             creds[key] = value
     if "MEMINI_ADMIN_USER" not in creds or "MEMINI_ADMIN_PASSWORD" not in creds:
         return None
@@ -711,17 +734,27 @@ def read_admin_credentials() -> dict[str, str] | None:
 
 
 def build_admin_dsn(creds: dict[str, str]) -> str:
-    """Build an admin DSN from a credentials dict (from read_admin_credentials)."""
+    """Build an admin DSN from a credentials dict (from read_admin_credentials).
+
+    Honors ``MEMINI_DB_SSLMODE`` and ``DB_SSLROOTCERT`` when present, matching
+    what ``write_admin_env`` writes and what ``config.py`` reads.
+    """
     user = creds.get("MEMINI_ADMIN_USER", _ADMIN_ROLE)
     password = creds.get("MEMINI_ADMIN_PASSWORD", "")
     host = creds.get("MEMINI_DB_HOST", "localhost")
     port = creds.get("MEMINI_DB_PORT", "5432")
     db_name = creds.get("MEMINI_DB_NAME", _DEFAULT_DB_NAME)
     sslmode = creds.get("MEMINI_DB_SSLMODE", "prefer")
-    dsn = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-    if sslmode != "disable":
-        dsn += f"?sslmode={sslmode}"
-    return dsn
+    sslrootcert = creds.get("DB_SSLROOTCERT") or None
+    return build_team_dsn(
+        host,
+        port,
+        db_name,
+        user,
+        password,
+        sslmode=sslmode,
+        sslrootcert=sslrootcert,
+    )
 
 
 async def check_db_exists(admin_dsn: str) -> bool:
@@ -817,6 +850,7 @@ def _default_config() -> InstallConfig:
         team_user=None,
         team_password=None,
         team_sslmode="prefer",
+        team_sslrootcert=None,
         team_new_db=False,
         team_admin_user=None,
         team_admin_password=None,
@@ -838,14 +872,15 @@ def _default_config() -> InstallConfig:
 
 
 def _prompt_team_connection() -> tuple[
-    str | None, str | None, str | None, str | None, str | None, bool, str
+    str | None, str | None, str | None, str | None, str | None, bool, str, str | None
 ]:
-    """Prompt for team PostgreSQL connection details + SSL mode.
+    """Prompt for team PostgreSQL connection details + SSL mode + CA cert.
 
-    Returns ``(host, port, database, user, password, new_db, sslmode)``.
+    Returns ``(host, port, database, user, password, new_db, sslmode, sslrootcert)``.
     ``new_db`` is True when the user said the database doesn't exist yet
     (the admin/bootstrap flow). ``sslmode`` is one of prefer/require/verify-ca/
-    verify-full/disable.
+    verify-full/disable. ``sslrootcert`` is a validated PEM path when the
+    user chose verify-ca or verify-full AND provided a CA path, otherwise None.
     """
     print("\n  Team PostgreSQL server connection:")
     host = _prompt_optional("    Host [localhost]: ") or "localhost"
@@ -857,7 +892,34 @@ def _prompt_team_connection() -> tuple[
         "    Is this a new database? (admin/bootstrap flow)", default=False
     )
     sslmode = _prompt_ssl_mode()
-    return host, port, database, user, password, new_db, sslmode
+    sslrootcert = _prompt_ca_cert(sslmode)
+    return host, port, database, user, password, new_db, sslmode, sslrootcert
+
+
+def _prompt_ca_cert(sslmode: str) -> str | None:
+    """Prompt for an optional CA certificate path when verify-ca/verify-full.
+
+    Returns a validated PEM path, or ``None`` when the user skips or when the
+    sslmode does not require a CA (prefer/require/disable). Loops on invalid
+    input so the user can re-type the path without restarting the prompt flow.
+    """
+    if sslmode not in {"verify-ca", "verify-full"}:
+        return None
+    print(
+        "\n  A CA certificate is recommended for "
+        f"{sslmode!r} to verify the server's identity."
+    )
+    if not _prompt_yes_no("    Provide a CA cert path now", default=True):
+        return None
+    while True:
+        raw = _prompt_optional("    CA cert path (PEM): ")
+        if not raw:
+            return None
+        try:
+            return validate_ca_cert(raw)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"    ✗ {exc}")
+            print("    Try again, or press Enter to skip (no sslrootcert).")
 
 
 def _prompt_ssl_mode() -> str:
@@ -880,6 +942,186 @@ def _prompt_ssl_mode() -> str:
         "4": "verify-full",
         "5": "disable",
     }[choice]
+
+
+# ── TLS: CA cert validation + connection test (T-TLS-001) ────────────────────
+
+
+_PEM_CERT_HEADER = "-----BEGIN CERTIFICATE-----"
+
+
+def validate_ca_cert(path: str) -> str:
+    """Validate that ``path`` exists and is a PEM-encoded certificate file.
+
+    Returns the absolute path on success. Raises ``ValueError`` with a clear
+    message when the path is missing, not a file, or not PEM-encoded.
+
+    We only check for the PEM header (the most common format for CA bundles).
+    We do NOT parse the cert with ``ssl``/``cryptography`` — that would add a
+    hard dependency and reject valid-but-unusual encodings. The connection
+    test (``test_team_connection``) is the real validation.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"CA cert path does not exist: {path}")
+    if not p.is_file():
+        raise ValueError(f"CA cert path is not a file: {path}")
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise OSError(f"Could not read CA cert file {path}: {exc}") from exc
+    if _PEM_CERT_HEADER not in text:
+        raise ValueError(
+            f"CA cert file {path} does not appear to be PEM-encoded "
+            f"(no '{_PEM_CERT_HEADER}' header found). "
+            "PostgreSQL sslrootcert requires a PEM file."
+        )
+    return str(p.resolve())
+
+
+@dataclass
+class ConnectionTestResult:
+    """Result of ``test_team_connection`` — structured success/failure."""
+
+    success: bool
+    sslmode: str
+    sslrootcert: str | None
+    dsn: str
+    error: str | None
+
+
+def build_team_dsn(
+    host: str,
+    port: str,
+    database: str,
+    user: str,
+    password: str | None,
+    *,
+    sslmode: str = "prefer",
+    sslrootcert: str | None = None,
+) -> str:
+    """Build a PostgreSQL DSN with optional ``sslmode`` + ``sslrootcert``.
+
+    ``sslrootcert`` is appended to the query string when provided and the
+    sslmode is not ``disable``. This mirrors what ``config.py`` reads
+    (``DB_SSLMODE`` + ``DB_SSLROOTCERT``) and what ``database.py``'s
+    ``_build_ssl_context`` uses to construct the SSL context.
+    """
+    dsn = f"postgresql://{user}:{password or ''}@{host}:{port}/{database}"
+    if sslmode == "disable":
+        return dsn
+    params: list[str] = [f"sslmode={sslmode}"]
+    if sslrootcert:
+        params.append(f"sslrootcert={sslrootcert}")
+    return f"{dsn}?{'&'.join(params)}"
+
+
+async def test_team_connection(
+    host: str,
+    port: str,
+    database: str,
+    user: str,
+    password: str | None,
+    *,
+    sslmode: str = "prefer",
+    sslrootcert: str | None = None,
+    timeout_seconds: float = 5.0,
+) -> ConnectionTestResult:
+    """Attempt a short connection to the team Postgres with the chosen TLS settings.
+
+    Returns a structured ``ConnectionTestResult``. Never raises — failures
+    (unreachable host, bad credentials, TLS handshake error) are captured in
+    ``error`` so the caller can print a clear message without aborting the
+    whole install. The connection is closed immediately after a successful
+    ``SELECT 1``; the function never holds a connection open.
+    """
+    dsn = build_team_dsn(
+        host,
+        port,
+        database,
+        user,
+        password,
+        sslmode=sslmode,
+        sslrootcert=sslrootcert,
+    )
+    try:
+        import asyncpg
+    except ImportError:
+        return ConnectionTestResult(
+            success=False,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
+            dsn=dsn,
+            error="asyncpg not installed",
+        )
+    try:
+        conn = await asyncio.wait_for(asyncpg.connect(dsn), timeout=timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 — timeout, connection, auth errors
+        return ConnectionTestResult(
+            success=False,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
+            dsn=dsn,
+            error=str(exc),
+        )
+    try:
+        await conn.fetchval("SELECT 1")
+    except Exception as exc:  # noqa: BLE001
+        return ConnectionTestResult(
+            success=False,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
+            dsn=dsn,
+            error=str(exc),
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await conn.close()
+    return ConnectionTestResult(
+        success=True,
+        sslmode=sslmode,
+        sslrootcert=sslrootcert,
+        dsn=dsn,
+        error=None,
+    )
+
+
+def _resolve_tls_from_flags(flags: argparse.Namespace) -> tuple[str, str | None]:
+    """Map ``--tls`` / ``--tls-ca <path>`` / ``--no-tls`` flags to (sslmode, rootcert).
+
+    Returns ``(sslmode, sslrootcert_or_None)`` when a TLS flag is set, or the
+    sentinel ``("", None)`` when no TLS flag was passed (caller should prompt
+    interactively). Validates the CA cert path when ``--tls-ca`` is given —
+    raises on a missing/non-PEM file.
+    """
+    tls_ca = getattr(flags, "tls_ca", None)
+    no_tls = getattr(flags, "no_tls", False)
+    tls = getattr(flags, "tls", False)
+    if no_tls:
+        return ("disable", None)
+    if tls_ca:
+        resolved = validate_ca_cert(tls_ca)
+        return ("verify-full", resolved)
+    if tls:
+        return ("require", None)
+    return ("", None)  # no flag → caller prompts
+
+
+def _print_connection_test(result: ConnectionTestResult) -> None:
+    """Print a human-readable connection-test result. Non-fatal on failure."""
+    if result.success:
+        print("  ✓ Connection test passed (SELECT 1)")
+        return
+    print("  ⚠ Connection test FAILED — config will still be written.")
+    print(f"    sslmode:    {result.sslmode}")
+    if result.sslrootcert:
+        print(f"    sslrootcert: {result.sslrootcert}")
+    print(f"    DSN:        {result.dsn}")
+    print(f"    error:      {result.error}")
+    print(
+        "    Hint: verify the host/port, credentials, and (for verify-* modes) "
+        "that the server's certificate is signed by the CA you provided."
+    )
 
 
 def _prompt_embedding() -> str:
@@ -976,6 +1218,11 @@ def run_prompts(flags: argparse.Namespace) -> InstallConfig:
         # With --yes we use pgembed by default; --team with --yes → user must set env vars later.
         if getattr(flags, "team", False) and not getattr(flags, "embedded", False):
             config.backend = "team"
+            # Honor --tls / --tls-ca / --no-tls on --yes even without prompts.
+            tls_mode, tls_ca = _resolve_tls_from_flags(flags)
+            if tls_mode:
+                config.team_sslmode = tls_mode
+                config.team_sslrootcert = tls_ca
         return config
 
     # Backend selection
@@ -988,9 +1235,28 @@ def run_prompts(flags: argparse.Namespace) -> InstallConfig:
 
     # Team connection details
     if config.backend == "team":
-        host, port, database, user, password, new_db, sslmode = (
-            _prompt_team_connection()
-        )
+        # --tls / --tls-ca / --no-tls are shortcuts for the interactive SSL
+        # answers, matching the --embedded / --team flag pattern. When none
+        # of them is set, fall through to the full interactive prompt.
+        flag_mode, flag_ca = _resolve_tls_from_flags(flags)
+        if flag_mode:
+            # Flag-driven TLS: still prompt for the non-TLS connection bits
+            # (host/port/db/user/password/new-db) unless --yes was passed.
+            print("\n  Team PostgreSQL server connection:")
+            host = _prompt_optional("    Host [localhost]: ") or "localhost"
+            port = _prompt_optional("    Port [5432]: ") or "5432"
+            database = _prompt_optional("    Database [memini]: ") or "memini"
+            user = _prompt_optional("    User [postgres]: ") or "postgres"
+            password = _prompt_optional("    Password (input visible): ")
+            new_db = _prompt_yes_no(
+                "    Is this a new database? (admin/bootstrap flow)", default=False
+            )
+            sslmode = flag_mode
+            sslrootcert = flag_ca
+        else:
+            host, port, database, user, password, new_db, sslmode, sslrootcert = (
+                _prompt_team_connection()
+            )
         config.team_host = host
         config.team_port = port
         config.team_database = database
@@ -998,6 +1264,7 @@ def run_prompts(flags: argparse.Namespace) -> InstallConfig:
         config.team_password = password
         config.team_new_db = new_db
         config.team_sslmode = sslmode
+        config.team_sslrootcert = sslrootcert
 
         # Container runtime detection (only relevant for team mode).
         runtime_result = check_container_runtime()
@@ -1077,6 +1344,10 @@ def _build_mcp_env(config: InstallConfig) -> dict[str, str]:
             "@{env:MEMINI_DB_HOST}:{env:MEMINI_DB_PORT}/{env:MEMINI_DB_NAME}"
             "?sslmode={env:MEMINI_DB_SSLMODE}"
         )
+        if config.team_sslrootcert:
+            # sslrootcert referenced via env so the path stays in .env (not
+            # committed in opencode.json). Matches DB_SSLROOTCERT in config.py.
+            env["MEMINI_DB_URL"] += "&sslrootcert={env:DB_SSLROOTCERT}"
         if config.project_name:
             env["MEMINI_PEER_ID"] = config.project_name
     else:
@@ -1087,10 +1358,16 @@ def _build_mcp_env(config: InstallConfig) -> dict[str, str]:
         port = config.team_port or "5432"
         database = config.team_database or "postgres"
         sslmode = config.team_sslmode or "prefer"
-        dsn = f"postgresql://{user}:{password}@{host}:{port}/{database}"
-        if sslmode != "disable":
-            dsn += f"?sslmode={sslmode}"
-        env["MEMINI_DB_URL"] = dsn
+        sslrootcert = config.team_sslrootcert
+        env["MEMINI_DB_URL"] = build_team_dsn(
+            host,
+            port,
+            database,
+            user,
+            password,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
+        )
 
     env["MEMINI_EMBEDDING_DIM"] = "1024" if config.embedding == "gpu" else "384"
     env["MEMINI_EMBEDDING_MODE"] = config.embedding
@@ -1464,14 +1741,23 @@ def maybe_write_env_file(
         database = config.team_database or "postgres"
         user = config.team_user or "postgres"
         sslmode = config.team_sslmode or "prefer"
-        dsn = f"postgresql://{user}:{config.team_password}@{host}:{port}/{database}"
-        if sslmode != "disable":
-            dsn += f"?sslmode={sslmode}"
+        sslrootcert = config.team_sslrootcert
+        dsn = build_team_dsn(
+            host,
+            port,
+            database,
+            user,
+            config.team_password,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
+        )
         lines.append("# Team PostgreSQL credentials (saved from installer)")
         lines.append(f"MEMINI_DB_HOST={host}")
         lines.append(f"MEMINI_DB_PORT={port}")
         lines.append(f"MEMINI_DB_NAME={database}")
         lines.append(f"MEMINI_DB_SSLMODE={sslmode}")
+        if sslrootcert:
+            lines.append(f"DB_SSLROOTCERT={sslrootcert}")
         lines.append(f"MEMINI_DB_URL={dsn}")
 
     if not lines:
@@ -1582,6 +1868,22 @@ def run_install(mode: str, args: argparse.Namespace) -> int:
     print("\n  Pre-downloading memini-ai-dev package (warming uvx cache)...")
     pre_download = pre_download_package(args.dry_run)
 
+    # 9b. Connection test (team mode only) — non-fatal.
+    if config.backend == "team" and not args.dry_run:
+        print("\n  Testing team PostgreSQL connection (5s timeout)...")
+        result = asyncio.run(
+            test_team_connection(
+                host=config.team_host or "localhost",
+                port=config.team_port or "5432",
+                database=config.team_database or "postgres",
+                user=config.team_user or "postgres",
+                password=config.team_password,
+                sslmode=config.team_sslmode or "prefer",
+                sslrootcert=config.team_sslrootcert,
+            )
+        )
+        _print_connection_test(result)
+
     # 10. Start embedded DB (homedir + pgembed only)
     if mode == "homedir" and config.backend == "pgembed" and not args.dry_run:
         print("\n  Starting embedded PostgreSQL (pgembed)...")
@@ -1636,6 +1938,7 @@ def _run_rbac_flow(config: InstallConfig, mode: str, config_dir: Path) -> None:
             port = int(config.team_port or "5432")
             db_name = config.team_database or _DEFAULT_DB_NAME
             sslmode = config.team_sslmode or "prefer"
+            sslrootcert = config.team_sslrootcert
             # We need the postgres superuser password to bootstrap.
             superuser_password = (
                 _prompt_optional("    postgres superuser password (for bootstrap): ")
@@ -1650,6 +1953,7 @@ def _run_rbac_flow(config: InstallConfig, mode: str, config_dir: Path) -> None:
                     admin_password=admin_password,
                     db_name=db_name,
                     sslmode=sslmode,
+                    sslrootcert=sslrootcert,
                 )
             )
             print(f"  ✓ Created {_ADMIN_ROLE} role + '{db_name}' database")
@@ -1660,12 +1964,18 @@ def _run_rbac_flow(config: InstallConfig, mode: str, config_dir: Path) -> None:
                 admin_password,
                 db_name=db_name,
                 sslmode=sslmode,
+                sslrootcert=sslrootcert,
             )
             # The homedir also gets a default project user for itself.
             if mode == "homedir":
-                admin_dsn = (
-                    f"postgresql://{_ADMIN_ROLE}:{admin_password}@{host}:{port}/{db_name}"
-                    + (f"?sslmode={sslmode}" if sslmode != "disable" else "")
+                admin_dsn = build_team_dsn(
+                    host,
+                    str(port),
+                    db_name,
+                    _ADMIN_ROLE,
+                    admin_password,
+                    sslmode=sslmode,
+                    sslrootcert=sslrootcert,
                 )
                 project_name = sanitize_project_name(Path.home().name)
                 role_name, project_pw = asyncio.run(
@@ -1708,6 +2018,7 @@ def _run_rbac_flow(config: InstallConfig, mode: str, config_dir: Path) -> None:
                 port=int(admin_creds.get("MEMINI_DB_PORT", "5432")),
                 db_name=admin_creds.get("MEMINI_DB_NAME", _DEFAULT_DB_NAME),
                 sslmode=admin_creds.get("MEMINI_DB_SSLMODE", "prefer"),
+                sslrootcert=admin_creds.get("DB_SSLROOTCERT") or None,
             )
             print(f"  ✓ Created project role '{role_name}'")
 

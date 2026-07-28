@@ -107,6 +107,7 @@ def _make_config(**overrides: object) -> InstallConfig:
         "team_user": None,
         "team_password": None,
         "team_sslmode": "prefer",
+        "team_sslrootcert": None,
         "team_new_db": False,
         "team_admin_user": None,
         "team_admin_password": None,
@@ -393,6 +394,9 @@ def _make_namespace(**kwargs: object) -> object:
         "gpu_embed": False,
         "no_image_search": False,
         "no_features": False,
+        "tls": False,
+        "tls_ca": None,
+        "no_tls": False,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -916,3 +920,770 @@ def test_build_homedir_opencode_json_mcp_command_is_absolute(
     data = build_homedir_opencode_json(cfg)
     cmd = data["mcp"]["memini-ai-dev"]["command"]
     assert Path(cmd[0]).is_absolute(), f"command[0] must be absolute, got {cmd[0]!r}"
+
+
+# ── TLS / SSL (T-TLS-001) ─────────────────────────────────────────────────────
+#
+# Covers: DSN building with sslmode + sslrootcert, CA cert validation, the
+# --tls / --tls-ca / --no-tls flag shortcuts, the interactive CA-cert prompt,
+# the connection-test function (mocked asyncpg), and the embedded-path
+# guarantee (pgembed never sets sslmode/sslrootcert).
+
+
+def test_build_team_dsn_disable_no_ssl_params() -> None:
+    """sslmode=disable → no ?sslmode= and no sslrootcert in the DSN."""
+    from memini_ai.installer import build_team_dsn
+
+    dsn = build_team_dsn(
+        "db.example.com",
+        "5432",
+        "memini",
+        "alice",
+        "pw",
+        sslmode="disable",
+        sslrootcert="/etc/ca.pem",
+    )
+    assert "?sslmode=" not in dsn
+    assert "sslrootcert" not in dsn
+    assert dsn == "postgresql://alice:pw@db.example.com:5432/memini"
+
+
+def test_build_team_dsn_require_no_ca() -> None:
+    """sslmode=require, no CA → ?sslmode=require only."""
+    from memini_ai.installer import build_team_dsn
+
+    dsn = build_team_dsn(
+        "db.example.com",
+        "5432",
+        "memini",
+        "alice",
+        "pw",
+        sslmode="require",
+        sslrootcert=None,
+    )
+    assert dsn == ("postgresql://alice:pw@db.example.com:5432/memini?sslmode=require")
+
+
+def test_build_team_dsn_verify_full_with_ca() -> None:
+    """sslmode=verify-full + CA → ?sslmode=verify-full&sslrootcert=<path>."""
+    from memini_ai.installer import build_team_dsn
+
+    dsn = build_team_dsn(
+        "db.example.com",
+        "5432",
+        "memini",
+        "alice",
+        "pw",
+        sslmode="verify-full",
+        sslrootcert="/etc/ssl/ca.pem",
+    )
+    assert dsn == (
+        "postgresql://alice:pw@db.example.com:5432/memini"
+        "?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem"
+    )
+
+
+def test_build_team_dsn_verify_ca_with_ca() -> None:
+    """sslmode=verify-ca + CA → both params present, order stable."""
+    from memini_ai.installer import build_team_dsn
+
+    dsn = build_team_dsn(
+        "db.example.com",
+        "5432",
+        "memini",
+        "alice",
+        "pw",
+        sslmode="verify-ca",
+        sslrootcert="/etc/ssl/ca.pem",
+    )
+    assert dsn == (
+        "postgresql://alice:pw@db.example.com:5432/memini"
+        "?sslmode=verify-ca&sslrootcert=/etc/ssl/ca.pem"
+    )
+
+
+def test_build_team_dsn_default_prefer() -> None:
+    """Default sslmode=prefer, no CA → ?sslmode=prefer only."""
+    from memini_ai.installer import build_team_dsn
+
+    dsn = build_team_dsn(
+        "db.example.com",
+        "5432",
+        "memini",
+        "alice",
+        "pw",
+    )
+    assert dsn.endswith("?sslmode=prefer")
+    assert "sslrootcert" not in dsn
+
+
+# ── validate_ca_cert ──────────────────────────────────────────────────────────
+
+
+def test_validate_ca_cert_valid_pem(tmp_path: Path) -> None:
+    """A file containing the PEM header validates and returns the resolved path."""
+    from memini_ai.installer import validate_ca_cert
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+    result = validate_ca_cert(str(ca_file))
+    assert result == str(ca_file.resolve())
+
+
+def test_validate_ca_cert_missing_path() -> None:
+    """A non-existent path → FileNotFoundError."""
+    from memini_ai.installer import validate_ca_cert
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        validate_ca_cert("/nonexistent/ca-12345.pem")
+
+
+def test_validate_ca_cert_not_pem(tmp_path: Path) -> None:
+    """A file without the PEM header → ValueError."""
+    from memini_ai.installer import validate_ca_cert
+
+    bad = tmp_path / "not-a-cert.txt"
+    bad.write_text("this is just text, not a certificate", encoding="utf-8")
+    with pytest.raises(ValueError, match="PEM-encoded"):
+        validate_ca_cert(str(bad))
+
+
+def test_validate_ca_cert_directory_not_file(tmp_path: Path) -> None:
+    """A directory → ValueError (not a file)."""
+    from memini_ai.installer import validate_ca_cert
+
+    with pytest.raises(ValueError, match="not a file"):
+        validate_ca_cert(str(tmp_path))
+
+
+# ── _resolve_tls_from_flags ──────────────────────────────────────────────────
+
+
+def test_resolve_tls_no_tls_flag() -> None:
+    """No TLS flag set → sentinel ('', None) — caller prompts interactively."""
+    from memini_ai.installer import _resolve_tls_from_flags
+
+    flags = _make_namespace()
+    mode, ca = _resolve_tls_from_flags(flags)
+    assert mode == ""
+    assert ca is None
+
+
+def test_resolve_tls_no_tls_flag_set() -> None:
+    """--no-tls → sslmode=disable, no CA."""
+    from memini_ai.installer import _resolve_tls_from_flags
+
+    flags = _make_namespace(no_tls=True)
+    mode, ca = _resolve_tls_from_flags(flags)
+    assert mode == "disable"
+    assert ca is None
+
+
+def test_resolve_tls_flag_set() -> None:
+    """--tls → sslmode=require, no CA."""
+    from memini_ai.installer import _resolve_tls_from_flags
+
+    flags = _make_namespace(tls=True)
+    mode, ca = _resolve_tls_from_flags(flags)
+    assert mode == "require"
+    assert ca is None
+
+
+def test_resolve_tls_ca_flag_valid(tmp_path: Path) -> None:
+    """--tls-ca <valid PEM> → sslmode=verify-full, resolved CA path."""
+    from memini_ai.installer import _resolve_tls_from_flags
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+    flags = _make_namespace(tls_ca=str(ca_file))
+    mode, ca = _resolve_tls_from_flags(flags)
+    assert mode == "verify-full"
+    assert ca == str(ca_file.resolve())
+
+
+def test_resolve_tls_ca_flag_missing_path() -> None:
+    """--tls-ca <missing> → FileNotFoundError propagates."""
+    from memini_ai.installer import _resolve_tls_from_flags
+
+    flags = _make_namespace(tls_ca="/nonexistent/ca-99999.pem")
+    with pytest.raises(FileNotFoundError):
+        _resolve_tls_from_flags(flags)
+
+
+# ── run_prompts with TLS flags ────────────────────────────────────────────────
+
+
+def test_run_prompts_team_yes_tls_ca(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--team --yes --tls-ca <valid PEM> → team backend, sslmode=verify-full, sslrootcert set.
+
+    No input() should be called (--yes). The CA path is validated against the
+    real file on disk.
+    """
+    from memini_ai.installer import run_prompts
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": (_ for _ in ()).throw(
+            AssertionError("input() should not be called with --yes")
+        ),
+    )
+    flags = _make_namespace(yes=True, team=True, tls_ca=str(ca_file))
+    config = run_prompts(flags)
+    assert config.backend == "team"
+    assert config.team_sslmode == "verify-full"
+    assert config.team_sslrootcert == str(ca_file.resolve())
+
+
+def test_run_prompts_team_yes_no_tls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--team --yes --no-tls → sslmode=disable, no sslrootcert."""
+    from memini_ai.installer import run_prompts
+
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": (_ for _ in ()).throw(
+            AssertionError("input() should not be called with --yes")
+        ),
+    )
+    flags = _make_namespace(yes=True, team=True, no_tls=True)
+    config = run_prompts(flags)
+    assert config.backend == "team"
+    assert config.team_sslmode == "disable"
+    assert config.team_sslrootcert is None
+
+
+def test_run_prompts_team_yes_tls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--team --yes --tls → sslmode=require, no CA."""
+    from memini_ai.installer import run_prompts
+
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": (_ for _ in ()).throw(
+            AssertionError("input() should not be called with --yes")
+        ),
+    )
+    flags = _make_namespace(yes=True, team=True, tls=True)
+    config = run_prompts(flags)
+    assert config.backend == "team"
+    assert config.team_sslmode == "require"
+    assert config.team_sslrootcert is None
+
+
+def test_run_prompts_embedded_unaffected_by_tls_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--embedded --tls → pgembed backend, sslmode stays default (not team).
+
+    TLS flags are only honored when backend == team. The embedded pgembed path
+    uses a local Unix socket and never sets sslmode/sslrootcert.
+    """
+    from memini_ai.installer import run_prompts
+
+    def _mock_input(prompt: str = "") -> str:
+        if "Enter 1, 2, or 3" in prompt:
+            return "2"  # auto embedding
+        return ""
+
+    monkeypatch.setattr("builtins.input", _mock_input)
+    flags = _make_namespace(embedded=True, tls=True)
+    config = run_prompts(flags)
+    assert config.backend == "pgembed"
+    # team_sslmode stays at the default; the tls flag is ignored for pgembed.
+    assert config.team_sslmode == "prefer"
+    assert config.team_sslrootcert is None
+
+
+def test_run_prompts_team_flag_tls_ca_prompts_connection_bits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--team --tls-ca <valid> (no --yes) → still prompts host/port/db/user/pw,
+    but skips the SSL mode + CA interactive prompts (flag-driven).
+    """
+    from memini_ai.installer import run_prompts
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+
+    calls: list[str] = []
+
+    def _mock_input(prompt: str = "") -> str:
+        calls.append(prompt)
+        if "Host" in prompt:
+            return "db.host"
+        if "Port" in prompt:
+            return "5432"
+        if "Database" in prompt:
+            return "memini"
+        if "User" in prompt:
+            return "alice"
+        if "Password" in prompt:
+            return "s3cret"
+        if "[Y/n]" in prompt or "[y/N]" in prompt:
+            return "n"  # not a new db
+        if "Enter 1, 2, or 3" in prompt:
+            return "2"  # auto embedding
+        if "[Y/n]" in prompt:
+            return ""
+        return ""
+
+    monkeypatch.setattr("builtins.input", _mock_input)
+    flags = _make_namespace(team=True, tls_ca=str(ca_file))
+    config = run_prompts(flags)
+    assert config.backend == "team"
+    assert config.team_host == "db.host"
+    assert config.team_user == "alice"
+    assert config.team_sslmode == "verify-full"
+    assert config.team_sslrootcert == str(ca_file.resolve())
+    # The SSL mode interactive prompt should NOT have been called.
+    assert not any("SSL mode" in c for c in calls), (
+        f"SSL mode prompt was called despite --tls-ca: {calls}"
+    )
+
+
+# ── _build_mcp_env DSN output ────────────────────────────────────────────────
+
+
+def test_build_mcp_env_team_legacy_verify_full_with_ca() -> None:
+    """Legacy inline-credentials team flow + verify-full + CA → DSN has both params."""
+    config = _make_config(
+        backend="team",
+        team_host="db.example.com",
+        team_port="5432",
+        team_database="memini",
+        team_user="alice",
+        team_password="s3cret",
+        team_sslmode="verify-full",
+        team_sslrootcert="/etc/ssl/ca.pem",
+    )
+    result = build_homedir_opencode_json(config)
+    env = result["mcp"]["memini-ai-dev"]["env"]
+    assert isinstance(env, dict)
+    dsn = env["MEMINI_DB_URL"]
+    assert "?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem" in dsn
+
+
+def test_build_mcp_env_team_rbac_with_ca() -> None:
+    """RBAC flow + sslrootcert → DSN has &sslrootcert={env:DB_SSLROOTCERT}."""
+    config = _make_config(
+        backend="team",
+        team_host="localhost",
+        team_port="5432",
+        team_database="memini",
+        project_user="foo-bar",
+        project_password="pw",
+        project_name="foo-bar",
+        team_sslmode="verify-full",
+        team_sslrootcert="/etc/ssl/ca.pem",
+    )
+    result = build_homedir_opencode_json(config)
+    env = result["mcp"]["memini-ai-dev"]["env"]
+    assert isinstance(env, dict)
+    dsn = env["MEMINI_DB_URL"]
+    assert "sslmode={env:MEMINI_DB_SSLMODE}" in dsn
+    assert "sslrootcert={env:DB_SSLROOTCERT}" in dsn
+
+
+def test_build_mcp_env_team_rbac_without_ca_no_sslrootcert() -> None:
+    """RBAC flow + no CA → DSN has sslmode only, no sslrootcert reference."""
+    config = _make_config(
+        backend="team",
+        team_host="localhost",
+        team_port="5432",
+        team_database="memini",
+        project_user="foo-bar",
+        project_password="pw",
+        project_name="foo-bar",
+        team_sslmode="require",
+        team_sslrootcert=None,
+    )
+    result = build_homedir_opencode_json(config)
+    env = result["mcp"]["memini-ai-dev"]["env"]
+    assert isinstance(env, dict)
+    dsn = env["MEMINI_DB_URL"]
+    assert "sslrootcert" not in dsn
+
+
+def test_build_mcp_env_pgembed_no_ssl_params() -> None:
+    """pgembed backend → MEMINI_DB_URL == 'pgembed', no sslmode/sslrootcert."""
+    config = _make_config(
+        backend="pgembed",
+        team_sslmode="verify-full",  # should be IGNORED for pgembed
+        team_sslrootcert="/etc/ssl/ca.pem",
+    )
+    result = build_homedir_opencode_json(config)
+    env = result["mcp"]["memini-ai-dev"]["env"]
+    assert isinstance(env, dict)
+    assert env["MEMINI_DB_URL"] == "pgembed"
+
+
+# ── write_admin_env / write_project_env with sslrootcert ──────────────────────
+
+
+def test_write_admin_env_with_sslrootcert(tmp_path: Path) -> None:
+    """write_admin_env writes DB_SSLROOTCERT when sslrootcert is provided."""
+    from memini_ai.installer import write_admin_env
+
+    write_admin_env(
+        tmp_path,
+        "db.host",
+        5432,
+        "pw",
+        sslmode="verify-full",
+        sslrootcert="/etc/ssl/ca.pem",
+    )
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "MEMINI_DB_SSLMODE=verify-full" in content
+    assert "DB_SSLROOTCERT=/etc/ssl/ca.pem" in content
+
+
+def test_write_admin_env_without_sslrootcert(tmp_path: Path) -> None:
+    """write_admin_env omits DB_SSLROOTCERT when sslrootcert is None."""
+    from memini_ai.installer import write_admin_env
+
+    write_admin_env(tmp_path, "db.host", 5432, "pw", sslmode="require")
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "MEMINI_DB_SSLMODE=require" in content
+    assert "DB_SSLROOTCERT" not in content
+
+
+def test_write_project_env_with_sslrootcert(tmp_path: Path) -> None:
+    """write_project_env writes DB_SSLROOTCERT when sslrootcert is provided."""
+    from memini_ai.installer import write_project_env
+
+    write_project_env(
+        tmp_path,
+        "role",
+        "pw",
+        "db.host",
+        5432,
+        "memini",
+        sslmode="verify-ca",
+        sslrootcert="/etc/ssl/ca.pem",
+    )
+    content = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "MEMINI_DB_SSLMODE=verify-ca" in content
+    assert "DB_SSLROOTCERT=/etc/ssl/ca.pem" in content
+
+
+# ── build_admin_dsn honors DB_SSLROOTCERT from creds ─────────────────────────
+
+
+def test_build_admin_dsn_with_sslrootcert() -> None:
+    """build_admin_dsn reads DB_SSLROOTCERT from creds and appends it."""
+    creds = {
+        "MEMINI_ADMIN_USER": "memini_admin",
+        "MEMINI_ADMIN_PASSWORD": "pw",
+        "MEMINI_DB_HOST": "db.host",
+        "MEMINI_DB_PORT": "5432",
+        "MEMINI_DB_NAME": "memini",
+        "MEMINI_DB_SSLMODE": "verify-full",
+        "DB_SSLROOTCERT": "/etc/ssl/ca.pem",
+    }
+    dsn = build_admin_dsn(creds)
+    assert dsn == (
+        "postgresql://memini_admin:pw@db.host:5432/memini"
+        "?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem"
+    )
+
+
+def test_read_admin_credentials_with_sslrootcert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An .env with DB_SSLROOTCERT is parsed and surfaced in the creds dict."""
+    config_dir = tmp_path / ".config" / "opencode"
+    config_dir.mkdir(parents=True)
+    (config_dir / ".env").write_text(
+        "MEMINI_ADMIN_USER=memini_admin\n"
+        "MEMINI_ADMIN_PASSWORD=pw\n"
+        "MEMINI_DB_HOST=localhost\n"
+        "MEMINI_DB_PORT=5432\n"
+        "MEMINI_DB_NAME=memini\n"
+        "MEMINI_DB_SSLMODE=verify-full\n"
+        "DB_SSLROOTCERT=/etc/ssl/ca.pem\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    creds = read_admin_credentials()
+    assert creds is not None
+    assert creds["DB_SSLROOTCERT"] == "/etc/ssl/ca.pem"
+
+
+# ── test_team_connection (mocked asyncpg) ────────────────────────────────────
+
+
+def test_team_connection_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mocked asyncpg.connect + SELECT 1 → success=True."""
+    import asyncio
+
+    from memini_ai.installer import test_team_connection
+
+    class FakeConn:
+        async def fetchval(self, query: str) -> int:
+            assert query == "SELECT 1"
+            return 1
+
+        async def close(self) -> None:
+            pass
+
+    async def fake_connect(dsn: str) -> FakeConn:
+        assert "sslmode=verify-full" in dsn
+        assert "sslrootcert=/etc/ssl/ca.pem" in dsn
+        return FakeConn()
+
+    # asyncpg is imported lazily inside test_team_connection; monkeypatch the
+    # module's asyncpg attribute by injecting a fake module.
+    import types
+
+    fake_asyncpg = types.ModuleType("asyncpg")
+    fake_asyncpg.connect = fake_connect  # type: ignore[attr-defined]
+    monkeypatch.setitem(__import__("sys").modules, "asyncpg", fake_asyncpg)
+
+    result = asyncio.run(
+        test_team_connection(
+            "db.host",
+            "5432",
+            "memini",
+            "alice",
+            "pw",
+            sslmode="verify-full",
+            sslrootcert="/etc/ssl/ca.pem",
+        )
+    )
+    assert result.success is True
+    assert result.sslmode == "verify-full"
+    assert result.sslrootcert == "/etc/ssl/ca.pem"
+    assert result.error is None
+    assert "sslmode=verify-full" in result.dsn
+
+
+def test_team_connection_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mocked asyncpg.connect raising → success=False, error populated."""
+    import asyncio
+
+    from memini_ai.installer import test_team_connection
+
+    async def fake_connect(dsn: str) -> object:
+        raise ConnectionRefusedError("connection refused")
+
+    import sys
+    import types
+
+    fake_asyncpg = types.ModuleType("asyncpg")
+    fake_asyncpg.connect = fake_connect  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+
+    result = asyncio.run(
+        test_team_connection(
+            "db.host",
+            "5432",
+            "memini",
+            "alice",
+            "pw",
+            sslmode="require",
+            sslrootcert=None,
+        )
+    )
+    assert result.success is False
+    assert result.sslmode == "require"
+    assert result.error is not None
+    assert "refused" in result.error
+
+
+def test_team_connection_select_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect succeeds but SELECT 1 raises → success=False, error populated."""
+    import asyncio
+
+    from memini_ai.installer import test_team_connection
+
+    class FakeConn:
+        async def fetchval(self, query: str) -> int:
+            raise RuntimeError("permission denied for table")
+
+        async def close(self) -> None:
+            pass
+
+    async def fake_connect(dsn: str) -> FakeConn:
+        return FakeConn()
+
+    import sys
+    import types
+
+    fake_asyncpg = types.ModuleType("asyncpg")
+    fake_asyncpg.connect = fake_connect  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+
+    result = asyncio.run(
+        test_team_connection(
+            "db.host",
+            "5432",
+            "memini",
+            "alice",
+            "pw",
+            sslmode="prefer",
+        )
+    )
+    assert result.success is False
+    assert "permission denied" in (result.error or "")
+
+
+def test_team_connection_disable_dsn_has_no_sslmode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sslmode=disable → the DSN passed to asyncpg has no ?sslmode=."""
+    import asyncio
+
+    from memini_ai.installer import test_team_connection
+
+    captured: dict[str, str] = {}
+
+    class FakeConn:
+        async def fetchval(self, query: str) -> int:
+            return 1
+
+        async def close(self) -> None:
+            pass
+
+    async def fake_connect(dsn: str) -> FakeConn:
+        captured["dsn"] = dsn
+        return FakeConn()
+
+    import sys
+    import types
+
+    fake_asyncpg = types.ModuleType("asyncpg")
+    fake_asyncpg.connect = fake_connect  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+
+    result = asyncio.run(
+        test_team_connection(
+            "db.host",
+            "5432",
+            "memini",
+            "alice",
+            "pw",
+            sslmode="disable",
+        )
+    )
+    assert result.success is True
+    assert "?sslmode=" not in captured["dsn"]
+
+
+# ── CLI flag parsing ──────────────────────────────────────────────────────────
+
+
+def test_cli_init_tls_flags_parsed() -> None:
+    """--tls / --tls-ca / --no-tls are parsed without error."""
+    from memini_ai.cli import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args(["init", "--team", "--tls-ca", "/etc/ssl/ca.pem"])
+    assert args.command == "init"
+    assert args.team is True
+    assert args.tls is False
+    assert args.tls_ca == "/etc/ssl/ca.pem"
+    assert args.no_tls is False
+
+    parser2 = _build_parser()
+    args2 = parser2.parse_args(["init", "--no-tls"])
+    assert args2.no_tls is True
+    assert args2.tls_ca is None
+
+    parser3 = _build_parser()
+    args3 = parser3.parse_args(["init", "--tls"])
+    assert args3.tls is True
+
+
+# ── Interactive CA prompt mapping ────────────────────────────────────────────
+
+
+def test_prompt_ca_cert_skipped_for_require(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_prompt_ca_cert('require') returns None immediately (no prompt)."""
+    from memini_ai.installer import _prompt_ca_cert
+
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": (_ for _ in ()).throw(
+            AssertionError("input() should not be called for sslmode=require")
+        ),
+    )
+    result = _prompt_ca_cert("require")
+    assert result is None
+
+
+def test_prompt_ca_cert_provided_for_verify_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_prompt_ca_cert('verify-full') + user types a valid PEM path → returns it."""
+    from memini_ai.installer import _prompt_ca_cert
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+
+    answers = iter(["y", str(ca_file)])  # yes to provide, then the path
+
+    def _mock_input(prompt: str = "") -> str:
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", _mock_input)
+    result = _prompt_ca_cert("verify-full")
+    assert result == str(ca_file.resolve())
+
+
+def test_prompt_ca_cert_loops_on_invalid_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid path then valid path → loops, returns the valid resolved path."""
+    from memini_ai.installer import _prompt_ca_cert
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+
+    answers = iter(
+        [
+            "y",  # yes to provide
+            "/nonexistent/bad.pem",  # invalid → loops
+            str(ca_file),  # valid → returns
+        ]
+    )
+
+    def _mock_input(prompt: str = "") -> str:
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", _mock_input)
+    result = _prompt_ca_cert("verify-ca")
+    assert result == str(ca_file.resolve())
+
+
+def test_prompt_ca_cert_user_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """User answers 'n' to 'provide a CA cert now' → returns None."""
+    from memini_ai.installer import _prompt_ca_cert
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    result = _prompt_ca_cert("verify-full")
+    assert result is None

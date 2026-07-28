@@ -1,6 +1,6 @@
 # Memini-ai Agent Context
 
-> **Latest version**: memini-ai-dev **v1.0.3** (released 2026-07-16). v1.0.3 is a docs + lockfile-sync patch: HANDOFF/AGENTS/TASKS/CONTEXT catch-up to v1.0.2 reality, `uv.lock` regenerated to match the v1.0.2 `pyproject.toml` (was still at 1.0.0), and a new CRITICAL section in `AGENTS.md` documents the v1.0.0 `MEMINI_VECTOR_BACKEND` requirement. No code changes, no new env vars. The actual schema/code changes from prior releases: v0.7.7 (BGE-M3 opt-in), v0.7.8 (audit + doc rewrite), v0.7.9 (data-leak rule), v0.8.0 (image-recall RRF), v0.8.1 (CI re-trigger), v0.8.2 (detect-secrets security), v1.0.0 (embedded pgembed backend — MAJOR), v1.0.1 + v1.0.2 (migrate command fixes). See `CHANGELOG.md` for per-release detail and `HANDOFF.md` for session-by-session history.
+> **Latest version**: see [CHANGELOG.md](CHANGELOG.md) or `pyproject.toml` (the hardcoded version here drifted to v1.0.3 — the actual released version is whatever `pyproject.toml` says). For the per-release detail and session-by-session history, read `CHANGELOG.md` and `HANDOFF.md`.
 
 ## ⚠️ CRITICAL: `MEMINI_VECTOR_BACKEND` required when `MEMINI_DB_URL` is set (v1.0.0+)
 

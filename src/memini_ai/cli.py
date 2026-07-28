@@ -855,6 +855,28 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable all optional features",
     )
+    # ── TLS shortcuts (T-TLS-001) ──
+    # These are shortcuts for the interactive SSL answers, matching the
+    # --embedded / --team flag pattern. When none is set, the installer
+    # falls through to the full interactive prompt (which already offers
+    # all 5 sslmodes + a CA-cert path for verify-ca/verify-full).
+    p_init.add_argument(
+        "--tls",
+        action="store_true",
+        help="Enable TLS (sslmode=require) — no CA verification",
+    )
+    p_init.add_argument(
+        "--tls-ca",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Enable TLS with CA verification (sslmode=verify-full + sslrootcert=PATH)",
+    )
+    p_init.add_argument(
+        "--no-tls",
+        action="store_true",
+        help="Disable TLS (sslmode=disable)",
+    )
 
     p_update = subparsers.add_parser(
         "update", help="Update memini-ai-dev config to the latest version."

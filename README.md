@@ -76,6 +76,63 @@ uvx --from memini-ai-dev memini-ai --stdio
 > MEMINI_VECTOR_BACKEND is not.` See [CHANGELOG.md](CHANGELOG.md) for the
 > migration recipe.
 
+#### TLS / SSL
+
+memini-ai supports all six PostgreSQL `sslmode` values (`disable`, `allow`,
+`prefer`, `require`, `verify-ca`, `verify-full`). The connection layer
+(`src/memini_ai/postgres/database.py`) builds an `ssl.SSLContext` from the
+`DB_SSLMODE` and `DB_SSLROOTCERT` environment variables (or the equivalent
+fields on `MeminiConfig`).
+
+For an external/team server you can configure TLS in two ways:
+
+**Environment variables** (manual setup):
+
+```bash
+export MEMINI_DB_URL="postgresql://user:pw@db.host:5432/memini?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem"
+export MEMINI_VECTOR_BACKEND="postgres-external"
+export DB_SSLMODE="verify-full"
+export DB_SSLROOTCERT="/etc/ssl/ca.pem"
+```
+
+**`memini-ai init` interactive flow** — when you choose a team/external
+Postgres, the installer offers TLS:
+
+```
+memini-ai init --homedir --team
+# → prompts for host/port/db/user/password, then:
+#   SSL mode for the database connection:
+#     1. prefer (default)   2. require   3. verify-ca
+#     4. verify-full        5. disable
+# → when verify-ca/verify-full is chosen, prompts for a CA cert path
+# → validates the path exists and is PEM-encoded
+# → writes sslmode + sslrootcert into the .env and DSN
+# → runs a 5s connection test and reports success/failure (non-fatal)
+```
+
+**Flag shortcuts** (non-interactive, e.g. for CI or scripts):
+
+| Flag | sslmode | sslrootcert |
+|------|---------|-------------|
+| `--tls` | `require` | (none) |
+| `--tls-ca <path>` | `verify-full` | `<path>` (validated PEM) |
+| `--no-tls` | `disable` | (none) |
+
+```bash
+# verify-full with a CA cert (recommended for production team servers):
+memini-ai init --homedir --team --yes --tls-ca /etc/ssl/team-ca.pem
+
+# require TLS without CA verification:
+memini-ai init --homedir --team --yes --tls
+
+# disable TLS (local socket / trusted network):
+memini-ai init --homedir --team --yes --no-tls
+```
+
+The embedded `pgembed` backend (default) uses a local Unix socket and never
+sets `sslmode` / `sslrootcert` — the TLS flags are ignored for the embedded
+path.
+
 ### Minimal MCP client config (`opencode.json`)
 
 ```json
