@@ -252,6 +252,18 @@ class MeminiConfig(BaseSettings):
     # filter reads.
     peer_id: str | None = Field(default=None, alias="MEMINI_PEER_ID")
 
+    # Phase 1 feature-activation: Memory Relationships auto-detection.
+    # When True, add_memory runs a vector similarity search for
+    # near-duplicates and auto-creates a SUPERSEDES relationship for any
+    # match above auto_relationship_similarity_threshold. Default OFF to
+    # preserve the v1.3.1 hard-reject-on-exact-hash behavior exactly.
+    auto_relationship_detection: bool = Field(
+        default=False, alias="AUTO_RELATIONSHIP_DETECTION"
+    )
+    auto_relationship_similarity_threshold: float = Field(
+        default=0.95, alias="AUTO_RELATIONSHIP_SIMILARITY_THRESHOLD"
+    )
+
     # Phase 4D: Dialectic settings
     dialectic_enabled: bool = Field(default=False, alias="DIALECTIC_ENABLED")
     dialectic_llm_provider: str = Field(
@@ -447,6 +459,17 @@ class MeminiConfig(BaseSettings):
     @classmethod
     def _clamp_dialectic_auto_threshold(cls, v: float | str) -> float:
         """Clamp dialectic auto threshold to valid range."""
+        val = float(v) if isinstance(v, str) else v
+        if val < 0.0:
+            return 0.0
+        if val > 1.0:
+            return 1.0
+        return val
+
+    @field_validator("auto_relationship_similarity_threshold", mode="before")
+    @classmethod
+    def _clamp_auto_relationship_similarity_threshold(cls, v: float | str) -> float:
+        """Clamp auto-relationship similarity threshold to [0.0, 1.0]."""
         val = float(v) if isinstance(v, str) else v
         if val < 0.0:
             return 0.0

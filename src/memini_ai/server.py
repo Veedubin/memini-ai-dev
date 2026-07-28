@@ -262,6 +262,31 @@ class MCPServer:
                     self._audit_logger = AuditLogger(db_pool=system._db._pool)
                     await self._audit_logger.start()
                     logger.info("audit_logger_initialized")
+
+                # Phase 1 feature-activation: Multi-Peer auto-registration
+                # (Layer C, startup hook). When multi_peer_enabled is ON,
+                # auto-register a default "owner" peer on server start.
+                # Idempotent: list_peers() check ensures we only register
+                # if no peers exist, so re-starts are safe. Failure is
+                # isolated — never blocks server startup.
+                if (
+                    _config.multi_peer_enabled
+                    and self._multi_peer_manager is not None
+                    and self._multi_peer_manager.is_enabled
+                ):
+                    try:
+                        peers = await self._multi_peer_manager.list_peers()
+                        if peers.get("count", 0) == 0:
+                            await self._multi_peer_manager.add_peer(
+                                peer_id="owner",
+                                name="Default Owner",
+                                role="owner",
+                                trust_level=1.0,
+                            )
+                            logger.info("peer_auto_registered", peer_id="owner")
+                    except Exception:
+                        logger.warning("peer_auto_register_failed")
+
                 return system
             except Exception as e:
                 last_error = e
@@ -518,6 +543,21 @@ class MCPServer:
                         "readback_verified": True,
                     },
                 )
+
+            # Phase 1 feature-activation: KG entity extraction hook
+            # (Layer A, synchronous). When knowledge_graph_enabled is
+            # ON, extract entities from the memory text via the regex
+            # EntityExtractor (zero LLM) and register them in the KG.
+            # Failure is isolated: any exception is logged and the
+            # add_memory response is unaffected.
+            if config.knowledge_graph_enabled and self._knowledge_graph is not None:
+                try:
+                    await self._knowledge_graph.extract_and_register_entities(content)
+                except Exception:
+                    logger.warning(
+                        "kg_auto_extract_failed",
+                        memory_id=memory_id,
+                    )
 
             return {
                 "success": True,

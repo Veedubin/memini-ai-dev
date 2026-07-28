@@ -198,9 +198,45 @@ class MemorySystem:
         if not input.content_hash:
             input.content_hash = hash_content(input.text)
 
+        # Phase 1 feature-activation: near-duplicate auto-SUPERSEDES.
+        # When auto_relationship_detection is ON and we have a vector,
+        # run a single vector-similarity query for near-duplicates
+        # BEFORE the write so we can capture the target id. The
+        # relationship is created AFTER the write returns memory_id.
+        # Failure is isolated: any exception is logged and the write
+        # proceeds normally (preserves v1.3.1 behavior when flag is OFF).
+        # The flags live on the global MeminiConfig (env-driven), not
+        # the MemorySystemConfig override, so read via get_config().
+        _global_cfg = get_config()
+        near_dup_target: str | None = None
+        near_dup_similarity: float = 0.0
+        if _global_cfg.auto_relationship_detection and input.vector is not None:
+            try:
+                _opts = SearchOptions(
+                    topK=1,
+                    strategy=SearchStrategy.VECTOR_ONLY,
+                    threshold=_global_cfg.auto_relationship_similarity_threshold,
+                )
+                _results = await self._db.query_memories(list(input.vector), _opts)
+                if _results:
+                    _best = _results[0]
+                    _sim = float(getattr(_best, "score", 0.0) or 0.0)
+                    if _sim >= _global_cfg.auto_relationship_similarity_threshold:
+                        near_dup_target = _best.id
+                        near_dup_similarity = _sim
+            except Exception:
+                logger.warning(
+                    "auto_relationship_near_dup_search_failed",
+                    content_prefix=input.text[:80],
+                )
+
         if mode == "cpu":
             # Legacy single-store path: only the 384-dim write.
-            return await self._db.add_memory(input)
+            memory_id = await self._db.add_memory(input)
+            await self._maybe_create_auto_relationship(
+                memory_id, near_dup_target, near_dup_similarity
+            )
+            return memory_id
 
         if mode == "gpu":
             # 1024-dim-only path. The caller is expected to have set
@@ -225,6 +261,9 @@ class MemorySystem:
             if expand is not None and input.vector is not None:
                 vector_1024 = expand(list(input.vector), 1024)
             await add_1024(memory_id, vector_1024)
+            await self._maybe_create_auto_relationship(
+                memory_id, near_dup_target, near_dup_similarity
+            )
             return memory_id
 
         # mode == "auto": write 384-dim first (source of truth), then
@@ -254,7 +293,49 @@ class MemorySystem:
                 if expand is not None and input.vector is not None:
                     elevated_1024 = expand(list(input.vector), 1024)
                 await add_1024(memory_id, elevated_1024)
+        await self._maybe_create_auto_relationship(
+            memory_id, near_dup_target, near_dup_similarity
+        )
         return memory_id
+
+    async def _maybe_create_auto_relationship(
+        self,
+        memory_id: str,
+        target_id: str | None,
+        similarity: float,
+    ) -> None:
+        """Best-effort auto-SUPERSEDES relationship creation.
+
+        Phase 1 feature-activation hook: if a near-duplicate was found
+        in the pre-write vector search, create a SUPERSEDES
+        relationship from the new memory to the existing one. Any
+        failure is logged and swallowed — the write itself must never
+        be affected.
+        """
+        if target_id is None or target_id == memory_id:
+            return
+        try:
+            from memini_ai.memory.schema import RelationshipType
+
+            await self.create_relationship(
+                source_id=memory_id,
+                target_id=target_id,
+                relationship_type=RelationshipType.SUPERSEDES,
+                confidence=similarity,
+            )
+            logger.info(
+                "auto_relationship_created",
+                source_id=memory_id,
+                target_id=target_id,
+                relationship_type="SUPERSEDES",
+                similarity=similarity,
+            )
+        except Exception:
+            logger.warning(
+                "auto_relationship_failed",
+                source_id=memory_id,
+                target_id=target_id,
+            )
 
     async def add_memory_by_text(
         self,

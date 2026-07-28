@@ -594,3 +594,194 @@ class TestQueryMemoriesDimMismatch:
         assert options.strategy == SearchStrategy.TEXT_ONLY
         # The search should have been called (text-only fallback)
         mock_search.query.assert_called_once()
+
+
+# =============================================================================
+# Phase 1 feature-activation: near-duplicate auto-SUPERSEDES hook (Layer A)
+# =============================================================================
+
+
+class TestAutoRelationshipHook:
+    """Tests for the near-duplicate auto-SUPERSEDES hook in add_memory.
+
+    Phase 1 feature-activation: when ``auto_relationship_detection`` is
+    ON, ``add_memory`` runs a vector-similarity search for
+    near-duplicates and auto-creates a SUPERSEDES relationship for any
+    match above the threshold. When OFF, the hook is silent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_relationship_fires_when_enabled_and_similar_found(
+        self, mock_db: MagicMock, mock_search: MagicMock, mock_embedding: MagicMock
+    ) -> None:
+        """When flag ON and a near-dup is found, SUPERSEDES is created."""
+        # Simulate a near-duplicate returned by the vector search
+        dup_entry = MemoryEntry(
+            id="existing-dup-id",
+            text="Almost identical memory",
+            source_type=MemorySourceType.session,
+            content_hash="hash-dup",
+        )
+        dup_entry.score = 0.97
+        mock_db.query_memories = AsyncMock(return_value=[dup_entry])
+        mock_db.get_memory = AsyncMock(
+            return_value=MemoryEntry(
+                id="new-id",
+                text="New memory",
+                source_type=MemorySourceType.session,
+                content_hash="newhash",
+            )
+        )
+        # create_relationship calls get_memory + set_payload on db
+        mock_db.set_payload = AsyncMock()
+
+        system = MemorySystem(db=mock_db, search=mock_search)
+
+        entry = MemoryEntry(
+            text="New memory",
+            source_type=MemorySourceType.session,
+            content_hash="newhash",
+            vector=[0.1] * 1024,
+        )
+
+        mock_global_cfg = MagicMock()
+        mock_global_cfg.auto_relationship_detection = True
+        mock_global_cfg.auto_relationship_similarity_threshold = 0.95
+        mock_global_cfg.embedding_mode = "cpu"
+        mock_global_cfg.rrf_k = 60
+
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(return_value=mock_embedding),
+            ),
+            patch(
+                "memini_ai.memory.system.get_config",
+                return_value=mock_global_cfg,
+            ),
+        ):
+            await system.add_memory(entry)
+
+        # The near-dup search must have been called
+        mock_db.query_memories.assert_called_once()
+        # set_payload is called by create_relationship
+        mock_db.set_payload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_auto_relationship_silent_when_disabled(
+        self, mock_db: MagicMock, mock_search: MagicMock, mock_embedding: MagicMock
+    ) -> None:
+        """When flag OFF, no vector search or relationship creation happens."""
+        mock_db.query_memories = AsyncMock(return_value=[])
+        mock_db.set_payload = AsyncMock()
+
+        system = MemorySystem(db=mock_db, search=mock_search)
+
+        entry = MemoryEntry(
+            text="New memory",
+            source_type=MemorySourceType.session,
+            content_hash="newhash",
+            vector=[0.1] * 1024,
+        )
+
+        mock_global_cfg = MagicMock()
+        mock_global_cfg.auto_relationship_detection = False
+        mock_global_cfg.auto_relationship_similarity_threshold = 0.95
+        mock_global_cfg.embedding_mode = "cpu"
+        mock_global_cfg.rrf_k = 60
+
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(return_value=mock_embedding),
+            ),
+            patch(
+                "memini_ai.memory.system.get_config",
+                return_value=mock_global_cfg,
+            ),
+        ):
+            await system.add_memory(entry)
+
+        mock_db.query_memories.assert_not_called()
+        mock_db.set_payload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_relationship_silent_when_no_similar(
+        self, mock_db: MagicMock, mock_search: MagicMock, mock_embedding: MagicMock
+    ) -> None:
+        """When flag ON but no near-dup found, no relationship is created."""
+        mock_db.query_memories = AsyncMock(return_value=[])
+        mock_db.set_payload = AsyncMock()
+
+        system = MemorySystem(db=mock_db, search=mock_search)
+
+        entry = MemoryEntry(
+            text="New memory",
+            source_type=MemorySourceType.session,
+            content_hash="newhash",
+            vector=[0.1] * 1024,
+        )
+
+        mock_global_cfg = MagicMock()
+        mock_global_cfg.auto_relationship_detection = True
+        mock_global_cfg.auto_relationship_similarity_threshold = 0.95
+        mock_global_cfg.embedding_mode = "cpu"
+        mock_global_cfg.rrf_k = 60
+
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(return_value=mock_embedding),
+            ),
+            patch(
+                "memini_ai.memory.system.get_config",
+                return_value=mock_global_cfg,
+            ),
+        ):
+            await system.add_memory(entry)
+
+        # Search was called (flag is ON) but no relationship created
+        mock_db.query_memories.assert_called_once()
+        mock_db.set_payload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_relationship_exception_does_not_break_add(
+        self, mock_db: MagicMock, mock_search: MagicMock, mock_embedding: MagicMock
+    ) -> None:
+        """When the vector search raises, add_memory still succeeds."""
+        mock_db.query_memories = AsyncMock(
+            side_effect=RuntimeError("vector index corrupted")
+        )
+        mock_db.set_payload = AsyncMock()
+
+        system = MemorySystem(db=mock_db, search=mock_search)
+
+        entry = MemoryEntry(
+            text="New memory",
+            source_type=MemorySourceType.session,
+            content_hash="newhash",
+            vector=[0.1] * 1024,
+        )
+
+        mock_global_cfg = MagicMock()
+        mock_global_cfg.auto_relationship_detection = True
+        mock_global_cfg.auto_relationship_similarity_threshold = 0.95
+        mock_global_cfg.embedding_mode = "cpu"
+        mock_global_cfg.rrf_k = 60
+
+        with (
+            patch(
+                "memini_ai.memory.system.generate_embedding",
+                AsyncMock(return_value=mock_embedding),
+            ),
+            patch(
+                "memini_ai.memory.system.get_config",
+                return_value=mock_global_cfg,
+            ),
+        ):
+            # Must NOT raise — the hook exception is swallowed
+            result_id = await system.add_memory(entry)
+
+        assert result_id == "new-memory-id"
+        # The write still happened
+        mock_db.add_memory.assert_called_once()

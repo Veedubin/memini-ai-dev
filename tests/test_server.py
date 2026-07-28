@@ -438,3 +438,320 @@ class TestGetStatusEmbeddingFields:
         assert result["embeddingDimActual"] == 1024
         assert result["modelName"] == "BAAI/bge-m3"
         assert result["modelDimension"] == 1024
+
+
+# =============================================================================
+# Phase 1 feature-activation: KG entity extraction hook (Layer A)
+# =============================================================================
+
+
+class TestKGAutoExtractHook:
+    """Tests for the KG entity extraction hook in add_memory.
+
+    Phase 1 feature-activation: when ``knowledge_graph_enabled`` is ON,
+    ``add_memory`` must call ``extract_and_register_entities`` on the
+    KG. When OFF, the hook must be silent. Any hook exception must
+    never fail the add.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kg_hook_fires_when_enabled(
+        self, mcp_server: MCPServer, mock_memory_system: MagicMock
+    ) -> None:
+        """When KG_ENABLED is True, extract_and_register_entities is called."""
+        mcp_server._memory_system = mock_memory_system
+        mock_kg = MagicMock()
+        mock_kg.extract_and_register_entities = AsyncMock(return_value=[])
+        mcp_server._knowledge_graph = mock_kg
+
+        with patch(
+            "memini_ai.server.get_config",
+            return_value=MagicMock(
+                knowledge_graph_enabled=True,
+                rate_limit_per_minute=100,
+                max_memory_content_size=102400,
+                sanitize_content=False,
+            ),
+        ):
+            result = await mcp_server.add_memory(
+                content="Alice deployed PostgreSQL to the VPS.",
+                sourceType="session",
+            )
+
+        assert result["success"] is True
+        mock_kg.extract_and_register_entities.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_kg_hook_silent_when_disabled(
+        self, mcp_server: MCPServer, mock_memory_system: MagicMock
+    ) -> None:
+        """When KG_ENABLED is False, extract_and_register_entities is NOT called."""
+        mcp_server._memory_system = mock_memory_system
+        mock_kg = MagicMock()
+        mock_kg.extract_and_register_entities = AsyncMock(return_value=[])
+        mcp_server._knowledge_graph = mock_kg
+
+        with patch(
+            "memini_ai.server.get_config",
+            return_value=MagicMock(
+                knowledge_graph_enabled=False,
+                rate_limit_per_minute=100,
+                max_memory_content_size=102400,
+                sanitize_content=False,
+            ),
+        ):
+            result = await mcp_server.add_memory(
+                content="Alice deployed PostgreSQL to the VPS.",
+                sourceType="session",
+            )
+
+        assert result["success"] is True
+        mock_kg.extract_and_register_entities.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_kg_hook_exception_does_not_break_add(
+        self, mcp_server: MCPServer, mock_memory_system: MagicMock
+    ) -> None:
+        """When extract_and_register_entities raises, add_memory still succeeds."""
+        mcp_server._memory_system = mock_memory_system
+        mock_kg = MagicMock()
+        mock_kg.extract_and_register_entities = AsyncMock(
+            side_effect=RuntimeError("kg DB connection lost")
+        )
+        mcp_server._knowledge_graph = mock_kg
+
+        with patch(
+            "memini_ai.server.get_config",
+            return_value=MagicMock(
+                knowledge_graph_enabled=True,
+                rate_limit_per_minute=100,
+                max_memory_content_size=102400,
+                sanitize_content=False,
+            ),
+        ):
+            result = await mcp_server.add_memory(
+                content="Alice deployed PostgreSQL to the VPS.",
+                sourceType="session",
+            )
+
+        assert result["success"] is True
+        assert result["id"] == "test-memory-id-123"
+
+
+# =============================================================================
+# Phase 1 feature-activation: Multi-Peer auto-registration (Layer C)
+# =============================================================================
+
+
+class TestPeerAutoRegisterHook:
+    """Tests for the multi-peer auto-registration startup hook.
+
+    Phase 1 feature-activation: when ``multi_peer_enabled`` is ON,
+    ``_init_memory_system`` must auto-register a default "owner" peer
+    on startup if no peers exist. Idempotent: safe on every restart.
+    """
+
+    @pytest.mark.asyncio
+    async def test_peer_auto_registers_when_enabled_and_empty(
+        self, mcp_server: MCPServer
+    ) -> None:
+        """When multi_peer_enabled=True and no peers exist, register owner."""
+        mock_system = MagicMock()
+        mock_system.initialize = AsyncMock()
+        mock_system.close = AsyncMock()
+        mock_system._db = MagicMock()
+        mock_system._db.count_memories = AsyncMock(return_value=0)
+        mock_system._db._pool = None  # skip audit logger + thought chains
+
+        mock_peer_mgr = MagicMock()
+        mock_peer_mgr.list_peers = AsyncMock(return_value={"count": 0, "peers": []})
+        mock_peer_mgr.add_peer = AsyncMock(
+            return_value={"success": True, "peer_id": "owner"}
+        )
+
+        mock_config = MagicMock()
+        mock_config.multi_peer_enabled = True
+        mock_config.thought_chains_enabled = False
+
+        with (
+            patch("memini_ai.server.MemorySystem", return_value=mock_system),
+            patch(
+                "memini_ai.server.get_multi_peer_manager",
+                return_value=mock_peer_mgr,
+            ),
+            patch("memini_ai.config.get_config", return_value=mock_config),
+            patch(
+                "memini_ai.model.manager.ModelManager.auto_detect_model",
+                AsyncMock(return_value=False),
+            ),
+            patch("memini_ai.server.TrustEngine"),
+            patch("memini_ai.server.MemoryGraph"),
+            patch("memini_ai.server.KnowledgeGraph"),
+            patch("memini_ai.server.MemoryExtractor"),
+            patch("memini_ai.server.PrecompressExtractor"),
+            patch("memini_ai.server.TieredLoader"),
+            patch("memini_ai.server.UserModel"),
+            patch("memini_ai.server.DecayEngine"),
+            patch("memini_ai.server.ConsolidationEngine"),
+        ):
+            await mcp_server._init_memory_system()
+
+        mock_peer_mgr.list_peers.assert_called_once()
+        mock_peer_mgr.add_peer.assert_called_once()
+        _call = mock_peer_mgr.add_peer.call_args
+        assert _call.kwargs["peer_id"] == "owner"
+        assert _call.kwargs["role"] == "owner"
+        assert _call.kwargs["trust_level"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_peer_auto_register_idempotent_on_restart(
+        self, mcp_server: MCPServer
+    ) -> None:
+        """When peers already exist, add_peer is NOT called (idempotent)."""
+        mock_system = MagicMock()
+        mock_system.initialize = AsyncMock()
+        mock_system.close = AsyncMock()
+        mock_system._db = MagicMock()
+        mock_system._db.count_memories = AsyncMock(return_value=0)
+        mock_system._db._pool = None
+
+        mock_peer_mgr = MagicMock()
+        # Simulate a restart: peers already present
+        mock_peer_mgr.list_peers = AsyncMock(
+            return_value={
+                "count": 1,
+                "peers": [{"peer_id": "owner", "name": "Default Owner"}],
+            }
+        )
+        mock_peer_mgr.add_peer = AsyncMock()
+
+        mock_config = MagicMock()
+        mock_config.multi_peer_enabled = True
+        mock_config.thought_chains_enabled = False
+
+        with (
+            patch("memini_ai.server.MemorySystem", return_value=mock_system),
+            patch(
+                "memini_ai.server.get_multi_peer_manager",
+                return_value=mock_peer_mgr,
+            ),
+            patch("memini_ai.config.get_config", return_value=mock_config),
+            patch(
+                "memini_ai.model.manager.ModelManager.auto_detect_model",
+                AsyncMock(return_value=False),
+            ),
+            patch("memini_ai.server.TrustEngine"),
+            patch("memini_ai.server.MemoryGraph"),
+            patch("memini_ai.server.KnowledgeGraph"),
+            patch("memini_ai.server.MemoryExtractor"),
+            patch("memini_ai.server.PrecompressExtractor"),
+            patch("memini_ai.server.TieredLoader"),
+            patch("memini_ai.server.UserModel"),
+            patch("memini_ai.server.DecayEngine"),
+            patch("memini_ai.server.ConsolidationEngine"),
+        ):
+            await mcp_server._init_memory_system()
+
+        mock_peer_mgr.list_peers.assert_called_once()
+        mock_peer_mgr.add_peer.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_peer_auto_register_silent_when_disabled(
+        self, mcp_server: MCPServer
+    ) -> None:
+        """When multi_peer_enabled=False, no peer registration happens."""
+        mock_system = MagicMock()
+        mock_system.initialize = AsyncMock()
+        mock_system.close = AsyncMock()
+        mock_system._db = MagicMock()
+        mock_system._db.count_memories = AsyncMock(return_value=0)
+        mock_system._db._pool = None
+
+        mock_peer_mgr = MagicMock()
+        mock_peer_mgr.list_peers = AsyncMock()
+        mock_peer_mgr.add_peer = AsyncMock()
+
+        mock_config = MagicMock()
+        mock_config.multi_peer_enabled = False
+        mock_config.thought_chains_enabled = False
+
+        with (
+            patch("memini_ai.server.MemorySystem", return_value=mock_system),
+            patch(
+                "memini_ai.server.get_multi_peer_manager",
+                return_value=mock_peer_mgr,
+            ),
+            patch("memini_ai.config.get_config", return_value=mock_config),
+            patch(
+                "memini_ai.model.manager.ModelManager.auto_detect_model",
+                AsyncMock(return_value=False),
+            ),
+            patch("memini_ai.server.TrustEngine"),
+            patch("memini_ai.server.MemoryGraph"),
+            patch("memini_ai.server.KnowledgeGraph"),
+            patch("memini_ai.server.MemoryExtractor"),
+            patch("memini_ai.server.PrecompressExtractor"),
+            patch("memini_ai.server.TieredLoader"),
+            patch("memini_ai.server.UserModel"),
+            patch("memini_ai.server.DecayEngine"),
+            patch("memini_ai.server.ConsolidationEngine"),
+        ):
+            await mcp_server._init_memory_system()
+
+        mock_peer_mgr.list_peers.assert_not_called()
+        mock_peer_mgr.add_peer.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_peer_auto_register_skipped_when_manager_disabled(
+        self, mcp_server: MCPServer
+    ) -> None:
+        """When multi_peer_enabled=True but manager.is_enabled=False (e.g.
+        ``user_modeling_enabled=False``), the hook must NOT attempt
+        registration — ``list_peers`` returns an error dict (count=0)
+        which would trigger a doomed ``add_peer`` call. Regression for
+        the missing ``is_enabled`` gate on the peer hook condition.
+        """
+        mock_system = MagicMock()
+        mock_system.initialize = AsyncMock()
+        mock_system.close = AsyncMock()
+        mock_system._db = MagicMock()
+        mock_system._db.count_memories = AsyncMock(return_value=0)
+        mock_system._db._pool = None
+
+        mock_peer_mgr = MagicMock()
+        # Manager present but NOT enabled (user_modeling_enabled=False).
+        # ``is_enabled`` is a property on the real class; on a MagicMock we
+        # set it as a plain attribute (truthiness drives the gate condition).
+        mock_peer_mgr.is_enabled = False
+        mock_peer_mgr.list_peers = AsyncMock()
+        mock_peer_mgr.add_peer = AsyncMock()
+
+        mock_config = MagicMock()
+        mock_config.multi_peer_enabled = True
+        mock_config.thought_chains_enabled = False
+
+        with (
+            patch("memini_ai.server.MemorySystem", return_value=mock_system),
+            patch(
+                "memini_ai.server.get_multi_peer_manager",
+                return_value=mock_peer_mgr,
+            ),
+            patch("memini_ai.config.get_config", return_value=mock_config),
+            patch(
+                "memini_ai.model.manager.ModelManager.auto_detect_model",
+                AsyncMock(return_value=False),
+            ),
+            patch("memini_ai.server.TrustEngine"),
+            patch("memini_ai.server.MemoryGraph"),
+            patch("memini_ai.server.KnowledgeGraph"),
+            patch("memini_ai.server.MemoryExtractor"),
+            patch("memini_ai.server.PrecompressExtractor"),
+            patch("memini_ai.server.TieredLoader"),
+            patch("memini_ai.server.UserModel"),
+            patch("memini_ai.server.DecayEngine"),
+            patch("memini_ai.server.ConsolidationEngine"),
+        ):
+            await mcp_server._init_memory_system()
+
+        mock_peer_mgr.list_peers.assert_not_called()
+        mock_peer_mgr.add_peer.assert_not_called()
