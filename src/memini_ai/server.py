@@ -858,23 +858,89 @@ class MCPServer:
     async def get_status(self) -> dict[str, Any]:
         """Get server status for all components.
 
+        Returns a status report distinguishing **warming** (components still
+        initializing, retry shortly) from **ready** (operational) from
+        **error** (initialization failed) from **degraded** (ready but some
+        optional components offline).
+
+        T-STATUS-001 (2026-07-28): prior versions reported
+        ``memoryReady: false`` + ``memoryCount: 0`` during the warm-up window
+        (5-15s after server start) with no signal that the system was merely
+        initializing rather than broken. Agents misread this as a
+        misconfiguration. The response now carries three new fields:
+
+        - ``status`` (``"warming" | "ready" | "degraded" | "error"``) — a
+          single top-level state an agent can switch on.
+        - ``warming`` (bool) — explicit ``true`` while components are still
+          initializing and the caller should retry shortly.
+        - ``warmingMessage`` (str | None) — human-readable explanation when
+          ``warming`` is true (e.g. "memory subsystem still initializing;
+          retry get_status in a few seconds").
+
+        During warming, ``memoryCount`` / ``thoughtsCount`` /
+        ``kanbanCardCount`` are reported as ``null`` (not ``0``) so an agent
+        cannot misread a transient zero as "the database is empty". The
+        legacy boolean fields (``memoryReady`` etc.) are retained for
+        backward compatibility and remain honest — they are ``false`` while
+        warming, ``true`` once ready.
+
         Returns:
-            Dictionary with memoryReady, modelReady, indexerReady, and initError.
+            Dictionary with status, warming, warmingMessage, memoryReady,
+            modelReady, indexerReady, memoryCount (int | None), and initError.
         """
-        # Check memory system
+        # ── Determine warming vs error vs ready state ────────────────────────
+        # Warming = no init error recorded AND memory subsystem not yet ready
+        # (either _memory_system is None because no tool has lazily triggered
+        # _init_memory_system(), or it exists but the DB pool / embedding
+        # model is still coming up).
+        has_init_error = self._init_error is not None
         memory_ready = False
         if self._memory_system is not None:
             memory_ready = self._memory_system.is_ready
+        memory_system_present = self._memory_system is not None
+
+        is_warming = (not has_init_error) and (not memory_ready)
+        warming_message: str | None = None
+        if is_warming:
+            if not memory_system_present:
+                warming_message = (
+                    "memory subsystem still initializing; retry get_status "
+                    "in a few seconds (no tool has triggered lazy init yet)"
+                )
+            else:
+                warming_message = (
+                    "memory subsystem initializing (DB pool / embedding "
+                    "model warming up); retry get_status in a few seconds"
+                )
+
+        # ── Compute top-level status ─────────────────────────────────────────
+        if has_init_error:
+            status: str = "error"
+        elif is_warming:
+            status = "warming"
+        elif memory_ready:
+            status = "ready"
+        else:
+            status = "degraded"
 
         # Best-effort row counts for observability (v0.7.3).
-        memory_count = 0
-        thoughts_count = 0
-        kanban_count = 0
+        # During warming the counts are unknown — report null (NOT 0) so an
+        # agent cannot misread a transient zero as "the database is empty".
+        memory_count: int | None = None
+        thoughts_count: int | None = None
+        kanban_count: int | None = None
         query_latency_ms: float | None = None
         if memory_ready and self._memory_system is not None:
             try:
                 import time
 
+                # Counts are known once ready; default to 0 on per-call
+                # failure (the DB is reachable but this particular count
+                # raised — surfacing 0 is honest because we cannot prove
+                # the table is empty either, but we *are* ready).
+                memory_count = 0
+                thoughts_count = 0
+                kanban_count = 0
                 t0 = time.monotonic()
                 memory_count = await asyncio.wait_for(
                     self._memory_system._db.count_memories(),
@@ -991,6 +1057,13 @@ class MCPServer:
         )
 
         return {
+            # T-STATUS-001: top-level state for agent switching + warming
+            # signal so callers can distinguish "still starting" from
+            # "broken". memoryReady=false alone was ambiguous during the
+            # warm-up window.
+            "status": status,
+            "warming": is_warming,
+            "warmingMessage": warming_message,
             "memoryReady": memory_ready,
             "modelReady": model_ready,
             "indexerReady": indexer_ready,

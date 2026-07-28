@@ -284,6 +284,147 @@ class TestGetStatus:
         assert result["memoryCount"] == 0
 
 
+# ---------------------------------------------------------------------------
+# T-STATUS-001 (2026-07-28): get_status warming / ready / error states.
+#
+# Bug: during the warm-up window (~5-15s after server start) get_status
+# reported memoryReady:false + memoryCount:0 even when the DB was fully
+# populated, because no tool had lazily triggered _init_memory_system().
+# Agents misread this as a misconfiguration. The fix adds a top-level
+# ``status`` field ("warming" | "ready" | "degraded" | "error"), a
+# ``warming`` boolean, a ``warmingMessage`` string, and reports counts as
+# null (not 0) while warming.
+# ---------------------------------------------------------------------------
+
+
+class TestGetStatusWarming:
+    """T-STATUS-001: get_status must distinguish warming from broken."""
+
+    @pytest.mark.asyncio
+    async def test_warming_when_memory_system_not_initialized(
+        self, mcp_server: MCPServer
+    ) -> None:
+        """Fresh server with no lazy init triggered yet → status=warming.
+
+        This is the exact scenario that caused the 2026-07-28 incident:
+        an agent called get_status during warm-up, saw memoryReady:false
+        + memoryCount:0, and concluded the backend was misconfigured.
+        The config was fine; the system was merely initializing.
+        """
+        # Fresh MCPServer: _memory_system is None, _init_error is None.
+        assert mcp_server._memory_system is None
+        assert mcp_server._init_error is None
+
+        result = await mcp_server.get_status()
+
+        # The new top-level state must say "warming", not leave the agent
+        # to infer it from memoryReady=false alone.
+        assert result["status"] == "warming"
+        assert result["warming"] is True
+        assert result["warmingMessage"] is not None
+        assert "retry" in result["warmingMessage"].lower()
+        # The legacy boolean stays honest (system is genuinely not ready).
+        assert result["memoryReady"] is False
+        assert result["initError"] is None
+        # CRITICAL: memoryCount must be null, NOT 0, during warming —
+        # a 0 here was the literal misread that sent the user on a
+        # debugging goose chase.
+        assert result["memoryCount"] is None
+        assert result["thoughtsCount"] is None
+        assert result["kanbanCardCount"] is None
+
+    @pytest.mark.asyncio
+    async def test_warming_when_memory_system_present_but_not_ready(
+        self, mcp_server: MCPServer
+    ) -> None:
+        """MemorySystem exists but DB pool still warming → status=warming.
+
+        Covers the case where _init_memory_system() returned a system
+        object but the underlying database connection pool / embedding
+        model is still initializing (is_ready == False).
+        """
+        mock_system = MagicMock()
+        mock_system.is_ready = False  # present but not yet ready
+        mcp_server._memory_system = mock_system
+        assert mcp_server._init_error is None
+
+        result = await mcp_server.get_status()
+
+        assert result["status"] == "warming"
+        assert result["warming"] is True
+        assert result["warmingMessage"] is not None
+        assert "warming up" in result["warmingMessage"].lower()
+        assert result["memoryReady"] is False
+        assert result["memoryCount"] is None
+
+    @pytest.mark.asyncio
+    async def test_ready_when_memory_system_ready(
+        self,
+        mcp_server: MCPServer,
+        mock_memory_system: MagicMock,
+    ) -> None:
+        """MemorySystem ready + populated DB → status=ready + real counts."""
+        mcp_server._memory_system = mock_memory_system
+        # mock_memory_system fixture: is_ready=True, count_memories→42,
+        # count_thoughts→7.
+
+        result = await mcp_server.get_status()
+
+        assert result["status"] == "ready"
+        assert result["warming"] is False
+        assert result["warmingMessage"] is None
+        assert result["memoryReady"] is True
+        # Counts are real ints once ready (not null).
+        assert result["memoryCount"] == 42
+        assert result["thoughtsCount"] == 7
+        assert isinstance(result["memoryCount"], int)
+
+    @pytest.mark.asyncio
+    async def test_error_state_when_init_failed(self, mcp_server: MCPServer) -> None:
+        """_init_error set (retries exhausted) → status=error, not warming.
+
+        This is the genuinely broken case — the warming signal must NOT
+        fire here, so an agent can distinguish "retry shortly" from
+        "give up and surface the error".
+        """
+        mcp_server._init_error = "connection refused: localhost:5432"
+        # _memory_system stays None (init failed) — but even if a
+        # degraded system object exists, the init_error wins.
+
+        result = await mcp_server.get_status()
+
+        assert result["status"] == "error"
+        assert result["warming"] is False
+        assert result["warmingMessage"] is None
+        assert result["memoryReady"] is False
+        assert result["initError"] == "connection refused: localhost:5432"
+        # Counts are null in error state too (we cannot trust them).
+        assert result["memoryCount"] is None
+
+    @pytest.mark.asyncio
+    async def test_warming_message_differs_for_present_vs_absent_system(
+        self, mcp_server: MCPServer
+    ) -> None:
+        """The warmingMessage should hint at *why* it's warming so an agent
+        (or human) reading the status can decide whether to wait or to
+        trigger a tool call that forces lazy init.
+        """
+        # Case A: no system at all (lazy init never triggered).
+        result_a = await mcp_server.get_status()
+        assert result_a["warming"] is True
+        assert "no tool has triggered" in result_a["warmingMessage"].lower()
+
+        # Case B: system present but not ready (DB pool warming).
+        mock_system = MagicMock()
+        mock_system.is_ready = False
+        mcp_server._memory_system = mock_system
+        result_b = await mcp_server.get_status()
+        assert result_b["warming"] is True
+        assert "warming up" in result_b["warmingMessage"].lower()
+        # The two messages must be distinguishable.
+        assert result_a["warmingMessage"] != result_b["warmingMessage"]
+
+
 class TestHealthcheck:
     """Tests for the v0.7.3 healthcheck MCP tool."""
 
@@ -363,6 +504,11 @@ class TestGracefulDegradation:
 
         # In degraded mode, memory should not be ready (no memory system initialized)
         assert result["memoryReady"] is False
+        # T-STATUS-001: a fresh server with no init error reports warming,
+        # NOT a hard failure — so an agent retries instead of declaring
+        # the backend broken.
+        assert result["status"] == "warming"
+        assert result["warming"] is True
 
 
 # ---------------------------------------------------------------------------
