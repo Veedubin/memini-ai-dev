@@ -787,6 +787,11 @@ def test_resolve_memini_command_uses_uvx_when_on_path(
     assert "--from" in cmd
     assert "memini-ai-dev" in cmd
     assert "memini-ai" in cmd
+    # Must end with --stdio so the spawned process speaks stdio JSON-RPC
+    # (OpenCode's local MCP config type).  Since v1.0.0 bare ``memini-ai``
+    # defaults to streamable-http, which OpenCode cannot talk to.
+    assert "--stdio" in cmd
+    assert cmd[-1] == "--stdio"
     # Must be absolute, not bare "uvx"
     assert Path(cmd[0]).is_absolute()
 
@@ -813,9 +818,12 @@ def test_resolve_memini_command_falls_back_to_local_install(
     from memini_ai.installer import _resolve_memini_command
 
     cmd = _resolve_memini_command()
-    assert cmd == [str(local_memini)]
+    assert cmd == [str(local_memini), "--stdio"]
     # Absolute path (no PATH lookup needed at MCP spawn time)
     assert Path(cmd[0]).is_absolute()
+    # --stdio is mandatory: OpenCode's local MCP config speaks stdio JSON-RPC
+    assert "--stdio" in cmd
+    assert cmd[-1] == "--stdio"
 
 
 def test_resolve_memini_command_falls_back_to_warning(
@@ -852,10 +860,13 @@ def test_resolve_memini_command_falls_back_to_warning(
     from memini_ai.installer import _resolve_memini_command
 
     cmd = _resolve_memini_command()
-    assert cmd == ["uvx", "--from", "memini-ai-dev", "memini-ai"]
+    assert cmd == ["uvx", "--from", "memini-ai-dev", "memini-ai", "--stdio"]
     captured = capsys.readouterr()
     assert "WARNING" in captured.out
     assert "uvx" in captured.out
+    # --stdio is mandatory even on the bare-uvx fallback path
+    assert "--stdio" in cmd
+    assert cmd[-1] == "--stdio"
 
     # restore
     if saved is not None:

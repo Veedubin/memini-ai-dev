@@ -1276,14 +1276,27 @@ def write_state_file(
 
 
 def _resolve_memini_command() -> list[str]:
-    """Return the absolute-path command array to launch memini-ai.
+    """Return the absolute-path command array to launch memini-ai over stdio.
+
+    Every returned command array ends with ``--stdio`` so the spawned
+    process speaks stdio JSON-RPC — the transport OpenCode's local MCP
+    config type expects.  Since v1.0.0 (commit 74b81cf) a bare
+    ``memini-ai`` invocation defaults to ``streamable-http``, which
+    OpenCode cannot talk to and manifests as "server unavailable".
 
     Resolution order:
-    1. ``shutil.which("uvx")`` — use that with ``--from memini-ai-dev memini-ai``
-       (always pulls the latest from PyPI, no local clone required).
+    1. ``shutil.which("uvx")`` — use that with
+       ``--from memini-ai-dev memini-ai --stdio``.  Note: ``uvx`` reuses
+       the cached tool environment for an unpinned ``--from memini-ai-dev``
+       spec indefinitely — it does NOT re-resolve PyPI on each run.  To
+       pick up a newly published release run
+       ``uv tool upgrade memini-ai-dev`` (or pin an explicit ``==1.4.0``
+       in the ``--from`` spec).  Confirmed live: cache pinned at 1.0.4
+       despite 1.4.0 on PyPI.
     2. ``<home>/.local/bin/memini-ai`` — the local uv-tool install (what
-       ``uv tool install memini-ai-dev`` or ``uvx --from memini-ai-dev memini-ai``
-       leaves behind). Fast, no re-download per opencode restart.
+       ``uv tool install memini-ai-dev`` or ``uvx --from memini-ai-dev
+       memini-ai`` leaves behind). Fast, no re-download per opencode
+       restart.
     3. The entry point of the currently-running Python — useful when the
        installer itself is running out of a dev checkout (``pip install -e``).
     4. Bare ``["uvx", ...]`` as a last resort, plus a printed warning.
@@ -1293,11 +1306,11 @@ def _resolve_memini_command() -> list[str]:
     """
     uvx_path = shutil.which("uvx")
     if uvx_path:
-        return [uvx_path, "--from", "memini-ai-dev", "memini-ai"]
+        return [uvx_path, "--from", "memini-ai-dev", "memini-ai", "--stdio"]
 
     local_memini = Path.home() / ".local" / "bin" / "memini-ai"
     if local_memini.exists() and os.access(local_memini, os.X_OK):
-        return [str(local_memini)]
+        return [str(local_memini), "--stdio"]
 
     # Fall back to the running interpreter's memini-ai entry point.
     try:
@@ -1308,7 +1321,7 @@ def _resolve_memini_command() -> list[str]:
 
         # /.../site-packages/memini_ai/cli.py  →  invoke via the same Python
         runner = sys.executable
-        return [runner, "-m", "memini_ai.cli"]
+        return [runner, "-m", "memini_ai.cli", "--stdio"]
     except Exception:  # pragma: no cover — only hit if even the dev checkout is broken
         pass
 
@@ -1318,7 +1331,7 @@ def _resolve_memini_command() -> list[str]:
         "'uvx' which may fail if /home/<user>/.local/bin is not in the "
         "opencode spawn PATH."
     )
-    return ["uvx", "--from", "memini-ai-dev", "memini-ai"]
+    return ["uvx", "--from", "memini-ai-dev", "memini-ai", "--stdio"]
 
 
 # ── Package pre-download ────────────────────────────────────────────────────
