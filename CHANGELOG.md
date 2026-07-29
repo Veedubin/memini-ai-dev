@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-07-29
+- **Docs: removed `docs/design/memini-cloud-thin-client-architecture.md`** — SaaS strategy docs do not belong in the public OSS repo; the `memini-ai-cloud` design now lives in a private repository. No code changes. NOTE: the v1.5.1 tag and git history still contain the original 794-line version of this document.
+
 ## [1.5.1] - 2026-07-29
 - **Fix: `add_memory` MCP tool no longer hangs on entity-dense content when `KG_ENABLED=true`** — Three coordinated changes that together take `add_memory` on a 22-entity passage from ~20s (MCP `-32001` timeout at 60s) to 3.35s with one model load (was ~15+). All three were observed reloading the SentenceTransformer weights per KG entity (1-4s each); the underlying call chain was correct but synchronously re-entered the model acquire/release path on every entity save.
   - **Fire-and-forget KG extraction** — `server.py::MCPServer.add_memory` now schedules `_kg_extract_with_timeout(content, memory_id)` via `asyncio.create_task` and attaches a done-callback. The extraction runs in the background; `add_memory` returns its readback immediately. A 10-second `asyncio.wait_for` cap inside `_kg_extract_with_timeout` ensures even a pathological KG pass (hundreds of entities) cannot block the response beyond ~10s. TimeoutError and any other exception are logged with `kg_auto_extract_timeout` / `kg_auto_extract_failed` and swallowed — the `add_memory` response is never affected by KG errors. The done-callback consumes any unhandled exception so "Task exception was never retrieved" warnings do not leak.
