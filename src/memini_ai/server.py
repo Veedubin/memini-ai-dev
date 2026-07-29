@@ -545,19 +545,21 @@ class MCPServer:
                 )
 
             # Phase 1 feature-activation: KG entity extraction hook
-            # (Layer A, synchronous). When knowledge_graph_enabled is
-            # ON, extract entities from the memory text via the regex
-            # EntityExtractor (zero LLM) and register them in the KG.
-            # Failure is isolated: any exception is logged and the
-            # add_memory response is unaffected.
+            # (Layer A). When knowledge_graph_enabled is ON, extract
+            # entities from the memory text via the regex EntityExtractor
+            # (zero LLM) and register them in the KG.
+            #
+            # Fire-and-forget: the extraction runs as a background task
+            # so add_memory returns immediately after the readback.  A
+            # 10s timeout ensures even a pathological KG pass (hundreds
+            # of entities) cannot block the response beyond ~10s.  The
+            # done-callback logs any failure — the add_memory response
+            # is never affected by KG errors.
             if config.knowledge_graph_enabled and self._knowledge_graph is not None:
-                try:
-                    await self._knowledge_graph.extract_and_register_entities(content)
-                except Exception:
-                    logger.warning(
-                        "kg_auto_extract_failed",
-                        memory_id=memory_id,
-                    )
+                task = asyncio.create_task(
+                    self._kg_extract_with_timeout(content, memory_id)
+                )
+                task.add_done_callback(self._kg_extract_done_cb)
 
             return {
                 "success": True,
@@ -578,6 +580,53 @@ class MCPServer:
         except Exception as e:
             logger.error("add_memory_error", error=str(e))
             return {"success": False, "id": "", "message": str(e), "error": str(e)}
+
+    # =========================================================================
+    # KG entity-extraction background helpers
+    # =========================================================================
+
+    _KG_EXTRACT_TIMEOUT: int = 10  # seconds — max wall time for KG pass
+
+    async def _kg_extract_with_timeout(self, content: str, memory_id: str) -> None:
+        """Run KG entity extraction with a hard timeout.
+
+        Wraps ``extract_and_register_entities`` in ``asyncio.wait_for``
+        so a slow KG pass can never exceed ``_KG_EXTRACT_TIMEOUT``.
+        Any exception (including ``TimeoutError``) is logged and
+        swallowed — the caller's ``add_memory`` response is already on
+        its way back.
+        """
+        try:
+            await asyncio.wait_for(
+                self._knowledge_graph.extract_and_register_entities(content),  # type: ignore[union-attr]
+                timeout=self._KG_EXTRACT_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "kg_auto_extract_timeout",
+                memory_id=memory_id,
+                timeout=self._KG_EXTRACT_TIMEOUT,
+            )
+        except Exception:
+            logger.warning(
+                "kg_auto_extract_failed",
+                memory_id=memory_id,
+            )
+
+    @staticmethod
+    def _kg_extract_done_cb(task: asyncio.Task[None]) -> None:
+        """Done-callback for the fire-and-forget KG extraction task.
+
+        Retrieves any exception (already logged inside
+        ``_kg_extract_with_timeout``) to prevent "Task exception was
+        never retrieved" warnings.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            # Already logged in _kg_extract_with_timeout; just consume.
+            logger.debug("kg_extract_task_exception_consumed", error=str(exc))
 
     # =========================================================================
     # TOOL: search_project

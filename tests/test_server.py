@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -625,6 +626,9 @@ class TestKGAutoExtractHook:
             )
 
         assert result["success"] is True
+        # KG extraction runs as fire-and-forget background task — yield
+        # to the event loop so the task gets scheduled and executes.
+        await asyncio.sleep(0.05)
         mock_kg.extract_and_register_entities.assert_called_once()
 
     @pytest.mark.asyncio
@@ -682,6 +686,9 @@ class TestKGAutoExtractHook:
 
         assert result["success"] is True
         assert result["id"] == "test-memory-id-123"
+        # KG extraction runs fire-and-forget — yield so the background
+        # task executes and its exception is swallowed by the done-callback.
+        await asyncio.sleep(0.05)
 
 
 # =============================================================================

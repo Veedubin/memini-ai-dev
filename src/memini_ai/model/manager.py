@@ -164,12 +164,22 @@ class ModelManager:
     def release(self) -> None:
         """Release the model (reference counting).
 
-        Model is unloaded when ref_count reaches 0.
+        As of the KG entity-save performance fix, the model is **never**
+        auto-unloaded when ref_count reaches 0.  The SentenceTransformer
+        weights are expensive to load (1-4s per load) and the KG
+        entity-extraction hook saves each entity through the full
+        ``add_memory`` path, which calls ``generate_embedding`` →
+        ``acquire()`` / ``release()`` once per entity.  If the model is
+        unloaded between saves, every new entity triggers a full weight
+        reload — 22 entities × 2s = 44s, 50 entities = 100s+.
+
+        Callers who explicitly want to free GPU memory should call
+        ``unload()`` directly.  The singleton is process-scoped, so in a
+        long-running MCP server the model stays hot for the lifetime of
+        the process — which is the desired behaviour.
         """
         if self._ref_count > 0:
             self._ref_count -= 1
-        if self._ref_count == 0 and self._model is not None:
-            self.unload()
 
     async def _load_model(self) -> None:
         """Load the model named by ``config.model_name`` (``MEMINI_MODEL_NAME``).

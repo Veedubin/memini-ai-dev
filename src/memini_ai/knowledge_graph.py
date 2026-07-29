@@ -233,31 +233,52 @@ class KnowledgeGraph:
                             mentions=entity_data.get("mentions", []),
                         )
                         self._entities[entity.entity_id] = entity
-                        self._entity_name_index[
-                            entity.canonical_name.lower()
-                        ] = entity.entity_id
+                        self._entity_name_index[entity.canonical_name.lower()] = (
+                            entity.entity_id
+                        )
                     except (json.JSONDecodeError, KeyError, ValueError):
                         continue
         except Exception as e:
             logger.warning("entity_load_error", error=str(e))
 
     async def _save_entity_to_storage(self, entity: Entity) -> None:
-        """Save an entity to persistent storage."""
+        """Save an entity to persistent storage.
+
+        Performance: checks ``content_exists`` by hash **before**
+        constructing a ``MemoryEntry`` or calling ``add_memory``.  This
+        makes re-encountering a known entity a cheap no-op (hash + one
+        SQL query) instead of going through the full embed+insert path
+        that would raise ``ValueError`` inside ``add_memory``.
+        """
         if self._memory_system is None:
             return
 
         try:
             entity_json = json.dumps(entity.to_dict())
+            entity_text = f"kg:entity:{entity_json}"
+
+            # Fast-path: if the entity memory already exists, skip the
+            # full add_memory path entirely (no MemoryEntry construction,
+            # no embedding generation, no ValueError to catch).
+            if self._memory_system._db is not None:
+                from memini_ai.utils.hash import hash_content
+
+                content_hash = hash_content(entity_text)
+                if await self._memory_system._db.content_exists(content_hash):
+                    return  # Already persisted — cheap no-op.
+
             from memini_ai.memory.schema import MemoryEntry, MemorySourceType
 
             entry = MemoryEntry(
-                text=f"kg:entity:{entity_json}",
+                text=entity_text,
                 sourceType=MemorySourceType.boomerang,
                 metadataJson=json.dumps({"entity_id": entity.entity_id}),
             )
             await self._memory_system.add_memory(entry)
         except Exception as e:
-            logger.warning("entity_save_error", entity_id=entity.entity_id, error=str(e))
+            logger.warning(
+                "entity_save_error", entity_id=entity.entity_id, error=str(e)
+            )
 
     # =========================================================================
     # ENTITY MANAGEMENT
@@ -433,11 +454,13 @@ class KnowledgeGraph:
                 return True
 
         # Add relationship
-        self._entity_relations[source_id].append({
-            "target_id": target_id,
-            "rel_type": rel_type,
-            "confidence": confidence,
-        })
+        self._entity_relations[source_id].append(
+            {
+                "target_id": target_id,
+                "rel_type": rel_type,
+                "confidence": confidence,
+            }
+        )
 
         logger.info(
             "entity_relation_created",
@@ -536,11 +559,13 @@ class KnowledgeGraph:
                 if neighbor_id not in visited:
                     visited.add(neighbor_id)
 
-                    new_path = path + [{
-                        "entity": current,
-                        "relationship": rel["rel_type"].value,
-                        "next_entity": neighbor_id,
-                    }]
+                    new_path = path + [
+                        {
+                            "entity": current,
+                            "relationship": rel["rel_type"].value,
+                            "next_entity": neighbor_id,
+                        }
+                    ]
 
                     new_conf = conf_product * rel["confidence"]
                     queue.append((neighbor_id, new_path, new_conf))
@@ -588,13 +613,15 @@ class KnowledgeGraph:
                 return
 
             if current == end:
-                all_paths.append(InferenceResult(
-                    start_entity=start_entity_id,
-                    end_entity=end_entity_id,
-                    path=path.copy(),
-                    total_confidence=conf_product,
-                    depth=len(path),
-                ))
+                all_paths.append(
+                    InferenceResult(
+                        start_entity=start_entity_id,
+                        end_entity=end_entity_id,
+                        path=path.copy(),
+                        total_confidence=conf_product,
+                        depth=len(path),
+                    )
+                )
                 return
 
             for rel in self._get_entity_relationships_sync(current):
@@ -603,11 +630,13 @@ class KnowledgeGraph:
                 if neighbor_id not in visited:
                     visited.add(neighbor_id)
 
-                    new_path = path + [{
-                        "entity": current,
-                        "relationship": rel["rel_type"].value,
-                        "next_entity": neighbor_id,
-                    }]
+                    new_path = path + [
+                        {
+                            "entity": current,
+                            "relationship": rel["rel_type"].value,
+                            "next_entity": neighbor_id,
+                        }
+                    ]
 
                     new_conf = conf_product * rel["confidence"]
                     dfs(neighbor_id, end, new_path, new_conf, depth + 1, visited)
@@ -648,11 +677,13 @@ class KnowledgeGraph:
             current, current_depth, path = queue.popleft()
 
             if current_depth > 0:  # Don't include start entity in results
-                results.append({
-                    "entity_id": current,
-                    "depth": current_depth,
-                    "path": path + [current],
-                })
+                results.append(
+                    {
+                        "entity_id": current,
+                        "depth": current_depth,
+                        "path": path + [current],
+                    }
+                )
 
             if current_depth >= depth:
                 continue
@@ -671,7 +702,9 @@ class KnowledgeGraph:
     # ENTITY GRAPH (All connections to/from an entity)
     # =========================================================================
 
-    async def get_entity_graph(self, entity_id: str, depth: int = 1) -> EntityGraphResult | None:
+    async def get_entity_graph(
+        self, entity_id: str, depth: int = 1
+    ) -> EntityGraphResult | None:
         """Get all connections to/from an entity.
 
         Args:
@@ -685,19 +718,23 @@ class KnowledgeGraph:
             return None
 
         entity = self._entities[entity_id]
-        result = EntityGraphResult(entity_id=entity_id, entity_name=entity.canonical_name)
+        result = EntityGraphResult(
+            entity_id=entity_id, entity_name=entity.canonical_name
+        )
 
         # Get direct outgoing
         for rel in self._get_entity_relationships_sync(entity_id):
             target = self._entities.get(rel["target_id"])
             if target:
-                result.outgoing.append({
-                    "targetId": rel["target_id"],
-                    "targetName": target.canonical_name,
-                    "targetType": target.entity_type.value,
-                    "relationship": rel["rel_type"].value,
-                    "confidence": rel["confidence"],
-                })
+                result.outgoing.append(
+                    {
+                        "targetId": rel["target_id"],
+                        "targetName": target.canonical_name,
+                        "targetType": target.entity_type.value,
+                        "relationship": rel["rel_type"].value,
+                        "confidence": rel["confidence"],
+                    }
+                )
 
         # Get direct incoming (reverse lookup)
         for source_id, relations in self._entity_relations.items():
@@ -705,13 +742,15 @@ class KnowledgeGraph:
                 if rel["target_id"] == entity_id:
                     source = self._entities.get(source_id)
                     if source:
-                        result.incoming.append({
-                            "sourceId": source_id,
-                            "sourceName": source.canonical_name,
-                            "sourceType": source.entity_type.value,
-                            "relationship": rel["rel_type"].value,
-                            "confidence": rel["confidence"],
-                        })
+                        result.incoming.append(
+                            {
+                                "sourceId": source_id,
+                                "sourceName": source.canonical_name,
+                                "sourceType": source.entity_type.value,
+                                "relationship": rel["rel_type"].value,
+                                "confidence": rel["confidence"],
+                            }
+                        )
 
         # Get inferred (transitive) if depth > 1
         if depth > 1:
@@ -719,13 +758,15 @@ class KnowledgeGraph:
             for item in transitive:
                 inferred_entity = self._entities.get(item["entity_id"])
                 if inferred_entity:
-                    result.inferred.append({
-                        "entityId": item["entity_id"],
-                        "entityName": inferred_entity.canonical_name,
-                        "entityType": inferred_entity.entity_type.value,
-                        "depth": item["depth"],
-                        "path": item["path"],
-                    })
+                    result.inferred.append(
+                        {
+                            "entityId": item["entity_id"],
+                            "entityName": inferred_entity.canonical_name,
+                            "entityType": inferred_entity.entity_type.value,
+                            "depth": item["depth"],
+                            "path": item["path"],
+                        }
+                    )
 
         return result
 
@@ -764,7 +805,9 @@ class KnowledgeGraph:
                 # Get all relationships for entity A
                 relations = await self.get_entity_relationships(
                     entity_a_id,
-                    rel_type=query.relationship_types[0] if query.relationship_types else None,
+                    rel_type=query.relationship_types[0]
+                    if query.relationship_types
+                    else None,
                 )
 
                 for rel in relations[: query.limit]:
@@ -787,7 +830,8 @@ class KnowledgeGraph:
                 for source_id, relations in self._entity_relations.items():
                     for rel in relations:
                         if rel["target_id"] == entity_b_id and (
-                            query.relationship_types is None or rel["rel_type"] in query.relationship_types
+                            query.relationship_types is None
+                            or rel["rel_type"] in query.relationship_types
                         ):
                             source = self._entities.get(source_id)
                             if source:
@@ -809,7 +853,10 @@ class KnowledgeGraph:
                     continue
 
                 for rel in relations:
-                    if query.relationship_types and rel["rel_type"] not in query.relationship_types:
+                    if (
+                        query.relationship_types
+                        and rel["rel_type"] not in query.relationship_types
+                    ):
                         continue
 
                     target = self._entities.get(rel["target_id"])
@@ -837,14 +884,16 @@ class KnowledgeGraph:
                 )
                 # Convert to query results format
                 for chain in chains:
-                    results.append({
-                        "inference": True,
-                        "startEntity": chain.start_entity,
-                        "endEntity": chain.end_entity,
-                        "path": chain.path,
-                        "totalConfidence": chain.total_confidence,
-                        "depth": chain.depth,
-                    })
+                    results.append(
+                        {
+                            "inference": True,
+                            "startEntity": chain.start_entity,
+                            "endEntity": chain.end_entity,
+                            "path": chain.path,
+                            "totalConfidence": chain.total_confidence,
+                            "depth": chain.depth,
+                        }
+                    )
 
         # Apply limit
         results = results[: query.limit]
@@ -969,16 +1018,20 @@ class KnowledgeGraph:
                 # Update memory
                 import json as json_module
 
-                rel_json = json_module.dumps([
-                    {
-                        "targetId": r.target_id,
-                        "relationshipType": r.relationship_type.value,
-                        "confidence": r.confidence,
-                        "source": r.source,
-                    }
-                    for r in memory.relationships
-                ])
-                await self._memory_system._db.set_payload(memory_id, {"relationships": rel_json})
+                rel_json = json_module.dumps(
+                    [
+                        {
+                            "targetId": r.target_id,
+                            "relationshipType": r.relationship_type.value,
+                            "confidence": r.confidence,
+                            "source": r.source,
+                        }
+                        for r in memory.relationships
+                    ]
+                )
+                await self._memory_system._db.set_payload(
+                    memory_id, {"relationships": rel_json}
+                )
 
         return [e.entity_id for e in entities]
 
@@ -1056,8 +1109,16 @@ class KnowledgeGraph:
                     )
                     rel_count += 1
 
-            logger.info("kg_persisted_to_postgres", entities=entity_count, relationships=rel_count)
-            return {"success": True, "entities": entity_count, "relationships": rel_count}
+            logger.info(
+                "kg_persisted_to_postgres",
+                entities=entity_count,
+                relationships=rel_count,
+            )
+            return {
+                "success": True,
+                "entities": entity_count,
+                "relationships": rel_count,
+            }
 
         except Exception as e:
             logger.error("kg_persist_failed", error=str(e))
@@ -1085,11 +1146,15 @@ class KnowledgeGraph:
                     mentions=[],  # Metadata has mentions if any
                 )
                 self._entities[entity.entity_id] = entity
-                self._entity_name_index[entity.canonical_name.lower()] = entity.entity_id
+                self._entity_name_index[entity.canonical_name.lower()] = (
+                    entity.entity_id
+                )
                 self._entity_relations[entity.entity_id] = []
 
             # Load relationships
-            _nodes, edges = await self._postgres_db.get_entities_with_relationships(limit=1000)
+            _nodes, edges = await self._postgres_db.get_entities_with_relationships(
+                limit=1000
+            )
             for edge in edges:
                 from memini_ai.memory.schema import RelationshipType
 
@@ -1101,15 +1166,20 @@ class KnowledgeGraph:
                     # Check for existing
                     existing = False
                     for rel in self._entity_relations[source_id]:
-                        if rel["target_id"] == target_id and rel["rel_type"] == rel_type:
+                        if (
+                            rel["target_id"] == target_id
+                            and rel["rel_type"] == rel_type
+                        ):
                             existing = True
                             break
                     if not existing:
-                        self._entity_relations[source_id].append({
-                            "target_id": target_id,
-                            "rel_type": rel_type,
-                            "confidence": edge["confidence"],
-                        })
+                        self._entity_relations[source_id].append(
+                            {
+                                "target_id": target_id,
+                                "rel_type": rel_type,
+                                "confidence": edge["confidence"],
+                            }
+                        )
 
             logger.info(
                 "kg_loaded_from_postgres",
@@ -1139,7 +1209,9 @@ class KnowledgeGraph:
             return {"nodes": [], "edges": [], "error": "PostgreSQL not configured"}
 
         try:
-            nodes, edges = await self._postgres_db.get_entities_with_relationships(limit=1000)
+            nodes, edges = await self._postgres_db.get_entities_with_relationships(
+                limit=1000
+            )
             return {"nodes": nodes, "edges": edges}
         except Exception as e:
             logger.error("kg_postgres_json_failed", error=str(e))
@@ -1179,14 +1251,16 @@ class KnowledgeGraph:
         # Build nodes
         nodes: list[dict[str, Any]] = []
         for entity in list(self._entities.values())[:limit]:
-            nodes.append({
-                "id": entity.entity_id,
-                "name": entity.canonical_name,
-                "type": entity.entity_type.value,
-                "confidence": entity.confidence,
-                "mentions": len(entity.mentions),
-                "group": self._get_entity_group(entity.entity_type),
-            })
+            nodes.append(
+                {
+                    "id": entity.entity_id,
+                    "name": entity.canonical_name,
+                    "type": entity.entity_type.value,
+                    "confidence": entity.confidence,
+                    "mentions": len(entity.mentions),
+                    "group": self._get_entity_group(entity.entity_type),
+                }
+            )
 
         # Build edges (relationships between entities)
         edges: list[dict[str, Any]] = []
@@ -1194,13 +1268,15 @@ class KnowledgeGraph:
         for source_id, relations in self._entity_relations.items():
             for rel in relations:
                 if source_id in self._entities and rel["target_id"] in self._entities:
-                    edges.append({
-                        "source": source_id,
-                        "target": rel["target_id"],
-                        "relationship": rel["rel_type"].value,
-                        "confidence": rel["confidence"],
-                        "stroke": self._get_rel_color(rel["rel_type"]),
-                    })
+                    edges.append(
+                        {
+                            "source": source_id,
+                            "target": rel["target_id"],
+                            "relationship": rel["rel_type"].value,
+                            "confidence": rel["confidence"],
+                            "stroke": self._get_rel_color(rel["rel_type"]),
+                        }
+                    )
                     edge_count += 1
                     if edge_count >= limit:
                         break
