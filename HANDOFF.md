@@ -1,5 +1,37 @@
 # Memini-ai Handoff Document
 
+> **Session**: 2026-07-29 (Session 60 — v1.5.1 KG add_memory timeout fix + v1.5.2 SaaS doc removal — **BOTH RELEASED** ✅)
+> **Project**: Memini-ai v1.5.2
+> **Status**: v1.5.1 + v1.5.2 RELEASED. (Note: this file was stale at Session 52 / v1.0.3 — sessions 53-59 shipped v1.1.x through v1.5.0 and are recorded in the root `MCP-Servers/HANDOFF.md`; see CHANGELOG.md for the per-release record.)
+
+---
+
+## 2026-07-29 (Session 60) — v1.5.1: KG add_memory timeout fix — **RELEASED** ✅
+
+**Bug**: `add_memory` MCP tool timed out (MCP -32001, red error in chat) on entity-dense content when `KG_ENABLED=true`. User correctly diagnosed "the DB works just fine — look at the config."
+
+**Root cause** (in-process repro, stage-timed): `memory_system.add_memory` alone = 1.26s (fine). The synchronous KG entity-extraction hook in `server.py` (~line 553) saved each extracted entity as a memory through the full add path, and `ModelManager.release()` auto-unloaded the SentenceTransformer at `ref_count=0` — so **model weights reloaded PER ENTITY** (1-4s each, ~15+ "Loading weights" lines per add) plus a wasted embed+insert attempt for already-known entities. 22 entities = 20s; ~50 entities = >60s MCP client timeout. Writes usually landed; the response was lost.
+
+**Fix (3 files, commits `c2e8c03` + `364edbf`):**
+1. `server.py` — KG hook → fire-and-forget `asyncio.create_task` + 10s `wait_for` + done-callback. `add_memory` returns after write+readback.
+2. `model/manager.py` — `release()` no longer auto-unloads; model stays hot for process lifetime.
+3. `knowledge_graph.py` — `_save_entity_to_storage` checks `content_exists` hash BEFORE embed/insert (known entity = cheap no-op).
+
+**Verified**: 20s → 3.35s on 22-entity content; 1 model load (was ~15+); 1071 tests pass (4 pre-existing `memini_vision` ModuleNotFoundError env failures, unrelated); KG hook tests 3/3. `KG_ENABLED` was temporarily set `false` in root opencode.json + `.env` as mitigation, then **re-enabled after the fix**.
+
+**⚠️ OpenCode restart required** to load v1.5.1 in the running MCP server process.
+
+## 2026-07-29 (Session 60) — v1.5.2: SaaS design doc removed from public repo — **RELEASED** ✅
+
+`docs/design/memini-cloud-thin-client-architecture.md` (794 lines) shipped accidentally in v1.5.1. User directive: no SaaS strategy in the public repo. Doc removed from HEAD (commit `95866dd`); content preserved (with +491 lines of extensions) in the NEW PRIVATE repo `github.com/Veedubin/memini-ai-saas` (v0.1.0). **Residue: v1.5.1 tag + git history still contain the 794-line original — accepted; history rewrite is the user's decision (root TASKS.md T-HISTORY-001).**
+
+### Next session starting point
+- All SaaS work → `memini-ai-saas` repo (T-CLOUD-001 first). This repo stays pure OSS.
+- User action pending: OpenCode restart.
+- Quick resume: `git log --oneline -3` (expect 95866dd v1.5.2), `bumpversion --audit --no-network`.
+
+---
+
 > **Session**: 2026-07-16 (Session 52 — v1.0.3 docs+lockfile sync patch + DB healthcheck — **RELEASED** ✅)
 > **Project**: Memini-ai v1.0.3
 > **Status**: v1.0.3 RELEASED. Patch release over v1.0.2: 4 doc files (HANDOFF/AGENTS/TASKS/CONTEXT) updated to reflect the actual v1.0.2 release state (previously stale at v0.7.6 / Session 40), `uv.lock` regenerated to match `pyproject.toml` (was still pinned at 1.0.0 from the v1.0.2 release's incomplete lockfile sync), and a new CRITICAL section in AGENTS.md documents the v1.0.0 `MEMINI_VECTOR_BACKEND` requirement. No code changes, no new env vars, no new dependencies. **DB server verified working 2026-07-16**: in-process `MCPServer.healthcheck()` returns `status=pass, readbackMatch=True, writeLatencyMs=2.9s, readLatencyMs=0.45ms`. `get_status`: `memoryCount=982, thoughtsCount=519, queryLatencyMs=0.67`. Live `memini-postgres` on port 5434 (up 45h): 986 memories + 519 thoughts, all 13 tables present. 100% healthy. Commits: `b88dd47` (docs), `1c7d8ba` (uv.lock v1.0.2 sync), `ff90815` (v1.0.3 bump).

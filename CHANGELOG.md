@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-07-29
+- **Docs: HANDOFF.md Session 60 entry covering the v1.5.1 KG add_memory timeout fix and the v1.5.2 SaaS doc removal; notes the file's prior staleness at Session 52. No code changes.**
+
 ## [1.5.2] - 2026-07-29
 - **Docs: removed `docs/design/memini-cloud-thin-client-architecture.md`** — SaaS strategy docs do not belong in the public OSS repo; the `memini-ai-cloud` design now lives in a private repository. No code changes. NOTE: the v1.5.1 tag and git history still contain the original 794-line version of this document.
 
