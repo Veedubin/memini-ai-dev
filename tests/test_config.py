@@ -451,3 +451,21 @@ class TestV1BackendConfig:
             f"Error message must mention the opencode.json MCP wrapper for "
             f"OpenCode users. Got:\n{message}"
         )
+
+    # -- MEMINI_DEBUG_ENV tests (v1.5.5+) --------------------------------------
+
+    def test_debug_env_default_false(self) -> None:
+        """MEMINI_DEBUG_ENV defaults to False; no log emitted unless enabled.
+
+        The autouse ``_isolate_env`` fixture clears all MEMINI_* env vars
+        (including MEMINI_DEBUG_ENV) so a fresh MeminiConfig() reflects the
+        documented default.
+        """
+        config = MeminiConfig()
+        assert config.debug_env is False
+
+    def test_debug_env_via_alias(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """MEMINI_DEBUG_ENV env var is honored as the ``debug_env`` field alias."""
+        monkeypatch.setenv("MEMINI_DEBUG_ENV", "true")
+        config = MeminiConfig()
+        assert config.debug_env is True

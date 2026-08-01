@@ -294,6 +294,20 @@ class MeminiConfig(BaseSettings):
         description="Enable content sanitization on add_memory (default True)",
     )
 
+    # Env diagnostic (v1.5.5+)
+    # When true, log resolved MEMINI_* env vars on startup. Off by default;
+    # only enable to diagnose MCP env-injection issues (e.g. the opencode
+    # 1.18.11 schema quirk that silently drops the `env` key inside
+    # mcp.<server> blocks in favor of `environment`).
+    debug_env: bool = Field(
+        default=False,
+        alias="MEMINI_DEBUG_ENV",
+        description=(
+            "When true, log resolved MEMINI_* env vars on startup. "
+            "Off by default; only enable to diagnose MCP env-injection issues."
+        ),
+    )
+
     _json_config_loaded: bool = False
 
     @field_validator("workers", mode="before")

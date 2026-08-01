@@ -13,6 +13,48 @@ from memini_ai.memory.schema import (
     SearchFilter,
     SearchOptions,
 )
+from memini_ai.utils.logger import logger
+
+
+def _redact_url(url: str) -> str:
+    """Redact password in a URL like postgresql://user:pass@host:port/db → postgresql://user:***@host:port/db."""
+    if not url or "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    if "@" not in rest:
+        return url
+    creds, hostpart = rest.split("@", 1)
+    if ":" in creds:
+        user, _ = creds.split(":", 1)
+        return f"{scheme}://{user}:***@{hostpart}"
+    return url
+
+
+def _log_env_debug_if_enabled(config: MeminiConfig) -> None:
+    """Optional startup helper: log resolved MEMINI_* env vars when MEMINI_DEBUG_ENV is set.
+
+    Off by default. When ``config.debug_env`` is true, emits a single
+    structured INFO line with the resolved DB URL (password redacted),
+    vector backend, embedding dim/mode, model name, the debug flag
+    itself, and pid/ppid. Intended for diagnosing MCP env-injection
+    issues like the opencode 1.18.11 schema quirk that silently drops
+    the ``env`` key inside ``mcp.<server>`` blocks.
+    """
+    if not config.debug_env:
+        return
+    db_url = config.db_url or os.environ.get("MEMINI_DB_URL", "")
+    logger.info(
+        "memini_env_debug",
+        debug_env_enabled=True,
+        memini_db_url=_redact_url(db_url),
+        memini_vector_backend=getattr(config, "vector_backend", "pgembed"),
+        memini_embedding_dim=getattr(config, "embedding_dim", 384),
+        memini_embedding_mode=str(getattr(config, "embedding_mode", "auto")),
+        memini_model_name=str(getattr(config, "model_name", "all-MiniLM-L6-v2")),
+        memini_debug_env=os.environ.get("MEMINI_DEBUG_ENV", ""),
+        pid=os.getpid(),
+        ppid=os.getppid(),
+    )
 
 
 class VectorDatabase(ABC):
@@ -297,6 +339,8 @@ def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
     """
     if config is None:
         config = get_config()
+
+    _log_env_debug_if_enabled(config)
 
     # ── Q4: Refuse to start if v0.8.2 user with MEMINI_DB_URL set ──
     if (

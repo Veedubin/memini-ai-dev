@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-08-01
+- **Added: `MEMINI_DEBUG_ENV` opt-in flag (default `false`).** When set to a truthy value (`"1"`, `"true"`, `"yes"`, `"on"`), `create_database()` logs resolved `MEMINI_*` env vars (DB URL with password redacted, vector backend, embedding dim/mode, model name, the flag itself, pid/ppid) on MCP server startup at INFO level. Off by default; intended for diagnosing MCP env-injection issues (e.g. the opencode 1.18.11 schema quirk that silently drops the `env` key inside `mcp.<server>` blocks in favor of `environment`). No behavior change when the flag is unset — zero output, no debug prints, no new module-level side effects. The diagnostic gap was exposed by the food-index TUI 1056987 debugging saga (2026-08-01).
+- **Tests**: 2 new tests in `tests/test_config.py::TestV1BackendConfig` (`test_debug_env_default_false`, `test_debug_env_via_alias`). `ruff check` 0 errors. `mypy` 0 new errors (14 pre-existing in 6 files unchanged).
+
 ## [1.5.4] - 2026-08-01
 - **Docs: `MEMINI_VECTOR_BACKEND` migration hint surfaced in three places** — Closes the most common v0.8.x→v1.0.0+ upgrade foot-gun. No code changes, no env var changes, no dependency changes.
   - **`.env.example`**: New `# ── Vector Backend Selection (v1.0.0+) ──` section at the top (right after Core Database Settings) documenting both `MEMINI_VECTOR_BACKEND` (values: `pgembed` | `postgres-external`, default `pgembed`, REQUIRED if `MEMINI_DB_URL` is set) and `MEMINI_PGEMBED_DATA_DIR` (default `~/.local/share/memini-ai/pgembed/data`). Includes a prominent warning block about the v1.0.0 breaking change.
