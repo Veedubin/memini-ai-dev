@@ -315,6 +315,16 @@ def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
             "  unset MEMINI_DB_URL\n"
             "  memini-ai migrate --from='<your old MEMINI_DB_URL>'\n"
             "\n"
+            "If running under OpenCode, set both env vars in your opencode.json MCP environment block:\n"
+            '  "mcp": {\n'
+            '    "memini-ai-dev": {\n'
+            '      "environment": {\n'
+            '        "MEMINI_DB_URL": "postgresql://...",\n'
+            '        "MEMINI_VECTOR_BACKEND": "postgres-external"\n'
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "\n"
             "Set MEMINI_VECTOR_BACKEND explicitly to suppress this error."
         )
 

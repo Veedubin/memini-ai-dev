@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-08-01
+- **Docs: `MEMINI_VECTOR_BACKEND` migration hint surfaced in three places** — Closes the most common v0.8.x→v1.0.0+ upgrade foot-gun. No code changes, no env var changes, no dependency changes.
+  - **`.env.example`**: New `# ── Vector Backend Selection (v1.0.0+) ──` section at the top (right after Core Database Settings) documenting both `MEMINI_VECTOR_BACKEND` (values: `pgembed` | `postgres-external`, default `pgembed`, REQUIRED if `MEMINI_DB_URL` is set) and `MEMINI_PGEMBED_DATA_DIR` (default `~/.local/share/memini-ai/pgembed/data`). Includes a prominent warning block about the v1.0.0 breaking change.
+  - **`README.md`**: Minimal MCP client config example now shows BOTH `pgembed` (new installs) and `postgres-external` + `MEMINI_DB_URL` (v0.8.x upgraders) as commented alternatives, with a 1-line note above explaining the upgrade path.
+  - **`database.py` error message**: The v1.0.0 RuntimeError now includes an OpenCode-specific hint showing the exact `opencode.json` MCP environment block structure (`mcp.memini-ai-dev.environment.MEMINI_DB_URL` + `MEMINI_VECTOR_BACKEND`), since the most common cause for OpenCode users is forgetting to set the env var in the wrapper config.
+  - **Tests**: 1 new test in `tests/test_config.py::TestV1BackendConfig` — `test_v100_error_message_mentions_opencode_wrapper` asserts the error message contains `"opencode.json"` or `"environment"` so future changes don't accidentally drop the wrapper hint. 1072 passing (4 pre-existing `memini-vision` `ModuleNotFoundError` env failures unchanged). `ruff check` 0 errors. `mypy` 0 new errors (14 pre-existing in 6 files unchanged).
+
 ## [1.5.3] - 2026-07-29
 - **Docs: HANDOFF.md Session 60 entry covering the v1.5.1 KG add_memory timeout fix and the v1.5.2 SaaS doc removal; notes the file's prior staleness at Session 52. No code changes.**
 

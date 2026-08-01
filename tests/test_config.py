@@ -422,3 +422,32 @@ class TestV1BackendConfig:
         """team_db_url should default to empty string (no team backend)."""
         config = MeminiConfig()
         assert config.team_db_url == ""
+
+    # -- v1.0.0 error message tests -------------------------------------------
+
+    def test_v100_error_message_mentions_opencode_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The v1.0.0 RuntimeError must mention the opencode.json wrapper.
+
+        When MEMINI_DB_URL is set but MEMINI_VECTOR_BACKEND is not, the
+        server raises a RuntimeError. The most common cause for OpenCode
+        users is forgetting to set the env var in the opencode.json MCP
+        environment block — the error message must surface that hint so
+        future changes don't accidentally drop it.
+        """
+        from memini_ai.memory.database import create_database
+
+        # Simulate a v0.8.x upgrader with MEMINI_DB_URL set but no
+        # MEMINI_VECTOR_BACKEND (the fixture already clears it).
+        monkeypatch.setenv("MEMINI_DB_URL", "postgresql://localhost:5432/postgres")
+        monkeypatch.delenv("MEMINI_VECTOR_BACKEND", raising=False)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            create_database()
+
+        message = str(exc_info.value)
+        assert "opencode.json" in message or "environment" in message, (
+            f"Error message must mention the opencode.json MCP wrapper for "
+            f"OpenCode users. Got:\n{message}"
+        )

@@ -135,6 +135,11 @@ path.
 
 ### Minimal MCP client config (`opencode.json`)
 
+If upgrading from v0.8.x with an existing external Postgres, set
+`MEMINI_VECTOR_BACKEND=postgres-external` AND set `MEMINI_DB_URL`. v1.0.0+
+defaults to `pgembed` (embedded) and refuses to start when `MEMINI_DB_URL`
+is set without `MEMINI_VECTOR_BACKEND`.
+
 ```json
 {
   "mcp": {
@@ -143,7 +148,11 @@ path.
         "type": "local",
         "enabled": true,
         "environment": {
+          // New installs (default): embedded PostgreSQL, no Docker.
           "MEMINI_VECTOR_BACKEND": "pgembed",
+          // v0.8.x upgraders with an external server: uncomment BOTH lines.
+          // "MEMINI_VECTOR_BACKEND": "postgres-external",
+          // "MEMINI_DB_URL": "postgresql://postgres:password@localhost:5434/postgres",
           "TRUST_ENGINE": "true",
           "KG_ENABLED": "true"
         }
