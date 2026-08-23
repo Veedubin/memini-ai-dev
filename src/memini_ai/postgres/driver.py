@@ -38,7 +38,7 @@ except (
 ) as _pgembed_import_err:  # pragma: no cover - exercised via smoke test
     _PGEMBED_IMPORT_ERROR: ImportError | None = _pgembed_import_err
     pgembed = None  # type: ignore[assignment]
-    EXTENSION_POSTGRES_LIB_PATH = None  # type: ignore[assignment]
+    EXTENSION_POSTGRES_LIB_PATH = None
 else:
     _PGEMBED_IMPORT_ERROR = None
 
@@ -150,7 +150,7 @@ class EmbeddedPGDriver:
         if state_dir is not None:
             self._state_dir: Path = Path(state_dir).expanduser().resolve()
         else:
-            self._state_dir: Path = Path("~/.memini-ai/pgembed").expanduser().resolve()
+            self._state_dir = Path("~/.memini-ai/pgembed").expanduser().resolve()
         self._state_file: Path = self._state_dir / "server.json"
         self._state_lock: Path = self._state_dir / "server.json.lock"
 
@@ -232,7 +232,7 @@ class EmbeddedPGDriver:
         """Attach to an already-running pgembed server (multi-process)."""
         _require_pgembed()
         data_dir = state["data_dir"]
-        self._server = pgembed.get_server(data_dir, cleanup_mode=None)
+        self._server = pgembed.get_server(data_dir, cleanup_mode=None)  # type: ignore[attr-defined]
         self._postmaster_pid = self._server.get_pid()
         uri: str = self._server.get_uri()
         self._uri = uri  # set before _register_client so state.json records the uri
@@ -275,7 +275,9 @@ class EmbeddedPGDriver:
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._write_initial_state()
         try:
-            self._server = pgembed.get_server(str(self._data_dir), cleanup_mode=None)
+            self._server = pgembed.get_server(  # type: ignore[attr-defined]
+                str(self._data_dir), cleanup_mode=None
+            )
         except (OSError, RuntimeError) as e:
             self._write_state_dead()
             raise RuntimeError(f"Failed to start embedded Postgres: {e}") from e
@@ -343,7 +345,9 @@ class EmbeddedPGDriver:
         # up a fresh postmaster that reads the current postgresql.conf
         # (with our dynamic_library_path line).
         try:
-            stop_server = _pgembed.get_server(str(self._data_dir), cleanup_mode="stop")
+            stop_server = _pgembed.get_server(  # type: ignore[attr-defined]
+                str(self._data_dir), cleanup_mode="stop"
+            )
             stop_server.cleanup()
         except Exception:  # noqa: BLE001 - best-effort
             pass
@@ -609,7 +613,9 @@ class EmbeddedPGDriver:
         _require_pgembed()
         if self._postmaster_pid is not None:
             try:
-                pgembed.pg_ctl(["-w", "stop"], pgdata=self._data_dir)
+                pgembed.pg_ctl(  # type: ignore[attr-defined]
+                    ["-w", "stop"], pgdata=self._data_dir
+                )
             except Exception as e:  # noqa: BLE001 - pg_ctl raises subprocess errors
                 logger.warning(
                     "pgembed_stop_failed", data_dir=str(self._data_dir), error=str(e)

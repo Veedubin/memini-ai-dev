@@ -63,6 +63,7 @@ from memini_ai.postgres.queries import (
     KANBAN_GET_CARD_BY_ID,
     KANBAN_INSERT_CARD,
     KANBAN_MOVE_CARD,
+    MEMORY_EXISTS_BY_ID,
     SEARCH_MEMORIES_1024_VECTOR,
     SEARCH_MEMORIES_BGE_M3,
     SEARCH_MEMORIES_IMAGE,
@@ -439,7 +440,10 @@ class PostgresDatabase(VectorDatabase):
         # Normalize the embedding to list[float]. pgvector 0.5.0+ returns a
         # Vector object (not iterable); older versions return list or str.
         # _to_float_list handles all representations transparently.
-        embedding = row["embedding"]
+        # v1.5.6 perf: the key may be ABSENT on slim read paths (search /
+        # joined queries no longer select the raw vector) — tolerate that
+        # and leave ``vector`` as None instead of raising KeyError.
+        embedding = row.get("embedding")
         vector = _to_float_list(embedding) if embedding is not None else None
 
         data = {
@@ -647,6 +651,46 @@ class PostgresDatabase(VectorDatabase):
                 return None
 
             return self._row_to_memory(row)
+
+    async def memory_exists(
+        self,
+        memory_id: str,
+        include_archived: bool = False,
+    ) -> str | None:
+        """Lightweight existence probe (v1.5.6 perf).
+
+        Returns the memory id when the row exists, else None. Unlike
+        :meth:`get_memory` this does NOT fetch or parse the embedding
+        column — used by the add_memory post-write read-back so large
+        writes don't pay a full-vector round-trip just to confirm
+        persistence.
+
+        Args:
+            memory_id: ID of the memory entry.
+            include_archived: If True, include archived memories (default False).
+
+        Returns:
+            The memory id if found, None otherwise.
+        """
+        await self.initialize()
+        pool = await self._get_pool()
+
+        peer_id = self._effective_peer_id
+
+        async with pool.acquire() as conn:
+            if peer_id is not None:
+                sql = (
+                    MEMORY_EXISTS_BY_ID.rstrip().rstrip(";")
+                    + " AND (peer_id = $3::uuid OR peer_id IS NULL)"
+                )
+                row = await conn.fetchrow(sql, memory_id, include_archived, peer_id)
+            else:
+                row = await conn.fetchrow(
+                    MEMORY_EXISTS_BY_ID, memory_id, include_archived
+                )
+            if row is None:
+                return None
+            return str(row["id"])
 
     async def get_supersession_chain(
         self,

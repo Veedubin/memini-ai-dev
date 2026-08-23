@@ -1,6 +1,6 @@
 [project]
 name = "memini-ai-dev"
-version = "1.5.5"
+version = "1.5.6"
 description = "Local-first semantic memory server with embedded PostgreSQL/pgvector. Optional RRF fusion with shared team server."
 readme = "README.md"
 requires-python = ">=3.12"

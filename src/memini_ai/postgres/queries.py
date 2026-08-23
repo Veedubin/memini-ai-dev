@@ -37,15 +37,26 @@ def peer_filter_clause(peer_id: str | None, param_index: int) -> tuple[str, str 
 # Vector Search Queries
 # =============================================================================
 
+# NOTE (v1.5.6 perf): the raw ``embedding`` column is intentionally NOT
+# selected here. Search consumers only need id/text/score — shipping 384
+# floats per result bloated every MCP response by ~4-8KB per memory and was
+# a primary cause of client-side timeouts on large result sets.
 SEARCH_MEMORIES_VECTOR = """
 SELECT id, text, source_type, trust_score, retrieval_count, is_archived, metadata,
-       embedding, supersedes_id, structured_fields, change_ratio, created_at_ms,
+       supersedes_id, structured_fields, change_ratio, created_at_ms,
        embedding <=> $1::vector as distance
 FROM memories
 WHERE embedding <=> $1::vector < $2
 AND is_archived = FALSE
 ORDER BY embedding <=> $1::vector
 LIMIT $3
+"""
+
+# Lightweight existence probe used by add_memory post-write read-back
+# (v1.5.6). Returns only the id — avoids fetching+parsing the full vector
+# just to confirm a row landed.
+MEMORY_EXISTS_BY_ID = """
+SELECT id FROM memories WHERE id = $1 AND ($2::boolean OR is_archived = FALSE)
 """
 
 SEARCH_MEMORIES_WITH_PEER = """
@@ -580,6 +591,9 @@ WHERE memory_id = $1
 
 # Get all 1024-dim embeddings, joined with the 384-dim text/metadata. Used for
 # full-table RRF fusion when we want both sides of the dual-model.
+# NOTE (v1.5.6 perf): m1024.embedding is no longer selected — RRF fusion
+# only consumes memory IDs; shipping the 1024-dim vector per row was pure
+# serialization waste.
 SEARCH_MEMORIES_1024_JOINED = """
 SELECT
     m.id AS memory_id,
@@ -588,8 +602,7 @@ SELECT
     m.trust_score,
     m.retrieval_count,
     m.is_archived,
-    m.metadata,
-    m1024.embedding
+    m.metadata
 FROM memories_1024 m1024
 JOIN memories m ON m.id = m1024.memory_id
 WHERE m.is_archived = FALSE

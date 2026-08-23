@@ -1,10 +1,26 @@
 # Memini-ai Handoff Document
 
-> **Session**: 2026-07-29 (Session 60 — v1.5.1 KG add_memory timeout fix + v1.5.2 SaaS doc removal — **BOTH RELEASED** ✅)
-> **Project**: Memini-ai v1.5.2
-> **Status**: v1.5.1 + v1.5.2 RELEASED. (Note: this file was stale at Session 52 / v1.0.3 — sessions 53-59 shipped v1.1.x through v1.5.0 and are recorded in the root `MCP-Servers/HANDOFF.md`; see CHANGELOG.md for the per-release record.)
+> **Session**: 2026-08-23 (Session 61 — v1.5.6 perf release: projection pushdown + single-embed RRF + configurable timeout — **RELEASED** ✅)
+> **Project**: Memini-ai v1.5.6
+> **Status**: v1.5.6 RELEASED (pending tag push approval). Prior sessions 53-60 shipped v1.1.x through v1.5.2; see CHANGELOG.md for the per-release record.
 
 ---
+
+## 2026-08-23 (Session 61) — v1.5.6: large-memory timeout perf fixes — **RELEASED** ✅
+
+**User report**: MCP timeouts "when memories are too large". Investigation (memory query + code read) confirmed 4 root causes; user approved fixes A+B+C with the orchestrator coding directly (subagent models require Ollama Cloud subscription).
+
+**Fixes (all in this one commit):**
+1. **Projection pushdown (Fix A)** — `SEARCH_MEMORIES_VECTOR` / `SEARCH_MEMORIES_1024_JOINED` no longer SELECT raw vector columns; `_row_to_memory()` tolerates absent `embedding` key. Every query response previously shipped tens of KB of float JSON per row. `GET_MEMORY_BY_ID` deliberately unchanged (integrity checks/elevate/tests need full vectors).
+2. **Lightweight write read-back (Fix A)** — new `MEMORY_EXISTS_BY_ID` (`SELECT id`) + `PostgresDatabase.memory_exists()` + getattr-guarded `MemorySystem.memory_exists()` wrapper; server read-back prefers it, falls back to `get_memory`.
+3. **Single-embed concurrent RRF (Fix B)** — `_query_multi_model_rrf` passes precomputed 384 vector into `vector_only_search(query_vector=...)` (was double-embedding) and runs both fan-out arms via `asyncio.gather` (was sequential despite docstring).
+4. **Configurable timeout (Fix C)** — `MEMINI_OPERATION_TIMEOUT_MS` (default 30000, clamp [1000,600000]) via new config field + `_op_timeout()` helper replacing all ~105 hard-coded `timeout=OPERATION_TIMEOUT` sites.
+
+**Bonus**: fixed all 15 latent mypy errors surfaced by a mypy upgrade (type-only; verified 14 pre-dated via `git archive HEAD` comparison). Installed optional `memini-vision==0.1.1` so the 13 image-RRF tests run again (ModuleNotFoundError env failures pre-dated this session).
+
+**Gates**: ruff 0 · mypy 0/57 files · pytest **1095 passed, 0 failed**, 56 skipped (17 new tests in `tests/test_v156_perf.py`).
+
+**⚠️ OpenCode restart required** to load v1.5.6 in the running MCP server process.
 
 ## 2026-07-29 (Session 60) — v1.5.1: KG add_memory timeout fix — **RELEASED** ✅
 

@@ -246,6 +246,7 @@ class MemorySearch:
         question: str,
         options: SearchOptions,
         collection_name: str | None = None,
+        query_vector: list[float] | None = None,
     ) -> list[MemoryEntry]:
         """Pure vector similarity search.
 
@@ -253,12 +254,19 @@ class MemorySearch:
             question: Query string.
             options: Search options.
             collection_name: Optional collection override.
+            query_vector: Optional precomputed embedding for the question
+                (v1.5.6 perf). When provided, ``generate_embedding`` is
+                skipped — avoids double-embedding on RRF fan-out paths
+                that already computed the vector.
 
         Returns:
             List of MemoryEntry objects.
         """
-        embedding_result = await generate_embedding(question)
-        vector = embedding_result.embedding
+        if query_vector is not None:
+            vector = query_vector
+        else:
+            embedding_result = await generate_embedding(question)
+            vector = embedding_result.embedding
 
         return await self._db.query_memories(vector, options, collection_name)
 

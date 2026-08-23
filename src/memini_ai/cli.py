@@ -29,7 +29,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from memini_ai.utils.logger import logger
 
@@ -156,7 +156,7 @@ def _print_state(state: dict[str, Any], *, from_driver: bool) -> None:
         role = info.get("role") if isinstance(info, dict) else None
         print(
             f"    - {short}  pid={client_pid}  role={role}  "
-            f"last_heartbeat={_heartbeat_age(last_hb)}"
+            f"last_heartbeat={_heartbeat_age(cast('str', last_hb))}"
         )
 
     shutdown_by = state.get("shutdown_initiated_by")
@@ -212,17 +212,17 @@ async def _status() -> None:
 
     # Fallback: read server.json directly.
     try:
-        raw: Any = json.loads(STATE_FILE.read_text())
+        raw_state: Any = json.loads(STATE_FILE.read_text())
     except json.JSONDecodeError as e:
         print(f"Error: corrupted server.json ({e})", file=sys.stderr)
         sys.exit(1)
     except OSError as e:
         print(f"Error: cannot read {STATE_FILE}: {e}", file=sys.stderr)
         sys.exit(1)
-    if not isinstance(raw, dict):
+    if not isinstance(raw_state, dict):
         print("Error: corrupted server.json (not a JSON object)", file=sys.stderr)
         sys.exit(1)
-    _print_state(raw, from_driver=False)
+    _print_state(raw_state, from_driver=False)
 
 
 # ── stop ──────────────────────────────────────────────────────────────────────
@@ -251,7 +251,9 @@ async def _stop(*, force: bool) -> None:
         import pgembed  # local import; only needed for the force path
 
         try:
-            server = pgembed.get_server(str(data_dir), cleanup_mode="stop")
+            server = pgembed.get_server(  # type: ignore[attr-defined]
+                str(data_dir), cleanup_mode="stop"
+            )
         except Exception as e:  # noqa: BLE001 - surface a clear CLI error
             print(f"Error: could not attach to embedded server: {e}", file=sys.stderr)
             sys.exit(1)

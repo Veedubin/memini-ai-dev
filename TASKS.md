@@ -1,10 +1,10 @@
 # Memini-ai Development Tasks
 
-> **Project**: Memini-ai v1.0.3 (formerly Super-Memory-TS)
+> **Project**: Memini-ai v1.5.6 (formerly Super-Memory-TS)
 > **Meaning**: "I remember" in Latin
 > **Language**: Python (porting from TypeScript)
 > **Framework**: FastMCP
-> **Last Updated**: 2026-07-16 (Session 52 — **v1.0.3 RELEASED** + 8 prior versions since v0.7.6: v0.7.7 BGE-M3 opt-in, v0.7.8 audit+doc rewrite, v0.7.9 data-leak rule, v0.8.0 image-recall RRF, v0.8.1 CI re-trigger, v0.8.2 detect-secrets, v1.0.0 embedded pgembed backend, v1.0.1 + v1.0.2 migrate command fixes, v1.0.3 docs+lockfile sync patch. DB server verified working in-process healthcheck 2026-07-16. **Embedded pgembed now the default backend** (v0.8.2 external Postgres still supported via `MEMINI_VECTOR_BACKEND=postgres-external`). All 13 tables present in live memini-postgres (port 5434), 986 memories + 519 thoughts. Full session-by-session records in HANDOFF.md. 809 tests pass (v0.7.8 baseline), ruff/mypy clean. See CHANGELOG.md for per-release detail.)
+> **Last Updated**: 2026-08-23 (Session 61 — **v1.5.6 RELEASED**: large-memory timeout perf fixes — projection pushdown strips raw vectors from search SQL, lightweight `memory_exists` write read-back, single-embed concurrent RRF fan-out, `MEMINI_OPERATION_TIMEOUT_MS` configurable timeout; +15 latent mypy errors fixed, memini-vision optional dep installed. 1095 tests pass, ruff/mypy clean. Full session-by-session records in HANDOFF.md.)
 
 ---
 

@@ -394,6 +394,31 @@ class MemorySystem:
 
         return await self._db.get_memory(memory_id, include_archived)
 
+    async def memory_exists(self, memory_id: str) -> str | None:
+        """Lightweight existence probe (v1.5.6 perf).
+
+        Returns the memory id if the row exists, else None. Prefers a
+        backend-native ``memory_exists`` (no vector fetch); falls back to
+        :meth:`get_memory` for backends that don't implement it (e.g.
+        RRFDatabase wrapper, test mocks).
+
+        Args:
+            memory_id: ID of the memory entry.
+
+        Returns:
+            The memory id if found, None otherwise.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        exists_fn = getattr(self._db, "memory_exists", None)
+        if exists_fn is not None and asyncio.iscoroutinefunction(exists_fn):
+            result: str | None = await exists_fn(memory_id)
+            return result
+
+        entry = await self.get_memory(memory_id)
+        return entry.id if entry is not None else None
+
     async def get_supersession_chain(
         self,
         memory_id: str,
@@ -583,15 +608,21 @@ class MemorySystem:
             exact_search=options.exact_search,
             filter=options.filter,
         )
-        results_384 = await self._search.vector_only_search(
-            question, search_options_384
-        )
 
-        # 1024-dim search: direct on the 1024 sidecar table.
-        results_1024: list[MemoryEntry] = await query_1024(
-            vector_1024,
-            threshold=0.9,  # permissive — RRF will re-rank anyway
-            limit=fetch_k,
+        # v1.5.6 perf: run both fan-out arms CONCURRENTLY (the docstring
+        # always claimed parallel but the awaits were sequential) and pass
+        # the precomputed 384 vector into the 384-side search so the
+        # question is embedded exactly ONCE per query (it was previously
+        # embedded twice — once here, once inside vector_only_search).
+        results_384, results_1024 = await asyncio.gather(
+            self._search.vector_only_search(
+                question, search_options_384, query_vector=vector_384
+            ),
+            query_1024(
+                vector_1024,
+                threshold=0.9,  # permissive — RRF will re-rank anyway
+                limit=fetch_k,
+            ),
         )
 
         # RRF fusion over memory IDs.
@@ -668,7 +699,11 @@ class MemorySystem:
             empty or the search returns no matches.
         """
         # Lazy import — text-only users never pay this cost.
-        from memini_vision import ClipEmbedder, ImageIndex, ImageQuery
+        from memini_vision import (  # type: ignore[import-not-found]
+            ClipEmbedder,
+            ImageIndex,
+            ImageQuery,
+        )
 
         config = get_config()
         # Resolve the DB URL for the image index (falls back to db_url).
@@ -689,7 +724,10 @@ class MemorySystem:
             # The ImageQuery results already have memory_ids; we use the
             # db helper because it returns MemoryEntry objects directly.
             query_vec = embedder.encode_text(question)
-            return await search_image(query_vec, limit=fetch_k)
+            img_entries: list[MemoryEntry] = await search_image(
+                query_vec, limit=fetch_k
+            )
+            return img_entries
         # Fallback: hydrate one-by-one via get_memory (no db helper).
         entries: list[MemoryEntry] = []
         for r in results:

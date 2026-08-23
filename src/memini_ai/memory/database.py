@@ -394,7 +394,7 @@ def create_database(config: MeminiConfig | None = None) -> VectorDatabase:
 
     from memini_ai.postgres import PostgresDatabase
 
-    db = PostgresDatabase(
+    db: VectorDatabase = PostgresDatabase(
         driver=driver,
         project_id=config.project_id,
         sslmode=config.db_sslmode,

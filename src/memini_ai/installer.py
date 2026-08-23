@@ -31,6 +31,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from memini_ai import __version__
 
@@ -1243,11 +1244,15 @@ def run_prompts(flags: argparse.Namespace) -> InstallConfig:
             # Flag-driven TLS: still prompt for the non-TLS connection bits
             # (host/port/db/user/password/new-db) unless --yes was passed.
             print("\n  Team PostgreSQL server connection:")
-            host = _prompt_optional("    Host [localhost]: ") or "localhost"
-            port = _prompt_optional("    Port [5432]: ") or "5432"
-            database = _prompt_optional("    Database [memini]: ") or "memini"
-            user = _prompt_optional("    User [postgres]: ") or "postgres"
-            password = _prompt_optional("    Password (input visible): ")
+            # Annotated as unions because the else-branch below rebinds these
+            # from _prompt_team_connection(), which returns Optional strings.
+            host: str | None = _prompt_optional("    Host [localhost]: ") or "localhost"
+            port: str | None = _prompt_optional("    Port [5432]: ") or "5432"
+            database: str | None = (
+                _prompt_optional("    Database [memini]: ") or "memini"
+            )
+            user: str | None = _prompt_optional("    User [postgres]: ") or "postgres"
+            password: str | None = _prompt_optional("    Password (input visible): ")
             new_db = _prompt_yes_no(
                 "    Is this a new database? (admin/bootstrap flow)", default=False
             )
@@ -1257,7 +1262,7 @@ def run_prompts(flags: argparse.Namespace) -> InstallConfig:
             host, port, database, user, password, new_db, sslmode, sslrootcert = (
                 _prompt_team_connection()
             )
-        config.team_host = host
+        config.team_host = cast("str", host)
         config.team_port = port
         config.team_database = database
         config.team_user = user

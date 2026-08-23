@@ -294,6 +294,21 @@ class MeminiConfig(BaseSettings):
         description="Enable content sanitization on add_memory (default True)",
     )
 
+    # Operation timeout (v1.5.6+)
+    # Per-tool-call ceiling in milliseconds, applied by server.py via
+    # asyncio.wait_for. Previously hard-coded at 30s; large-memory writes
+    # on slow CPU embedding backends (e.g. BGE-M3 on long text) could
+    # exceed it and surface as MCP -32001 timeouts. Raise for slow
+    # hardware; the server clamps to [1000, 600000].
+    operation_timeout_ms: int = Field(
+        default=30000,
+        alias="MEMINI_OPERATION_TIMEOUT_MS",
+        description=(
+            "Per-operation timeout in milliseconds (default 30000 = 30s). "
+            "Clamped to [1000, 600000]."
+        ),
+    )
+
     # Env diagnostic (v1.5.5+)
     # When true, log resolved MEMINI_* env vars on startup. Off by default;
     # only enable to diagnose MCP env-injection issues (e.g. the opencode
@@ -530,6 +545,17 @@ class MeminiConfig(BaseSettings):
             return 1
         if val > 10000:
             return 10000
+        return val
+
+    @field_validator("operation_timeout_ms", mode="before")
+    @classmethod
+    def _clamp_operation_timeout_ms(cls, v: int | str) -> int:
+        """Clamp per-operation timeout to [1000, 600000] ms (v1.5.6)."""
+        val = int(v) if isinstance(v, str) else v
+        if val < 1000:
+            return 1000
+        if val > 600000:
+            return 600000
         return val
 
     # =============================================================================

@@ -47,8 +47,26 @@ from memini_ai.utils.sanitizer import (
     validate_content_size,
 )
 
-# Operation timeout in seconds
+# Operation timeout in seconds — DEFAULT fallback. The effective value is
+# resolved per-call via ``_op_timeout()`` from the
+# ``MEMINI_OPERATION_TIMEOUT_MS`` config field (v1.5.6). The previous
+# hard-coded 30s ceiling made large-memory writes on slow CPU embedding
+# backends fail with "Operation timed out" (-32001 symptom).
 OPERATION_TIMEOUT = 30.0
+
+
+def _op_timeout() -> float:
+    """Resolve the operation timeout in seconds from config (v1.5.6).
+
+    Reads ``operation_timeout_ms`` (env alias ``MEMINI_OPERATION_TIMEOUT_MS``),
+    clamped to a safe [1s, 600s] range. Falls back to the module default if
+    config is unavailable (e.g. early import / unit tests with stubbed config).
+    """
+    try:
+        ms = get_config().operation_timeout_ms
+        return max(1.0, min(600.0, float(ms) / 1000.0))
+    except Exception:  # pragma: no cover - defensive fallback
+        return OPERATION_TIMEOUT
 
 
 class MCPServer:
@@ -339,7 +357,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             # Map strategy string to enum
@@ -354,7 +372,7 @@ class MCPServer:
             options = SearchOptions(topK=limit, strategy=strat)
             results = await asyncio.wait_for(
                 self._memory_system.query_memories(query, options),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             # Convert to dict format
@@ -459,7 +477,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             # Parse source type
@@ -486,19 +504,33 @@ class MCPServer:
 
             # Try to add (may raise on duplicate)
             memory_id = await asyncio.wait_for(
-                self._memory_system.add_memory(entry), timeout=OPERATION_TIMEOUT
+                self._memory_system.add_memory(entry), timeout=_op_timeout()
             )
 
             # Phase 2.3 (v0.7.3): Post-write read-back verification.
             # Confirms the write is actually retrievable via the read
-            # path. If get_memory returns None, the write was silently
+            # path. If the probe returns None, the write was silently
             # lost (or the read path is broken) — surface it to the
             # caller instead of claiming success.
+            #
+            # v1.5.6 perf: prefer the lightweight ``memory_exists`` probe
+            # (SELECT id only). The previous full ``get_memory`` fetched
+            # and parsed the entire embedding vector on EVERY write —
+            # measurable added latency on large memories.
             try:
-                verified = await asyncio.wait_for(
-                    self._memory_system.get_memory(memory_id),
-                    timeout=OPERATION_TIMEOUT,
-                )
+                exists_fn = getattr(self._memory_system, "memory_exists", None)
+                if exists_fn is not None and asyncio.iscoroutinefunction(exists_fn):
+                    verified_id = await asyncio.wait_for(
+                        exists_fn(memory_id),
+                        timeout=_op_timeout(),
+                    )
+                    verified = verified_id  # truthy str or None
+                else:
+                    verified = await asyncio.wait_for(
+                        self._memory_system.get_memory(memory_id),
+                        timeout=_op_timeout(),
+                    )
+                _readback_exc: Exception | None = None
             except Exception as e:
                 logger.error(
                     "add_memory_post_write_readback_failed",
@@ -508,8 +540,6 @@ class MCPServer:
                 verified = None
                 # Preserve the readback exception for the error response
                 _readback_exc = e
-            else:
-                _readback_exc = None
 
             if verified is None:
                 readback_detail = (
@@ -652,12 +682,12 @@ class MCPServer:
         try:
             if self._indexer is None:
                 self._indexer = await asyncio.wait_for(
-                    self._init_indexer(), timeout=OPERATION_TIMEOUT
+                    self._init_indexer(), timeout=_op_timeout()
                 )
 
             # Run search
             results = await asyncio.wait_for(
-                self._indexer.search(query, {"top_k": topK}), timeout=OPERATION_TIMEOUT
+                self._indexer.search(query, {"top_k": topK}), timeout=_op_timeout()
             )
 
             chunks: list[dict[str, Any]] = []
@@ -702,7 +732,7 @@ class MCPServer:
         try:
             if self._indexer is None:
                 self._indexer = await asyncio.wait_for(
-                    self._init_indexer(), timeout=OPERATION_TIMEOUT
+                    self._init_indexer(), timeout=_op_timeout()
                 )
 
             target_path = path or "."
@@ -823,11 +853,11 @@ class MCPServer:
         try:
             if self._indexer is None:
                 self._indexer = await asyncio.wait_for(
-                    self._init_indexer(), timeout=OPERATION_TIMEOUT
+                    self._init_indexer(), timeout=_op_timeout()
                 )
 
             result = await asyncio.wait_for(
-                self._indexer.get_file_contents(filePath), timeout=OPERATION_TIMEOUT
+                self._indexer.get_file_contents(filePath), timeout=_op_timeout()
             )
 
             if result is None:
@@ -841,7 +871,7 @@ class MCPServer:
 
                 # Try again
                 result = await asyncio.wait_for(
-                    self._indexer.get_file_contents(filePath), timeout=OPERATION_TIMEOUT
+                    self._indexer.get_file_contents(filePath), timeout=_op_timeout()
                 )
 
             if result is None:
@@ -993,7 +1023,7 @@ class MCPServer:
                 t0 = time.monotonic()
                 memory_count = await asyncio.wait_for(
                     self._memory_system._db.count_memories(),
-                    timeout=OPERATION_TIMEOUT,
+                    timeout=_op_timeout(),
                 )
                 # count_thoughts is best-effort — may not be implemented
                 # on all backends.
@@ -1005,7 +1035,7 @@ class MCPServer:
                 ):
                     try:
                         thoughts_count = await asyncio.wait_for(
-                            count_thoughts_fn(), timeout=OPERATION_TIMEOUT
+                            count_thoughts_fn(), timeout=_op_timeout()
                         )
                     except Exception:
                         thoughts_count = 0
@@ -1020,7 +1050,7 @@ class MCPServer:
                 ):
                     try:
                         kanban_count = await asyncio.wait_for(
-                            count_kanban_fn(), timeout=OPERATION_TIMEOUT
+                            count_kanban_fn(), timeout=_op_timeout()
                         )
                     except Exception:
                         kanban_count = 0
@@ -1167,7 +1197,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             # 1. Write the marker memory.
@@ -1181,7 +1211,7 @@ class MCPServer:
             entry.metadata_json = '{"type":"healthcheck_marker"}'
             memory_id = await asyncio.wait_for(
                 self._memory_system.add_memory(entry),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
             result["memoryId"] = memory_id
             result["writeLatencyMs"] = round((time.monotonic() - t_write) * 1000.0, 2)
@@ -1190,7 +1220,7 @@ class MCPServer:
             t_read = time.monotonic()
             readback = await asyncio.wait_for(
                 self._memory_system.get_memory(memory_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
             result["readLatencyMs"] = round((time.monotonic() - t_read) * 1000.0, 2)
 
@@ -1239,7 +1269,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             if self._trust_engine is None:
@@ -1247,7 +1277,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._trust_engine.get_trust_score(memory_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             if result is None:
@@ -1284,7 +1314,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             if self._trust_engine is None:
@@ -1305,7 +1335,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._trust_engine.adjust_trust(memory_id, trust_signal),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             if result is None:
@@ -1369,7 +1399,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             if self._trust_engine is None:
@@ -1377,7 +1407,7 @@ class MCPServer:
 
             results = await asyncio.wait_for(
                 self._trust_engine.list_archived(limit, offset),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             memories = []
@@ -1427,7 +1457,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             # Parse relationship type if provided
@@ -1447,7 +1477,7 @@ class MCPServer:
                 self._memory_system.find_related_memories(
                     memoryId, rel_type, limit, includeArchived, maxChainDepth
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             memories = []
@@ -1493,7 +1523,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             # Parse relationship type
@@ -1516,7 +1546,7 @@ class MCPServer:
                 self._memory_system.create_relationship(
                     sourceId, targetId, rel_type, confidence
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -1555,12 +1585,12 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             result = await asyncio.wait_for(
                 self._memory_system.get_relationship_summary(memoryId),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -1592,13 +1622,13 @@ class MCPServer:
             if self._extractor is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._extractor = MemoryExtractor(memory_system=self._memory_system)
 
             memory_ids = await asyncio.wait_for(
                 self._extractor.trigger_extraction(conversation),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -1637,7 +1667,7 @@ class MCPServer:
             if self._precompress is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._extractor = MemoryExtractor(memory_system=self._memory_system)
                 self._precompress = PrecompressExtractor(
@@ -1647,7 +1677,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._precompress.capture_and_extract(context_content or ""),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -1688,13 +1718,13 @@ class MCPServer:
             if self._tiered_loader is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._tiered_loader = TieredLoader(memory_system=self._memory_system)
 
             result = await asyncio.wait_for(
                 self._tiered_loader.get_tier0(force_refresh),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -1739,13 +1769,13 @@ class MCPServer:
             if self._tiered_loader is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._tiered_loader = TieredLoader(memory_system=self._memory_system)
 
             result = await asyncio.wait_for(
                 self._tiered_loader.get_tier1(force_refresh),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -1791,13 +1821,13 @@ class MCPServer:
             if self._user_model is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._user_model = UserModel(memory_system=self._memory_system)
 
             result = await asyncio.wait_for(
                 self._user_model.get_profile(include_dialectic_notes),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -1837,7 +1867,7 @@ class MCPServer:
             if self._user_model is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._user_model = UserModel(memory_system=self._memory_system)
 
@@ -1850,7 +1880,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._user_model.update_profile_from_session(conversation),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -1882,13 +1912,13 @@ class MCPServer:
             if self._decay_engine is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._decay_engine = DecayEngine(memory_system=self._memory_system)
 
             result = await asyncio.wait_for(
                 self._decay_engine.get_decay_status(),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -1918,7 +1948,7 @@ class MCPServer:
             if self._consolidation_engine is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._consolidation_engine = ConsolidationEngine(
                     memory_system=self._memory_system
@@ -1934,7 +1964,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._consolidation_engine.run_consolidation(),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -1969,7 +1999,7 @@ class MCPServer:
             if self._consolidation_engine is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._consolidation_engine = ConsolidationEngine(
                     memory_system=self._memory_system
@@ -1977,7 +2007,7 @@ class MCPServer:
 
             fading = await asyncio.wait_for(
                 self._consolidation_engine.list_fading_memories(limit),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -2018,7 +2048,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             # Clamp decay rate to valid range
@@ -2026,7 +2056,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 adjust_decay_rate(self._memory_system, memory_id, decay_rate),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -2097,7 +2127,7 @@ class MCPServer:
 
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             # Clamp trust_boost to a safe range — same range as the DB helper.
@@ -2117,7 +2147,7 @@ class MCPServer:
                     vector_1024=vector_1024,
                     trust_boost=trust_boost,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
             result["mode"] = config.embedding_mode
             result["success"] = True
@@ -2180,7 +2210,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             db = self._memory_system._db
@@ -2203,7 +2233,7 @@ class MCPServer:
                     draft=draft,
                     memory_id=memory_id,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
             result["success"] = True
             return result
@@ -2233,7 +2263,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             db = self._memory_system._db
@@ -2245,7 +2275,7 @@ class MCPServer:
 
             result: dict[str, Any] | None = await asyncio.wait_for(
                 db.move_kanban_card(card_id, status),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
             if result is None:
                 return {
@@ -2282,7 +2312,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             db = self._memory_system._db
@@ -2294,7 +2324,7 @@ class MCPServer:
 
             cards: list[dict[str, Any]] = await asyncio.wait_for(
                 db.list_kanban_cards(status=status, repo=repo, limit=limit),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
             return {"success": True, "cards": cards, "count": len(cards)}
         except TimeoutError:
@@ -2319,7 +2349,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             db = self._memory_system._db
@@ -2331,7 +2361,7 @@ class MCPServer:
 
             result: dict[str, Any] | None = await asyncio.wait_for(
                 db.get_kanban_card(card_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
             if result is None:
                 return {
@@ -2417,7 +2447,7 @@ class MCPServer:
             if self._knowledge_graph is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._knowledge_graph = KnowledgeGraph(
                     memory_system=self._memory_system
@@ -2449,7 +2479,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._knowledge_graph.query_kg(kg_query),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -2475,7 +2505,7 @@ class MCPServer:
         try:
             if self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             if self._knowledge_graph is None:
@@ -2486,7 +2516,7 @@ class MCPServer:
             # Get the memory
             memory = await asyncio.wait_for(
                 self._memory_system.get_memory(memory_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             if memory is None:
@@ -2500,13 +2530,13 @@ class MCPServer:
             # Extract and register entities
             entities = await asyncio.wait_for(
                 self._knowledge_graph.extract_and_register_entities(memory.text),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             # Link memory to entities
             await asyncio.wait_for(
                 self._knowledge_graph.link_memory_to_entities(memory_id, memory.text),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -2553,7 +2583,7 @@ class MCPServer:
             if self._knowledge_graph is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._knowledge_graph = KnowledgeGraph(
                     memory_system=self._memory_system
@@ -2561,7 +2591,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._knowledge_graph.get_entity_graph(entity_id, depth),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             if result is None:
@@ -2613,7 +2643,7 @@ class MCPServer:
             if self._knowledge_graph is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._knowledge_graph = KnowledgeGraph(
                     memory_system=self._memory_system
@@ -2646,7 +2676,7 @@ class MCPServer:
                 self._knowledge_graph.get_inference_chains(
                     start_id, end_id, max_depth=max_depth
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -2705,7 +2735,7 @@ class MCPServer:
             if self._knowledge_graph is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._knowledge_graph = KnowledgeGraph(
                     memory_system=self._memory_system
@@ -2713,7 +2743,7 @@ class MCPServer:
 
             entities = await asyncio.wait_for(
                 self._knowledge_graph.search_entities(name, limit=limit),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {
@@ -2759,7 +2789,7 @@ class MCPServer:
             if self._knowledge_graph is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._knowledge_graph = KnowledgeGraph(
                     memory_system=self._memory_system
@@ -2792,7 +2822,7 @@ class MCPServer:
             if self._multi_peer_manager is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._multi_peer_manager = get_multi_peer_manager(
                     memory_system=self._memory_system
@@ -2800,7 +2830,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._multi_peer_manager.list_peers(),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -2838,7 +2868,7 @@ class MCPServer:
             if self._multi_peer_manager is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._multi_peer_manager = get_multi_peer_manager(
                     memory_system=self._memory_system
@@ -2852,7 +2882,7 @@ class MCPServer:
                     trust_level=trust_level,
                     preferences=preferences,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -2882,7 +2912,7 @@ class MCPServer:
             if self._multi_peer_manager is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._multi_peer_manager = get_multi_peer_manager(
                     memory_system=self._memory_system
@@ -2890,7 +2920,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._multi_peer_manager.switch_peer_context(peer_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -2924,7 +2954,7 @@ class MCPServer:
             if self._multi_peer_manager is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._multi_peer_manager = get_multi_peer_manager(
                     memory_system=self._memory_system
@@ -2936,7 +2966,7 @@ class MCPServer:
                     target_peer_id=target_peer_id,
                     permission=permission,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -2970,7 +3000,7 @@ class MCPServer:
             if self._multi_peer_manager is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._multi_peer_manager = get_multi_peer_manager(
                     memory_system=self._memory_system
@@ -2982,7 +3012,7 @@ class MCPServer:
                     query=query,
                     limit=limit,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -3009,7 +3039,7 @@ class MCPServer:
             if self._multi_peer_manager is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._multi_peer_manager = get_multi_peer_manager(
                     memory_system=self._memory_system
@@ -3017,7 +3047,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._multi_peer_manager.get_shared_memories(limit=limit),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return result
@@ -3049,7 +3079,7 @@ class MCPServer:
             if self._dialectic_engine is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._dialectic_engine = get_dialectic_engine(
                     memory_system=self._memory_system
@@ -3057,7 +3087,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._dialectic_engine.find_contradictions(query, limit),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             return {"count": len(result), "contradictions": result}
@@ -3089,7 +3119,7 @@ class MCPServer:
             if self._dialectic_engine is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._dialectic_engine = get_dialectic_engine(
                     memory_system=self._memory_system
@@ -3097,7 +3127,7 @@ class MCPServer:
 
             resolution = await asyncio.wait_for(
                 self._dialectic_engine.resolve_contradiction(memory_id_a, memory_id_b),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             if resolution is None:
@@ -3169,7 +3199,7 @@ class MCPServer:
             if self._dialectic_engine is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._dialectic_engine = get_dialectic_engine(
                     memory_system=self._memory_system
@@ -3177,7 +3207,7 @@ class MCPServer:
 
             result = await asyncio.wait_for(
                 self._dialectic_engine.get_dialectic_history(memory_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             if result is None:
@@ -3232,7 +3262,7 @@ class MCPServer:
             if self._dialectic_engine is None:
                 if self._memory_system is None:
                     self._memory_system = await asyncio.wait_for(
-                        self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                        self._init_memory_system(), timeout=_op_timeout()
                     )
                 self._dialectic_engine = get_dialectic_engine(
                     memory_system=self._memory_system
@@ -3240,7 +3270,7 @@ class MCPServer:
 
             challenge = await asyncio.wait_for(
                 self._dialectic_engine.challenge_memory(memory_id, challenge_text),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
 
             if challenge is None:
@@ -3289,7 +3319,7 @@ class MCPServer:
         # Lazy initialization: need pool from postgres backend
         if self._memory_system is None:
             self._memory_system = await asyncio.wait_for(
-                self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                self._init_memory_system(), timeout=_op_timeout()
             )
 
         db = self._memory_system._db
@@ -3364,7 +3394,7 @@ class MCPServer:
                     chain_id=chain_id,
                     session_id=session_id,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("add_thought_timeout")
@@ -3400,7 +3430,7 @@ class MCPServer:
                     session_id=session_id,
                     parent_chain_id=parent_chain_id,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("start_thought_chain_timeout")
@@ -3429,7 +3459,7 @@ class MCPServer:
 
             return await asyncio.wait_for(
                 tc_or_error.get_chain(chain_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("get_thought_chain_timeout", chain_id=chain_id)
@@ -3464,7 +3494,7 @@ class MCPServer:
 
             return await asyncio.wait_for(
                 tc_or_error.get_related_chains(query=query, limit=limit),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("get_related_chains_timeout", query=query)
@@ -3508,7 +3538,7 @@ class MCPServer:
                     thought_number=thought_number,
                     revised_thought=revised_thought,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("revise_thought_timeout", chain_id=chain_id)
@@ -3560,7 +3590,7 @@ class MCPServer:
                     total_thoughts=totalThoughts,
                     next_thought_needed=nextThoughtNeeded,
                 ),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("branch_thought_timeout", chain_id=chain_id)
@@ -3588,7 +3618,7 @@ class MCPServer:
 
             return await asyncio.wait_for(
                 tc_or_error.pause_chain(chain_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("pause_thought_chain_timeout", chain_id=chain_id)
@@ -3620,7 +3650,7 @@ class MCPServer:
 
             return await asyncio.wait_for(
                 tc_or_error.resume_chain(chain_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("resume_thought_chain_timeout", chain_id=chain_id)
@@ -3648,7 +3678,7 @@ class MCPServer:
 
             return await asyncio.wait_for(
                 tc_or_error.abandon_chain(chain_id),
-                timeout=OPERATION_TIMEOUT,
+                timeout=_op_timeout(),
             )
         except TimeoutError:
             logger.error("abandon_thought_chain_timeout", chain_id=chain_id)
@@ -3699,7 +3729,7 @@ class MCPServer:
         try:
             if self._audit_logger is None and self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             if self._audit_logger is None:
@@ -3761,7 +3791,7 @@ class MCPServer:
         try:
             if self._audit_logger is None and self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             if self._audit_logger is None:
@@ -3814,7 +3844,7 @@ class MCPServer:
         try:
             if self._audit_logger is None and self._memory_system is None:
                 self._memory_system = await asyncio.wait_for(
-                    self._init_memory_system(), timeout=OPERATION_TIMEOUT
+                    self._init_memory_system(), timeout=_op_timeout()
                 )
 
             if self._audit_logger is None:
