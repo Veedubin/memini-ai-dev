@@ -1,3 +1,14 @@
+# Changelog
+
+## v1.6.0 (2026-08-24)
+
+**Added:**
+- **Tool-surface gating** (`MEMINI_TOOL_GROUPS`, default `core,trust,kanban,session`): MCP tools now register per group — default profile exposes ~16 schemas instead of ~56 (~5-7K tokens saved per LLM request). Groups: core(always), trust, kanban, session, chains, kg, dialectic, peers, memory_ops, audit, ops. Unknown names warn-and-ignore.
+- `add_thought` docstring upgraded to full sequential-thinking coaching text (persistent chains: resume/revise/branch across sessions).
+
+**Changed (BREAKING for MCP clients):**
+- Thought-chain MCP surface collapsed to the sequential-thinking trio (`add_thought` / `get_thought_chain` / `get_related_chains`). Removed from registration: start_thought_chain, revise_thought, branch_thought, pause/resume/abandon_thought_chain (revisions/branches flow through add_thought params; backend methods retained internally).
+
 # CHANGELOG
 
 All notable changes to this project will be documented in this file.

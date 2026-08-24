@@ -277,6 +277,20 @@ class MeminiConfig(BaseSettings):
     # Thought Chains settings (Phase 5)
     thought_chains_enabled: bool = Field(default=False, alias="THOUGHT_CHAINS")
 
+    # Tool-surface gating (v1.6.0): which MCP tool families are registered.
+    # Comma-separated subset of: core,trust,kanban,session,chains,kg,
+    # dialectic,peers,memory_ops,audit,ops. Unknown names log a warning and
+    # are ignored; "core" is always registered regardless of this value.
+    # Default ships ~16 tools instead of ~56 (~5-7K tokens saved/request).
+    tool_groups: str = Field(
+        default="core,trust,kanban,session",
+        alias="MEMINI_TOOL_GROUPS",
+        description=(
+            "Comma-separated MCP tool groups to expose: core,trust,kanban,"
+            "session,chains,kg,dialectic,peers,memory_ops,audit,ops"
+        ),
+    )
+
     # Phase 2.1: Input Validation settings
     max_memory_content_size: int = Field(
         default=102400,  # 100KB

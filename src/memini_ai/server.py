@@ -118,72 +118,125 @@ class MCPServer:
         self._setup_tools()
         self._setup_signal_handlers()
 
+    # Tool-surface groups (v1.6.0): MEMINI_TOOL_GROUPS selects which MCP
+    # tool families are registered. "core" is always on; unknown names in
+    # the env value log a warning and are ignored.
+    TOOL_GROUPS_KNOWN: frozenset[str] = frozenset(
+        {
+            "core",
+            "trust",
+            "kanban",
+            "session",
+            "chains",
+            "kg",
+            "dialectic",
+            "peers",
+            "memory_ops",
+            "audit",
+            "ops",
+        }
+    )
+
+    def _enabled_tool_groups(self) -> set[str]:
+        """Parse MEMINI_TOOL_GROUPS into the enabled set ("core" always on)."""
+        cfg = getattr(self, "_config", None)
+        raw = getattr(cfg, "tool_groups", "") or "core,trust,kanban,session"
+        enabled: set[str] = {"core"}
+        for part in str(raw).split(","):
+            group = part.strip().lower()
+            if not group:
+                continue
+            if group in self.TOOL_GROUPS_KNOWN:
+                enabled.add(group)
+            else:
+                logger.warning("unknown_tool_group_ignored", group=group)
+        return enabled
+
+    def _reg(self, group: str, fn: Any) -> None:
+        """Register an MCP tool only when its group is enabled."""
+        if group in self._enabled_groups:
+            self._mcp.add_tool(fn)
+
     def _setup_tools(self) -> None:
-        """Register all MCP tools."""
-        self._mcp.add_tool(self.query_memories)
-        self._mcp.add_tool(self.add_memory)
-        self._mcp.add_tool(self.search_project)
-        self._mcp.add_tool(self.index_project)
-        self._mcp.add_tool(self.get_file_contents)
-        self._mcp.add_tool(self.get_status)
-        # v0.7.3: end-to-end write+read health probe
-        self._mcp.add_tool(self.healthcheck)
-        self._mcp.add_tool(self.get_trust_score)
-        self._mcp.add_tool(self.adjust_trust)
-        self._mcp.add_tool(self.list_archived)
-        self._mcp.add_tool(self.find_related_memories)
-        self._mcp.add_tool(self.create_relationship)
-        self._mcp.add_tool(self.get_relationship_summary)
-        self._mcp.add_tool(self.trigger_extraction)
-        self._mcp.add_tool(self.preconpress_extraction)
-        self._mcp.add_tool(self.get_tier0_summary)
-        self._mcp.add_tool(self.get_tier1_summary)
-        self._mcp.add_tool(self.get_user_profile)
-        self._mcp.add_tool(self.update_user_profile)
-        self._mcp.add_tool(self.get_decay_status)
-        self._mcp.add_tool(self.trigger_consolidation)
-        self._mcp.add_tool(self.list_fading_memories)
-        self._mcp.add_tool(self.adjust_decay_rate)
-        # Phase 4B: Knowledge Graph tools
-        self._mcp.add_tool(self.query_kg)
-        self._mcp.add_tool(self.extract_entities)
-        self._mcp.add_tool(self.get_entity_graph)
-        self._mcp.add_tool(self.get_inference_chain)
-        self._mcp.add_tool(self.search_entities)
-        self._mcp.add_tool(self.get_graph_visualization)
-        # Phase 4C: Multi-Peer tools
-        self._mcp.add_tool(self.list_peers)
-        self._mcp.add_tool(self.add_peer)
-        self._mcp.add_tool(self.switch_peer_context)
-        self._mcp.add_tool(self.share_memory)
-        self._mcp.add_tool(self.get_peer_memories)
-        self._mcp.add_tool(self.get_shared_memories)
-        # Phase 4D: Dialectic tools
-        self._mcp.add_tool(self.find_contradictions)
-        self._mcp.add_tool(self.resolve_contradiction)
-        self._mcp.add_tool(self.get_dialectic_history)
-        self._mcp.add_tool(self.challenge_memory)
-        # Phase 5: Thought Chains tools
-        self._mcp.add_tool(self.add_thought)
-        self._mcp.add_tool(self.start_thought_chain)
-        self._mcp.add_tool(self.get_thought_chain)
-        self._mcp.add_tool(self.get_related_chains)
-        self._mcp.add_tool(self.revise_thought)
-        self._mcp.add_tool(self.branch_thought)
-        self._mcp.add_tool(self.pause_thought_chain)
-        self._mcp.add_tool(self.resume_thought_chain)
-        self._mcp.add_tool(self.abandon_thought_chain)
-        # Phase 2.3: Audit logging tools
-        self._mcp.add_tool(self.log_audit_event)
-        self._mcp.add_tool(self.get_audit_log)
-        self._mcp.add_tool(self.get_security_summary)
-        # v0.7.0: Dual-model RRF
-        self._mcp.add_tool(self.elevate_memory_to_1024)
-        # Kanban cards (GitHub triage poller integration)
-        self._mcp.add_tool(self.kanban_add_card)
-        self._mcp.add_tool(self.kanban_move_card)
-        self._mcp.add_tool(self.kanban_list_cards)
-        self._mcp.add_tool(self.kanban_get_card)
+        """Register MCP tools, gated by MEMINI_TOOL_GROUPS (v1.6.0)."""
+        self._enabled_groups = self._enabled_tool_groups()
+        logger.info(
+            "tool_surface_configured",
+            groups=sorted(self._enabled_groups),
+            known=sorted(self.TOOL_GROUPS_KNOWN),
+        )
+
+        # -- core (always registered) ------------------------------------
+        self._reg("core", self.query_memories)
+        self._reg("core", self.add_memory)
+        self._reg("core", self.search_project)
+        self._reg("core", self.index_project)
+        self._reg("core", self.get_file_contents)
+        self._reg("core", self.get_status)
+        self._reg("core", self.healthcheck)
+
+        # -- trust ---------------------------------------------------------
+        self._reg("trust", self.get_trust_score)
+        self._reg("trust", self.adjust_trust)
+
+        # -- session -------------------------------------------------------
+        self._reg("session", self.preconpress_extraction)
+        self._reg("session", self.get_tier0_summary)
+        self._reg("session", self.get_tier1_summary)
+
+        # -- kanban --------------------------------------------------------
+        self._reg("kanban", self.kanban_add_card)
+        self._reg("kanban", self.kanban_move_card)
+        self._reg("kanban", self.kanban_list_cards)
+        self._reg("kanban", self.kanban_get_card)
+
+        # -- chains (sequential-thinking-compatible trio) ------------------
+        self._reg("chains", self.add_thought)
+        self._reg("chains", self.get_thought_chain)
+        self._reg("chains", self.get_related_chains)
+
+        # -- knowledge graph ----------------------------------------------
+        self._reg("kg", self.query_kg)
+        self._reg("kg", self.extract_entities)
+        self._reg("kg", self.get_entity_graph)
+        self._reg("kg", self.get_inference_chain)
+        self._reg("kg", self.search_entities)
+        self._reg("kg", self.get_graph_visualization)
+
+        # -- dialectic ------------------------------------------------------
+        self._reg("dialectic", self.find_contradictions)
+        self._reg("dialectic", self.resolve_contradiction)
+        self._reg("dialectic", self.get_dialectic_history)
+        self._reg("dialectic", self.challenge_memory)
+
+        # -- multi-peer -----------------------------------------------------
+        self._reg("peers", self.list_peers)
+        self._reg("peers", self.add_peer)
+        self._reg("peers", self.switch_peer_context)
+        self._reg("peers", self.share_memory)
+        self._reg("peers", self.get_peer_memories)
+        self._reg("peers", self.get_shared_memories)
+
+        # -- memory ops ------------------------------------------------------
+        self._reg("memory_ops", self.list_archived)
+        self._reg("memory_ops", self.find_related_memories)
+        self._reg("memory_ops", self.create_relationship)
+        self._reg("memory_ops", self.get_relationship_summary)
+        self._reg("memory_ops", self.trigger_extraction)
+
+        # -- audit ------------------------------------------------------------
+        self._reg("audit", self.log_audit_event)
+        self._reg("audit", self.get_audit_log)
+        self._reg("audit", self.get_security_summary)
+
+        # -- ops / maintenance --------------------------------------------------
+        self._reg("ops", self.get_user_profile)
+        self._reg("ops", self.update_user_profile)
+        self._reg("ops", self.get_decay_status)
+        self._reg("ops", self.trigger_consolidation)
+        self._reg("ops", self.list_fading_memories)
+        self._reg("ops", self.adjust_decay_rate)
+        self._reg("ops", self.elevate_memory_to_1024)
 
     def _setup_signal_handlers(self) -> None:
         """Set up SIGINT/SIGTERM handlers."""
@@ -3354,9 +3407,28 @@ class MCPServer:
         chain_id: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        """Add a thought to a reasoning chain.
+        """Step through complex reasoning one thought at a time — persistently.
 
-        API-compatible with @modelcontextprotocol/server-sequential-thinking.
+        This is the persistent version of
+        @modelcontextprotocol/server-sequential-thinking: identical call
+        pattern, but every chain survives the session and can be resumed,
+        searched, or shown to the next session.
+
+        HOW TO USE: for any multi-step problem (debugging sagas, design
+        trade-offs, migration plans), call this tool repeatedly:
+          - Start with thoughtNumber=1 and a realistic totalThoughts estimate
+            (raise it later if you need more room).
+          - Set nextThoughtNeeded=true until the final thought, then false.
+        The chain auto-creates on first call; pass the returned chain_id in
+        subsequent calls to keep appending to the SAME chain.
+          - Wrong earlier step? Re-call with isRevision=true,
+            revisesThought=<number>, corrected text.
+          - Want to explore an alternative? Pass branchFromThought=<number>
+            and branchId="hypothesis-b" to fork without losing the trunk.
+        Chains persist across sessions: retrieve with get_thought_chain,
+        find prior reasoning with get_related_chains before re-deriving
+        something from scratch.
+
         Auto-creates chain if chain_id not provided. Stores thought in BOTH
         thoughts table AND memories table (sourceType="thought").
 
