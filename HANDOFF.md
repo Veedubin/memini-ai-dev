@@ -1,4 +1,13 @@
-# Memini-ai Handoff Document
+# Handoff
+
+## v1.6.0 (2026-08-24, Session 62) — Tool-surface gating + chain trio: SHIPPED, tag pushed
+
+**What:** MEMINI_TOOL_GROUPS env (config.py field; default core,trust,kanban,session) gates MCP registration in server.py via _reg(group,fn); default surface 56→16 schemas. add_thought = persistent sequential-thinking (auto-create/revise/branch already built-in) with coaching docstring; 6 redundant chain registrations removed (start/revise/branch/pause/resume/abandon — methods retained internally). tests/test_tool_groups.py 6 cases (Recorder stand-in: swap _mcp, inject server._config MagicMock directly — get_config patch alone insufficient). Suite 1090 pass; 11 failures PRE-EXISTING on clean HEAD (model-file dim-checks/dual_model/image_rrf — stash-verified).
+
+**Gotchas:** mypy on this box errors inside numpy .pyi stubs (Python-version noise, not code). Release discipline: bumpversion-style manual pyproject bump used this time (1.5.6→1.6.0), tag pushed same commit.
+
+**Next here (Session 63+):** governance-flavored features per neuralgentics/docs/design/governance-thesis.md §Ledger — role-scoped groups per peer_id (v1.2.0 peer enforcement exists!), audit-log surfacing for the future dashboard, chain-read metrics if instrumentable.
+
 
 > **Session**: 2026-08-23 (Session 61 — v1.5.6 perf release: projection pushdown + single-embed RRF + configurable timeout — **RELEASED** ✅)
 > **Project**: Memini-ai v1.5.6
