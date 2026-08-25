@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -53,7 +54,7 @@ class FileTracker:
             await self._create_tables()
 
     async def _create_tables(self) -> None:
-        """Create the tracked_files table if it doesn't exist."""
+        """Create the tracked_files + project_chunks tables if missing."""
         conn = self._conn
         if conn is None:
             raise RuntimeError("FileTracker not initialized")
@@ -70,7 +71,122 @@ class FileTracker:
             CREATE INDEX IF NOT EXISTS idx_content_hash
             ON tracked_files(content_hash)
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS project_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                total_chunks INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                language TEXT,
+                start_line INTEGER NOT NULL,
+                end_line INTEGER NOT NULL,
+                UNIQUE(path, chunk_index)
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_project_chunks_path
+            ON project_chunks(path)
+        """)
         await conn.commit()
+
+    async def insert_chunks(self, chunks: Sequence[Any]) -> int:
+        """Insert or update a batch of chunks in project_chunks.
+
+        Accepts objects with ``path``, ``chunk_index``, ``total_chunks``,
+        ``content``, ``language``, ``start_line`` and ``end_line``
+        attributes (duck-typed so the chunker stays decoupled).
+
+        Args:
+            chunks: Iterable of chunk-like objects to persist.
+
+        Returns:
+            Number of rows written.
+
+        Raises:
+            RuntimeError: If the tracker is not initialized.
+        """
+        rows = [
+            (
+                c.path,
+                c.chunk_index,
+                c.total_chunks,
+                c.content,
+                c.language,
+                c.start_line,
+                c.end_line,
+            )
+            for c in chunks
+        ]
+        if not rows:
+            return 0
+        async with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("FileTracker not initialized")
+            await conn.executemany(
+                """
+                INSERT INTO project_chunks (
+                    path, chunk_index, total_chunks, content,
+                    language, start_line, end_line
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path, chunk_index) DO UPDATE SET
+                    total_chunks = excluded.total_chunks,
+                    content = excluded.content,
+                    language = excluded.language,
+                    start_line = excluded.start_line,
+                    end_line = excluded.end_line
+                """,
+                rows,
+            )
+            await conn.commit()
+        return len(rows)
+
+    async def count_chunks(self) -> int:
+        """Count persisted chunks in project_chunks.
+
+        Returns:
+            Total number of chunk rows.
+
+        Raises:
+            RuntimeError: If the tracker is not initialized.
+        """
+        async with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("FileTracker not initialized")
+            async with conn.execute("SELECT COUNT(*) FROM project_chunks") as cursor:
+                row = await cursor.fetchone()
+                return int(row[0]) if row else 0
+
+    async def get_chunks_for_file(self, path: str) -> list[dict[str, Any]]:
+        """Get all persisted chunks for a file, ordered by chunk_index.
+
+        Args:
+            path: File path to look up.
+
+        Returns:
+            List of chunk row dicts ordered by chunk_index.
+
+        Raises:
+            RuntimeError: If the tracker is not initialized.
+        """
+        async with self._lock:
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError("FileTracker not initialized")
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT path, chunk_index, total_chunks, content,
+                       language, start_line, end_line
+                FROM project_chunks WHERE path = ? ORDER BY chunk_index
+                """,
+                (path,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
     async def close(self) -> None:
         """Close the database connection."""
@@ -202,10 +318,11 @@ class FileTracker:
                 return {"file_count": row[0], "total_size": row[1] or 0}
 
     async def clear(self) -> None:
-        """Clear all tracked files."""
+        """Clear all tracked files and persisted chunks."""
         async with self._lock:
             conn = self._conn
             if conn is None:
                 raise RuntimeError("FileTracker not initialized")
+            await conn.execute("DELETE FROM project_chunks")
             await conn.execute("DELETE FROM tracked_files")
             await conn.commit()

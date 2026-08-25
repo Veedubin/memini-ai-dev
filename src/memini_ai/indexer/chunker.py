@@ -299,12 +299,10 @@ class SemanticChunker:
             if not in_docstring:
                 if '"""' in line or "'''" in line:
                     delim = '"""' if '"""' in line else "'''"
-                    if delim in line:
-                        # Single line docstring
-                        if class_pattern.match(line) or func_pattern.match(line):
-                            current_chunk.append(line)
-                        continue
-                    else:
+                    # Odd number of delimiters on one line means the
+                    # docstring opens here and spans further lines; an even
+                    # count is a fully self-contained string on this line.
+                    if line.count(delim) % 2 == 1:
                         in_docstring = True
                         docstring_delim = delim
                         if current_chunk:

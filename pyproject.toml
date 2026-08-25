@@ -106,6 +106,13 @@ ignore_missing_imports = true
 module = "pgembed"
 ignore_missing_imports = true
 
+# Optional dependency (vision extra): installed locally, absent on
+# text-only deployments. ignore_missing_imports keeps strict mypy happy
+# in BOTH cases, so import sites need no inline type: ignore comments.
+[[tool.mypy.overrides]]
+module = "memini_vision"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

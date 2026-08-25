@@ -699,7 +699,9 @@ class MemorySystem:
             empty or the search returns no matches.
         """
         # Lazy import — text-only users never pay this cost.
-        from memini_vision import (  # type: ignore[import-not-found]
+        # (memini_vision has a mypy override in pyproject.toml, so no
+        # inline ignore is needed here.)
+        from memini_vision import (
             ClipEmbedder,
             ImageIndex,
             ImageQuery,

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+import fnmatch
+import logging
+from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +25,31 @@ from memini_ai.indexer.pause_controller import PauseController, PauseState
 from memini_ai.indexer.snapshot import SnapshotIndex
 from memini_ai.indexer.watcher import FileWatcher
 from memini_ai.utils.hash import hash_file
+
+logger = logging.getLogger(__name__)
+
+# Glob-syntax entries in SKIP_DIRS / ALWAYS_EXCLUDED (e.g. "*.egg-info",
+# "~$*", "*.swp") never match a plain membership test — they need fnmatch.
+_SKIP_DIR_PATTERNS = tuple(p for p in SKIP_DIRS if any(c in p for c in "*?["))
+_EXACT_SKIP_DIRS = frozenset(SKIP_DIRS - set(_SKIP_DIR_PATTERNS))
+_EXCLUDED_NAME_PATTERNS = tuple(
+    p for p in ALWAYS_EXCLUDED if any(c in p for c in "*?[")
+)
+_EXACT_EXCLUDED_NAMES = frozenset(ALWAYS_EXCLUDED - set(_EXCLUDED_NAME_PATTERNS))
+
+
+def _dir_excluded(name: str) -> bool:
+    """Check whether a directory name is excluded (exact or glob match)."""
+    return name in _EXACT_SKIP_DIRS or any(
+        fnmatch.fnmatch(name, pat) for pat in _SKIP_DIR_PATTERNS
+    )
+
+
+def _file_excluded(name: str) -> bool:
+    """Check whether a file name is always-excluded (exact or glob match)."""
+    return name in _EXACT_EXCLUDED_NAMES or any(
+        fnmatch.fnmatch(name, pat) for pat in _EXCLUDED_NAME_PATTERNS
+    )
 
 
 @dataclass
@@ -214,7 +241,14 @@ class ProjectIndexer:
                 await self._flush_chunks()
 
     async def _flush_chunks(self) -> None:
-        """Flush buffered chunks to storage."""
+        """Flush buffered chunks to persistent storage (project_chunks).
+
+        Chunks are persisted incrementally in batches so ``project_chunks``
+        grows DURING long index runs (T-IDX-WEDGE-001). If the file tracker
+        is not initialized (unit tests, tracker never started), falls back
+        to stat-counting only. On a persistence failure the batch is put
+        back at the front of the buffer for the next flush attempt.
+        """
         async with self._buffer_lock:
             if not self._chunk_buffer:
                 return
@@ -222,10 +256,18 @@ class ProjectIndexer:
             chunks = self._chunk_buffer
             self._chunk_buffer = []
 
-        # Process chunks - just track stats for now
-        # Full integration with memory db would go here
-        for _chunk in chunks:
-            self._stats.chunks_created += 1
+        try:
+            written = await self._file_tracker.insert_chunks(chunks)
+            self._stats.chunks_created += written
+        except RuntimeError:
+            # Tracker not initialized — preserve legacy count-only behavior.
+            self._stats.chunks_created += len(chunks)
+        except Exception:
+            # Persistence failed: re-buffer for retry on the next flush.
+            self._stats.errors += 1
+            logger.exception("chunk_flush_failed", extra={"batch_size": len(chunks)})
+            async with self._buffer_lock:
+                self._chunk_buffer[:0] = chunks
 
     async def _index_file(self, path: str) -> bool:
         """Index a single file.
@@ -253,12 +295,12 @@ class ProjectIndexer:
         except OSError:
             return False
 
-        # Skip excluded paths
+        # Skip excluded paths (dir parts exact-match; file names may glob)
         parts = file_path.parts
         for part in parts:
-            if part in SKIP_DIRS:
+            if part in _EXACT_SKIP_DIRS:
                 return False
-        if file_path.name in ALWAYS_EXCLUDED:
+        if _file_excluded(file_path.name):
             return False
 
         # Check extension
@@ -267,7 +309,7 @@ class ProjectIndexer:
             return False
 
         try:
-            # Hash file
+            # Hash file (threaded: hashing large files is CPU/IO-bound)
             content_hash = await asyncio.to_thread(hash_file, path)
             size = file_path.stat().st_size
             modified = file_path.stat().st_mtime
@@ -276,9 +318,10 @@ class ProjectIndexer:
             if not await self._snapshot.check_file(path, content_hash):
                 return False
 
-            # Read and chunk file
-            content = file_path.read_text(encoding="utf-8", errors="replace")
-            chunks = self._chunker.chunk_file(content, path)
+            # Read + chunk OFF the event loop (T-IDX-WEDGE-001): chunking is
+            # pure-Python CPU work; running it inline starves every other
+            # tool call for the whole duration of a large index run.
+            chunks = await asyncio.to_thread(self._read_and_chunk, path)
 
             # Update snapshot
             await self._snapshot.update_file(path, content_hash, size, modified)
@@ -307,6 +350,18 @@ class ProjectIndexer:
             self._stats.errors += 1
             return False
 
+    def _read_and_chunk(self, path: str) -> list[Chunk]:
+        """Read a file and chunk its content (blocking; run in a thread).
+
+        Args:
+            path: File path to read.
+
+        Returns:
+            List of chunks for the file content.
+        """
+        content = Path(path).read_text(encoding="utf-8", errors="replace")
+        return self._chunker.chunk_file(content, path)
+
     async def index_directory(self, path: str | None = None) -> int:
         """Index all files in a directory.
 
@@ -324,11 +379,19 @@ class ProjectIndexer:
         async for file_path in self._walk_directory(target):
             if await self._index_file(str(file_path)):
                 count += 1
+            # Fairness: guarantee the event loop a scheduling point between
+            # files even when every per-file segment happens to be awaited
+            # fast, so concurrent tool calls never queue behind a long run.
+            await asyncio.sleep(0)
 
         return count
 
     async def _walk_directory(self, root: Path) -> AsyncGenerator[Path, None]:
         """Walk directory yielding file paths.
+
+        Excluded directories (SKIP_DIRS, exact or glob names) are PRUNED —
+        never descended into — so huge irrelevant trees (.venv, node_modules,
+        build caches) cost zero traversal time.
 
         Args:
             root: Root directory.
@@ -336,9 +399,21 @@ class ProjectIndexer:
         Yields:
             File paths.
         """
-        for entry in root.rglob("*"):
-            if entry.is_file():
-                yield entry
+
+        def _iter(dir_path: Path) -> Iterator[Path]:
+            try:
+                entries = list(dir_path.iterdir())
+            except OSError:
+                return
+            for entry in entries:
+                if entry.is_dir():
+                    if not _dir_excluded(entry.name):
+                        yield from _iter(entry)
+                elif entry.is_file() and not _file_excluded(entry.name):
+                    yield entry
+
+        for file_path in _iter(root):
+            yield file_path
 
     async def search(self, query: str, options: Any) -> list[SearchResult]:
         """Search indexed files for matching chunks.
