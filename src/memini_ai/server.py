@@ -110,6 +110,10 @@ class MCPServer:
         self._stdio_watch_task: asyncio.Task[None] | None = None
         # Phase 2.1: Rate limiter for add_memory
         config = get_config()
+        # T-TOOLGROUPS-001: _enabled_tool_groups() reads self._config —
+        # without this assignment the parser silently fell back to default
+        # groups and MEMINI_TOOL_GROUPS was ignored entirely.
+        self._config = config
         self._rate_limiter = AsyncRateLimiter(
             max_requests=config.rate_limit_per_minute,
             window_seconds=60,

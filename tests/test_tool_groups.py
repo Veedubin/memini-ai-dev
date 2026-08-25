@@ -86,7 +86,9 @@ def _registered(groups: str) -> set[str]:
     with patch("memini_ai.server.get_config") as cfg_mock:
         cfg_mock.return_value = MagicMock(tool_groups=groups)
         server = MCPServer()
-    server._config = MagicMock(tool_groups=groups)  # noqa: SLF001
+    # NOTE (T-TOOLGROUPS-001): no manual `server._config = ...` injection
+    # here — that masked the original bug where __init__ never wired
+    # get_config() into self._config, silently ignoring MEMINI_TOOL_GROUPS.
     recorder = _Recorder()
     server._mcp = recorder  # noqa: SLF001
     server._setup_tools()  # noqa: SLF001
@@ -139,3 +141,28 @@ def test_removed_chain_tools_never_register() -> None:
         "core,trust,kanban,session,chains,kg,dialectic,peers,memory_ops,audit,ops"
     )
     assert not (all_names & REMOVED_CHAIN_TOOLS)
+
+
+def test_env_var_reaches_registration_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end regression (T-TOOLGROUPS-001): the real MEMINI_TOOL_GROUPS
+    env var — through the real pydantic config singleton, no mocks — must
+    expand the registered surface beyond the default groups."""
+    import memini_ai.config as cfg_mod
+
+    monkeypatch.setenv(
+        "MEMINI_TOOL_GROUPS", "core,trust,kanban,session,chains,kg,dialectic"
+    )
+    monkeypatch.setattr(cfg_mod, "_config", None)  # reset cached singleton
+
+    server = MCPServer()
+    assert {"chains", "kg", "dialectic"} <= server._enabled_groups  # noqa: SLF001
+
+    recorder = _Recorder()
+    server._mcp = recorder  # noqa: SLF001
+    server._setup_tools()  # noqa: SLF001
+    names = set(recorder.names)
+    assert CHAIN_TRIO <= names
+    assert KG_TOOLS <= names
+    assert DIALECTIC_TOOLS <= names
