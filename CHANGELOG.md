@@ -1,6 +1,19 @@
 # Changelog
 
-## v1.6.0 (2026-08-24)
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.6.1] - 2026-08-24
+- **Fixed: T-IDX-WEDGE-001 — `index_project` wedged the entire MCP server.** Root cause was NOT embedding (the indexer path contains no model code at all): `chunker._parse_python`'s single-line-docstring branch executed `continue` without incrementing its loop index — an **infinite loop on ANY `.py` file containing triple quotes**, running inline on the asyncio event loop (observed live: 17+ min at ~one-core CPU, every tool call timing out `-32001`). Fixed the parser (single-line/multi-line/inline-string docstrings all terminate correctly). Compounding defects fixed in the same pass: file reads + chunking now run off the event loop via `asyncio.to_thread` with a per-file fairness yield; `_walk_directory` prunes `SKIP_DIRS` before descending instead of traversing entire `.venv`/`node_modules` trees; glob-syntax exclusion entries (`*.egg-info`, `~$*`, `*.swp`) now actually match via `fnmatch`; and `_flush_chunks` — previously a stat-only stub that left `project_chunks` permanently empty — now persists buffered chunks incrementally to a new sqlite `project_chunks` table (`UNIQUE(path, chunk_index)` upserts, batch re-buffering on failure, count-only fallback when uninitialized).
+- **Fixed: T-TOOLGROUPS-001 — `MEMINI_TOOL_GROUPS` was silently ignored.** `MCPServer.__init__` never assigned `self._config`, so `_enabled_tool_groups()` always fell back to the default groups no matter what the env var contained (reproduced: fresh spawn with expanded groups still exposed exactly 16 tools). The v1.6.0 test harness masked this by manually injecting `server._config` before asserting; the injection is removed and a true env→registration end-to-end regression test added.
+- **Fixed: T-LLM-BACKEND-001 — tier summaries failed ("LLM call failed") with thinking models.** Reasoning models such as `qwen3.5:9b` return an empty `response` field from ollama's `/api/generate` (all output lands in a separate `thinking` field once the token budget is spent). `OllamaClient.generate()` now sends `"think": false`, falls back to the `thinking` field when `response` is empty, and strips inline `<think>...</think>` blocks. Verified against the real daemon: `qwen3.5:9b` returns proper summaries post-fix.
+- **Tests**: 19 new tests (`tests/test_indexer_wedge.py` ×11, `tests/test_llm_ollama.py` ×7, tool-groups env regression ×1) + de-masked tool-groups suite. Suite: **1120 passing, 0 failed**, 56 skipped. `ruff check` clean. `mypy src/` strict-clean (new `memini_vision` override replaces the environment-dependent inline ignore).
+
+## [1.6.0] - 2026-08-24
 
 **Added:**
 - **Tool-surface gating** (`MEMINI_TOOL_GROUPS`, default `core,trust,kanban,session`): MCP tools now register per group — default profile exposes ~16 schemas instead of ~56 (~5-7K tokens saved per LLM request). Groups: core(always), trust, kanban, session, chains, kg, dialectic, peers, memory_ops, audit, ops. Unknown names warn-and-ignore.
@@ -8,15 +21,6 @@
 
 **Changed (BREAKING for MCP clients):**
 - Thought-chain MCP surface collapsed to the sequential-thinking trio (`add_thought` / `get_thought_chain` / `get_related_chains`). Removed from registration: start_thought_chain, revise_thought, branch_thought, pause/resume/abandon_thought_chain (revisions/branches flow through add_thought params; backend methods retained internally).
-
-# CHANGELOG
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
 
 ## [1.5.6] - 2026-08-23
 - **Perf: raw embedding vectors no longer serialized into MCP responses (projection pushdown).** `SEARCH_MEMORIES_VECTOR` and `SEARCH_MEMORIES_1024_JOINED` no longer SELECT the 384-dim / 1024-dim vector columns — every `query_memories` response previously shipped tens of KB of float JSON per row that callers never use. `_row_to_memory()` now tolerates an absent `embedding` key (leaves `vector` as `None`). `GET_MEMORY_BY_ID` is intentionally unchanged (storage-integrity checks, the elevate path, and tests rely on the full vector round-trip).
