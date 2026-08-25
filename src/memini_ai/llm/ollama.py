@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from memini_ai.llm.base import BaseLLMClient
+
+_THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _clean_content(text: str) -> str:
+    """Strip reasoning-model artifacts from generated content."""
+    return _THINK_TAG_RE.sub("", text).strip()
 
 
 class OllamaClient(BaseLLMClient):
@@ -40,6 +49,10 @@ class OllamaClient(BaseLLMClient):
                 "model": self._model,
                 "prompt": prompt,
                 "stream": False,
+                # T-LLM-BACKEND-001: thinking models (e.g. qwen3.5) burn the
+                # entire num_predict budget on hidden reasoning and return an
+                # empty `response` field unless thinking is disabled.
+                "think": False,
                 "options": {
                     "num_predict": max_tokens,
                     "temperature": temperature,
@@ -48,7 +61,12 @@ class OllamaClient(BaseLLMClient):
         )
         response.raise_for_status()
         data = response.json()
-        return str(data.get("response", ""))
+        content = str(data.get("response", "") or "")
+        if not content:
+            # Defense-in-depth: some ollama builds/models route output to a
+            # separate `thinking` field even with think disabled.
+            content = str(data.get("thinking", "") or "")
+        return _clean_content(content)
 
     async def generate_chat(
         self,
