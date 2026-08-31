@@ -122,3 +122,64 @@ over stdio (`memini-ai --stdio`) once your MCP client connects.
 | `log_audit_event` | Manually log an audit event. |
 | `get_audit_log` | Query the audit log with filters. |
 | `get_security_summary` | Aggregated security metrics for the last N hours. |
+
+## Controlling which tools are exposed
+
+memini-ai registers 52 MCP tools by default. You can reduce the exposed surface
+so your MCP client sends fewer tool schemas (saving tokens per request). There
+are two mechanisms, and the more specific one wins:
+
+### 1. Per-tool allow-list — `MEMINI_ENABLED_TOOLS`
+
+When set, only the named tools are registered. This overrides
+`MEMINI_TOOL_GROUPS`.
+
+```bash
+export MEMINI_ENABLED_TOOLS="query_memories,add_memory"
+```
+
+Or in `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "memini-ai-dev": {
+        "type": "local",
+        "enabled": true,
+        "environment": {
+          "MEMINI_ENABLED_TOOLS": "query_memories,add_memory"
+        }
+      }
+    }
+  }
+}
+```
+
+Rules:
+
+- Names are the exact function names used at registration time.
+- Whitespace around commas is trimmed.
+- Unknown names are ignored with a warning log.
+- If unset/empty, the server falls back to `MEMINI_TOOL_GROUPS`.
+
+### 2. Group-based gating — `MEMINI_TOOL_GROUPS`
+
+Coarse groups exposed when `MEMINI_ENABLED_TOOLS` is unset. Default:
+`core,trust,kanban,session`.
+
+| Group | Tools |
+|-------|-------|
+| `core` | `add_memory`, `query_memories`, `get_memory`, `delete_memory` |
+| `trust` | trust-engine tools |
+| `kanban` | kanban board tools |
+| `session` | `get_status`, `healthcheck`, `trigger_compaction`, `trigger_consolidation` |
+| `chains` | thought-chain tools |
+| `kg` | knowledge-graph tools |
+| `dialectic` | contradiction-resolution tools |
+| `peers` | multi-peer sharing tools |
+| `memory_ops` | relationship tools |
+| `audit` | audit-log tools |
+| `ops` | project-indexing tools |
+
+Full details and examples are in [Configuration](configuration.md).

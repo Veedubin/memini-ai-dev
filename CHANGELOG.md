@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-08-31
+
+- **Docs: per-tool allow-list usage documented.** `README.md`, `docs/configuration.md`, `docs/mcp-tools.md`, and `.env.example` now explain `MEMINI_ENABLED_TOOLS` and `MEMINI_TOOL_GROUPS` with examples, precedence rules, and the default group set.
+
 ## [1.7.0] - 2026-08-31
 
 - **Added: per-tool allow-list via `MEMINI_ENABLED_TOOLS`.** When set in `opencode.json` (`mcp.memini-ai-dev.environment`), only the named MCP tools are registered. This overrides the coarser `MEMINI_TOOL_GROUPS` gating and lets users expose exactly the tools they use (e.g. `"MEMINI_ENABLED_TOOLS": "query_memories,add_memory"`). Empty/unset falls back to the existing group-based behavior. Unknown names are ignored.

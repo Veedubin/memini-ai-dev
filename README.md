@@ -263,6 +263,8 @@ Graph, Multi-Peer, User Modeling, System, and Advanced.
 | `MEMINI_ENABLE_RRF` | `false` | Enable RRF fusion across MiniLM + BGE-M3 |
 | `MEMINI_PEER_ENFORCEMENT` | `false` | Opt-in per-project RBAC lockdown |
 | `MEMINI_PEER_ID` | (unset) | Project ID for RBAC tagging/filtering |
+| `MEMINI_ENABLED_TOOLS` | (unset) | Per-tool allow-list. Comma-separated MCP tool names to expose. Overrides `MEMINI_TOOL_GROUPS`. Example: `query_memories,add_memory` |
+| `MEMINI_TOOL_GROUPS` | `core,trust,kanban,session` | Coarse tool groups to expose when `MEMINI_ENABLED_TOOLS` is unset. See [docs/mcp-tools.md](docs/mcp-tools.md). |
 | `LLM_PROVIDER` | `ollama` | `ollama`, `openai`, or OpenAI-compatible |
 | `LLM_MODEL` | `llama3.2` | Model name passed to the LLM provider |
 | `LLM_API_KEY` | (unset) | API key (optional for local Ollama) |

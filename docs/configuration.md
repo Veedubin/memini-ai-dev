@@ -25,6 +25,71 @@ local-first install.
 | `MEMINI_STRICT_EMBEDDING_DIM` | `false` | Dim mismatch raises `RuntimeError` instead of degrading to text-only. |
 | `MEMINI_ELEVATE_ENABLED` | `true` | Enable the `elevate_memory_to_1024` MCP tool. |
 | `MEMINI_CHUNK_SIZE` | `512` | Chunk size for project file indexing. |
+
+## Tool surface gating (v1.7.0+)
+
+memini-ai registers 52 MCP tools by default. You can restrict the exposed surface
+so your MCP client sends fewer schemas and tokens per request. There are two
+mechanisms; the more specific one wins.
+
+### 1. Per-tool allow-list — `MEMINI_ENABLED_TOOLS`
+
+Set to a comma-separated list of exact tool names. Only those tools are
+registered. This overrides `MEMINI_TOOL_GROUPS`.
+
+```bash
+export MEMINI_ENABLED_TOOLS="query_memories,add_memory"
+```
+
+In `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "memini-ai-dev": {
+        "type": "local",
+        "enabled": true,
+        "environment": {
+          "MEMINI_ENABLED_TOOLS": "query_memories,add_memory"
+        }
+      }
+    }
+  }
+}
+```
+
+- Names are the exact function `__name__` values used at registration time
+  (e.g. `query_memories`, `add_memory`, `search_project`).
+- Whitespace around commas is trimmed.
+- Unknown names are ignored with a warning log.
+- If unset or empty, the server falls back to `MEMINI_TOOL_GROUPS`.
+
+### 2. Group-based gating — `MEMINI_TOOL_GROUPS`
+
+Coarse groups exposed when `MEMINI_ENABLED_TOOLS` is unset.
+
+| Group | Tools |
+|-------|-------|
+| `core` | `add_memory`, `query_memories`, `get_memory`, `delete_memory` |
+| `trust` | `get_trust_score`, `adjust_trust`, `adjust_decay_rate`, `get_decay_status`, `list_fading_memories`, `list_archived` |
+| `kanban` | `move_task`, `get_board`, `create_task`, `update_task` |
+| `session` | `get_status`, `healthcheck`, `trigger_compaction`, `trigger_consolidation` |
+| `chains` | `add_thought`, `get_thought_chain`, `get_related_chains` |
+| `kg` | `query_kg`, `extract_entities`, `search_entities`, `get_entity_graph`, `get_inference_chain`, `get_graph_visualization` |
+| `dialectic` | `find_contradictions`, `resolve_contradiction`, `challenge_memory`, `get_dialectic_history` |
+| `peers` | `list_peers`, `add_peer`, `switch_peer_context`, `share_memory` |
+| `memory_ops` | `find_related_memories`, `get_relationship_summary`, `create_relationship` |
+| `audit` | `get_recent_operations`, `get_operation_counts` |
+| `ops` | `index_project`, `search_project`, `get_file_contents`, `get_indexing_status` |
+
+Default: `core,trust,kanban,session`.
+
+```bash
+export MEMINI_TOOL_GROUPS="core,trust,chains,kg"
+```
+
+Unknown group names are ignored with a warning log.
 | `MEMINI_CHUNK_OVERLAP` | `50` | Overlap between chunks. |
 | `MEMINI_BATCH_SIZE` | `32` | Batch size for embedding generation. |
 | `MEMINI_WORKERS` | cpu_count | Number of worker threads. |

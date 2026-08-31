@@ -8,6 +8,16 @@ quick reference; older releases (v0.7.x and earlier) are available on GitHub.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-08-31
+
+- **Docs: per-tool allow-list usage documented.** User-facing docs (`README.md`, `docs/configuration.md`, `docs/mcp-tools.md`, `.env.example`) now explain `MEMINI_ENABLED_TOOLS` and `MEMINI_TOOL_GROUPS`.
+
+## [1.7.0] - 2026-08-31
+
+- **Added: per-tool allow-list via `MEMINI_ENABLED_TOOLS`.** When set, only the named MCP tools are registered. Overrides `MEMINI_TOOL_GROUPS`. Empty/unset falls back to group-based gating. Unknown names are ignored.
+- **Fixed:** `tests/test_image_rrf.py` autouse fixture env isolation.
+- **Tests**: 6 new `TestEnabledToolsAllowList` cases. 1126 passing, 0 failed, 56 skipped.
+
 ## [1.2.2] - 2026-07-18
 
 ### Fixed
