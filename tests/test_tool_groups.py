@@ -163,6 +163,54 @@ def test_env_var_reaches_registration_surface(
     server._mcp = recorder  # noqa: SLF001
     server._setup_tools()  # noqa: SLF001
     names = set(recorder.names)
-    assert CHAIN_TRIO <= names
-    assert KG_TOOLS <= names
-    assert DIALECTIC_TOOLS <= names
+    assert names >= CHAIN_TRIO
+    assert names >= KG_TOOLS
+    assert names >= DIALECTIC_TOOLS
+
+
+class TestEnabledToolsAllowList:
+    """Per-tool allow-list via MEMINI_ENABLED_TOOLS."""
+
+    def test_allow_list_registers_only_named_tools(self) -> None:
+        names = _registered_with_tools("query_memories,add_memory")
+        assert names == {"query_memories", "add_memory"}
+
+    def test_allow_list_overrides_tool_groups(self) -> None:
+        # Even with a broad group list, the allow-list wins.
+        names = _registered_with_tools(
+            "query_memories,add_memory",
+            tool_groups="core,trust,kanban,session,chains,kg,dialectic,peers,memory_ops,audit,ops",
+        )
+        assert names == {"query_memories", "add_memory"}
+
+    def test_allow_list_ignores_unknown_names(self) -> None:
+        names = _registered_with_tools("query_memories,add_memory,bogus_tool")
+        assert names == {"query_memories", "add_memory"}
+
+    def test_allow_list_with_whitespace(self) -> None:
+        names = _registered_with_tools(" query_memories , add_memory ")
+        assert names == {"query_memories", "add_memory"}
+
+    def test_empty_allow_list_falls_back_to_groups(self) -> None:
+        names = _registered_with_tools("")
+        assert names >= DEFAULT_EXPECTED
+
+    def test_none_allow_list_falls_back_to_groups(self) -> None:
+        names = _registered_with_tools(None)
+        assert names >= DEFAULT_EXPECTED
+
+
+def _registered_with_tools(
+    enabled_tools: str | None, tool_groups: str = "core,trust,kanban,session"
+) -> set[str]:
+    """Build a server with an explicit enabled_tools allow-list."""
+    with patch("memini_ai.server.get_config") as cfg_mock:
+        cfg_mock.return_value = MagicMock(
+            tool_groups=tool_groups,
+            enabled_tools=enabled_tools,
+        )
+        server = MCPServer()
+    recorder = _Recorder()
+    server._mcp = recorder  # noqa: SLF001
+    server._setup_tools()  # noqa: SLF001
+    return set(recorder.names)

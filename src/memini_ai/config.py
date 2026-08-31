@@ -291,6 +291,19 @@ class MeminiConfig(BaseSettings):
         ),
     )
 
+    # Per-tool allow-list (v1.7.0): override tool_groups with an explicit
+    # comma-separated list of tool function names. When set, ONLY tools
+    # whose __name__ appears in this list are registered. Unknown names are
+    # logged and ignored. Empty/unset falls back to MEMINI_TOOL_GROUPS.
+    enabled_tools: str | None = Field(
+        default=None,
+        alias="MEMINI_ENABLED_TOOLS",
+        description=(
+            "Comma-separated allow-list of MCP tool names. Overrides "
+            "MEMINI_TOOL_GROUPS when set."
+        ),
+    )
+
     # Phase 2.1: Input Validation settings
     max_memory_content_size: int = Field(
         default=102400,  # 100KB

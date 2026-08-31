@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-31
+
+- **Added: per-tool allow-list via `MEMINI_ENABLED_TOOLS`.** When set in `opencode.json` (`mcp.memini-ai-dev.environment`), only the named MCP tools are registered. This overrides the coarser `MEMINI_TOOL_GROUPS` gating and lets users expose exactly the tools they use (e.g. `"MEMINI_ENABLED_TOOLS": "query_memories,add_memory"`). Empty/unset falls back to the existing group-based behavior. Unknown names are ignored.
+- **Changed:** `tool_surface_configured` log now includes `enabled_tools` when an allow-list is active.
+- **Fixed:** `tests/test_image_rrf.py` autouse fixture now chdirs to a temp directory and clears `MEMINI_IMAGE_SEARCH_ENABLED` so default-value assertions are reliable when the project `.env` enables image search.
+- **Tests**: 6 new `TestEnabledToolsAllowList` cases in `tests/test_tool_groups.py`. Suite: **1126 passing, 0 failed**, 56 skipped. `ruff check` clean. `mypy src/` clean.
+
 ## [1.6.1] - 2026-08-24
 - **Fixed: T-IDX-WEDGE-001 — `index_project` wedged the entire MCP server.** Root cause was NOT embedding (the indexer path contains no model code at all): `chunker._parse_python`'s single-line-docstring branch executed `continue` without incrementing its loop index — an **infinite loop on ANY `.py` file containing triple quotes**, running inline on the asyncio event loop (observed live: 17+ min at ~one-core CPU, every tool call timing out `-32001`). Fixed the parser (single-line/multi-line/inline-string docstrings all terminate correctly). Compounding defects fixed in the same pass: file reads + chunking now run off the event loop via `asyncio.to_thread` with a per-file fairness yield; `_walk_directory` prunes `SKIP_DIRS` before descending instead of traversing entire `.venv`/`node_modules` trees; glob-syntax exclusion entries (`*.egg-info`, `~$*`, `*.swp`) now actually match via `fnmatch`; and `_flush_chunks` — previously a stat-only stub that left `project_chunks` permanently empty — now persists buffered chunks incrementally to a new sqlite `project_chunks` table (`UNIQUE(path, chunk_index)` upserts, batch re-buffering on failure, count-only fallback when uninitialized).
 - **Fixed: T-TOOLGROUPS-001 — `MEMINI_TOOL_GROUPS` was silently ignored.** `MCPServer.__init__` never assigned `self._config`, so `_enabled_tool_groups()` always fell back to the default groups no matter what the env var contained (reproduced: fresh spawn with expanded groups still exposed exactly 16 tools). The v1.6.0 test harness masked this by manually injecting `server._config` before asserting; the injection is removed and a true env→registration end-to-end regression test added.

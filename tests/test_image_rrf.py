@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,15 +38,23 @@ from memini_ai.memory.system import MemorySystem, MemorySystemConfig
 
 
 @pytest.fixture(autouse=True)
-def _reset_config_cache() -> Iterator[None]:
+def _reset_config_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Iterator[None]:
     """Reset the module-level config singleton so each test reads fresh env vars.
 
     ``get_config()`` caches a ``MeminiConfig`` at module level; without this
     reset, the first test that constructs a config pins the env-var state
     for all subsequent tests, and ``monkeypatch.setenv`` has no effect.
+    We also chdir to a temp directory so the project ``.env`` file is not
+    read, and clear ``MEMINI_IMAGE_SEARCH_ENABLED`` so default-value
+    assertions are reliable.
     """
     import memini_ai.config as cfg_mod
 
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MEMINI_IMAGE_SEARCH_ENABLED", raising=False)
     old = cfg_mod._config
     cfg_mod._config = None
     yield

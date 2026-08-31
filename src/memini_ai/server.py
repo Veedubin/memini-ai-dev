@@ -156,18 +156,47 @@ class MCPServer:
                 logger.warning("unknown_tool_group_ignored", group=group)
         return enabled
 
+    def _enabled_tool_names(self) -> set[str] | None:
+        """Parse MEMINI_ENABLED_TOOLS into an explicit allow-list.
+
+        When the env var is non-empty, only tools whose function __name__
+        appears in the parsed set are registered. This overrides the
+        coarser MEMINI_TOOL_GROUPS gating. Returns None when unset/empty
+        or non-string, which keeps group-based gating active.
+        """
+        cfg = getattr(self, "_config", None)
+        raw = getattr(cfg, "enabled_tools", None)
+        if not raw or not isinstance(raw, str):
+            return None
+        enabled: set[str] = set()
+        for part in str(raw).split(","):
+            name = part.strip()
+            if not name:
+                continue
+            enabled.add(name)
+        return enabled if enabled else None
+
     def _reg(self, group: str, fn: Any) -> None:
         """Register an MCP tool only when its group is enabled."""
-        if group in self._enabled_groups:
-            self._mcp.add_tool(fn)
+        enabled_tools = getattr(self, "_enabled_tools", None)
+        if enabled_tools is not None:
+            if fn.__name__ not in enabled_tools:
+                return
+        elif group not in self._enabled_groups:
+            return
+        self._mcp.add_tool(fn)
 
     def _setup_tools(self) -> None:
         """Register MCP tools, gated by MEMINI_TOOL_GROUPS (v1.6.0)."""
         self._enabled_groups = self._enabled_tool_groups()
+        self._enabled_tools = self._enabled_tool_names()
         logger.info(
             "tool_surface_configured",
             groups=sorted(self._enabled_groups),
             known=sorted(self.TOOL_GROUPS_KNOWN),
+            enabled_tools=sorted(self._enabled_tools)
+            if self._enabled_tools is not None
+            else None,
         )
 
         # -- core (always registered) ------------------------------------
